@@ -1,0 +1,77 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  id-token: write   # Workload Identity Federation (keyless GCP auth)
+  contents: read
+
+jobs:
+  # ---- CI: runs on every push + PR, no GCP needed (free) ----
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma validate
+      - run: npm run build
+      # Export the OpenAPI contract as a build artifact (handoff to the app team).
+      - name: Generate OpenAPI spec
+        run: EMIT_OPENAPI=1 timeout 60 node dist/main.js || true
+        env:
+          # No DB/Redis in CI — the app may fail to fully boot, but the spec is
+          # written before listen(). Tolerate the non-zero exit.
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: openapi
+          path: openapi.json
+          if-no-files-found: ignore
+      # TODO: add `npm test` (jest) and `npm run lint` (eslint) once those
+      # devDependencies are added — currently not installed.
+
+  # ---- CD: deploy to Cloud Run on main (needs the paid GCP project) ----
+  deploy:
+    needs: ci
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Migrations run once before rollout (single owner).
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Build & push image
+        run: gcloud builds submit --tag "gcr.io/$GCP_PROJECT/aqademiq-api"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy aqademiq-api \
+            --image "gcr.io/$GCP_PROJECT/aqademiq-api" \
+            --region "$GCP_REGION" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --set-secrets "DATABASE_URL=DATABASE_URL:latest,REDIS_AUTH_STRING=REDIS_AUTH_STRING:latest"
