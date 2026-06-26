@@ -47,6 +47,11 @@ jobs:
     env:
       GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
       GCP_REGION: ${{ vars.GCP_REGION }}
+      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      CLOUD_SQL_CONNECTION: ${{ vars.CLOUD_SQL_CONNECTION }}
+      REDIS_HOST: ${{ vars.REDIS_HOST }}
+      REDIS_PORT: ${{ vars.REDIS_PORT }}
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/aqademiq-backend:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
@@ -54,24 +59,55 @@ jobs:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.DEPLOY_SA }}
       - uses: google-github-actions/setup-gcloud@v2
+      - name: Validate deploy configuration
+        env:
+          DATABASE_URL_MIGRATE: ${{ secrets.DATABASE_URL_MIGRATE }}
+        run: |
+          test -n "$GCP_PROJECT" || (echo "Missing vars.GCP_PROJECT_ID" && exit 1)
+          test -n "$GCP_REGION" || (echo "Missing vars.GCP_REGION" && exit 1)
+          test -n "$CLOUD_RUN_SERVICE" || (echo "Missing vars.CLOUD_RUN_SERVICE" && exit 1)
+          test -n "$CLOUD_SQL_CONNECTION" || (echo "Missing vars.CLOUD_SQL_CONNECTION" && exit 1)
+          test -n "$REDIS_HOST" || (echo "Missing vars.REDIS_HOST" && exit 1)
+          test -n "$REDIS_PORT" || (echo "Missing vars.REDIS_PORT" && exit 1)
+          test -n "$DATABASE_URL_MIGRATE" || (echo "Missing secrets.DATABASE_URL_MIGRATE" && exit 1)
+          [ "$CLOUD_SQL_CONNECTION" != "project:region:instance" ] || (echo "Replace placeholder CLOUD_SQL_CONNECTION value" && exit 1)
 
       # Migrations run once before rollout (single owner).
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm ci
+      - name: Start Cloud SQL Auth Proxy
+        run: |
+          curl -fsSL -o cloud-sql-proxy "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.15.2/cloud-sql-proxy.linux.amd64"
+          chmod +x cloud-sql-proxy
+          ./cloud-sql-proxy --address 127.0.0.1 --port 5432 "$CLOUD_SQL_CONNECTION" &
+          sleep 5
       - run: npx prisma migrate deploy
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL_MIGRATE }}
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
       - name: Build & push image
-        run: gcloud builds submit --tag "gcr.io/$GCP_PROJECT/aqademiq-api"
+        run: gcloud builds submit --tag "$IMAGE"
 
       - name: Deploy to Cloud Run
+        id: deploy
         run: |
-          gcloud run deploy aqademiq-api \
-            --image "gcr.io/$GCP_PROJECT/aqademiq-api" \
+          gcloud run deploy "$CLOUD_RUN_SERVICE" \
+            --image "$IMAGE" \
             --region "$GCP_REGION" \
             --platform managed \
             --allow-unauthenticated \
             --port 8080 \
-            --set-secrets "DATABASE_URL=DATABASE_URL:latest,REDIS_AUTH_STRING=REDIS_AUTH_STRING:latest"
+            --add-cloudsql-instances "$CLOUD_SQL_CONNECTION" \
+            --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=$GCP_PROJECT,GCP_REGION=$GCP_REGION,REDIS_HOST=$REDIS_HOST,REDIS_PORT=$REDIS_PORT" \
+            --set-secrets "DATABASE_URL=DATABASE_URL:latest"
+          SERVICE_URL="$(gcloud run services describe "$CLOUD_RUN_SERVICE" --region "$GCP_REGION" --format='value(status.url)')"
+          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Verify health endpoint
+        run: |
+          curl -fsSL "${{ steps.deploy.outputs.service_url }}/v1/healthz" > healthz.json
+          python -c "import json; d=json.load(open('healthz.json')); assert d.get('status') == 'ok', d"
