@@ -83,9 +83,28 @@ jobs:
           chmod +x cloud-sql-proxy
           ./cloud-sql-proxy --address 127.0.0.1 --port 5432 "$CLOUD_SQL_CONNECTION" &
           PROXY_PID=$!
+          trap "kill $PROXY_PID" EXIT
           sleep 5
-          npx prisma migrate deploy
-          kill "$PROXY_PID"
+          set +e
+          MIGRATE_OUTPUT="$(npx prisma migrate deploy 2>&1)"
+          MIGRATE_STATUS=$?
+          set -e
+          echo "$MIGRATE_OUTPUT"
+          if [ "$MIGRATE_STATUS" -ne 0 ]; then
+            if echo "$MIGRATE_OUTPUT" | python -c "import sys; sys.exit(0 if 'P3005' in sys.stdin.read() else 1)"; then
+              echo "Detected existing schema (P3005). Baselining Prisma migrations."
+              for migration_path in prisma/migrations/*; do
+                migration_name="$(basename "$migration_path")"
+                if [ "$migration_name" = "migration_lock.toml" ]; then
+                  continue
+                fi
+                npx prisma migrate resolve --applied "$migration_name"
+              done
+              npx prisma migrate deploy
+            else
+              exit "$MIGRATE_STATUS"
+            fi
+          fi
 
       - name: Configure Docker auth
         run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
