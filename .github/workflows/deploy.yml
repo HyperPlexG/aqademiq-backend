@@ -110,7 +110,31 @@ jobs:
         run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
       - name: Build & push image
-        run: gcloud builds submit --tag "$IMAGE" --region "$GCP_REGION" --suppress-logs
+        run: |
+          SUBMIT_OUTPUT="$(gcloud builds submit --tag "$IMAGE" --region "$GCP_REGION" --async 2>&1)"
+          echo "$SUBMIT_OUTPUT"
+          BUILD_ID="$(echo "$SUBMIT_OUTPUT" | python -c "import re,sys; m=re.search(r'/builds/([0-9a-f-]+)\\]', sys.stdin.read()); print(m.group(1) if m else '')")"
+          if [ -z "$BUILD_ID" ]; then
+            echo "Failed to parse Cloud Build ID from submit output."
+            exit 1
+          fi
+          echo "Cloud Build ID: $BUILD_ID"
+          for _ in $(seq 1 120); do
+            STATUS="$(gcloud builds describe "$BUILD_ID" --region "$GCP_REGION" --format='value(status)')"
+            echo "Cloud Build status: $STATUS"
+            case "$STATUS" in
+              SUCCESS)
+                exit 0
+                ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                gcloud builds describe "$BUILD_ID" --region "$GCP_REGION"
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+          echo "Timed out waiting for Cloud Build $BUILD_ID"
+          exit 1
 
       - name: Deploy to Cloud Run
         id: deploy
