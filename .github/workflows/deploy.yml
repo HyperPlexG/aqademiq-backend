@@ -110,7 +110,29 @@ jobs:
         run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
       - name: Build & push image
-        run: gcloud builds submit --tag "$IMAGE"
+        run: |
+          BUILD_ID="$(gcloud builds submit --tag "$IMAGE" --async --format='value(metadata.build.id)')"
+          if [ -z "$BUILD_ID" ]; then
+            echo "Failed to start Cloud Build."
+            exit 1
+          fi
+          echo "Cloud Build started: $BUILD_ID"
+          for _ in $(seq 1 90); do
+            STATUS="$(gcloud builds describe "$BUILD_ID" --format='value(status)')"
+            echo "Cloud Build status: $STATUS"
+            case "$STATUS" in
+              SUCCESS)
+                exit 0
+                ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                gcloud builds describe "$BUILD_ID"
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+          echo "Timed out waiting for Cloud Build $BUILD_ID"
+          exit 1
 
       - name: Deploy to Cloud Run
         id: deploy
