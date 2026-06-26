@@ -14,6 +14,8 @@ jobs:
   # ---- CI: runs on every push + PR, no GCP needed (free) ----
   ci:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://user:pass@localhost:5432/db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,10 +29,6 @@ jobs:
       # Export the OpenAPI contract as a build artifact (handoff to the app team).
       - name: Generate OpenAPI spec
         run: EMIT_OPENAPI=1 timeout 60 node dist/main.js || true
-        env:
-          # No DB/Redis in CI — the app may fail to fully boot, but the spec is
-          # written before listen(). Tolerate the non-zero exit.
-          DATABASE_URL: postgresql://user:pass@localhost:5432/db
       - uses: actions/upload-artifact@v4
         if: always()
         with:
