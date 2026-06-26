@@ -75,15 +75,17 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm ci
-      - name: Start Cloud SQL Auth Proxy
+      - name: Run Prisma migrations through Cloud SQL Auth Proxy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_MIGRATE }}
         run: |
           curl -fsSL -o cloud-sql-proxy "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.15.2/cloud-sql-proxy.linux.amd64"
           chmod +x cloud-sql-proxy
           ./cloud-sql-proxy --address 127.0.0.1 --port 5432 "$CLOUD_SQL_CONNECTION" &
+          PROXY_PID=$!
           sleep 5
-      - run: npx prisma migrate deploy
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL_MIGRATE }}
+          npx prisma migrate deploy
+          kill "$PROXY_PID"
 
       - name: Configure Docker auth
         run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
@@ -100,6 +102,7 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --port 8080 \
+            --service-account "aqademiq-runner@$GCP_PROJECT.iam.gserviceaccount.com" \
             --add-cloudsql-instances "$CLOUD_SQL_CONNECTION" \
             --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=$GCP_PROJECT,GCP_REGION=$GCP_REGION,REDIS_HOST=$REDIS_HOST,REDIS_PORT=$REDIS_PORT" \
             --set-secrets "DATABASE_URL=DATABASE_URL:latest"
