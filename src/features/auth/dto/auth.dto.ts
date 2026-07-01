@@ -1,4 +1,4 @@
-import { IsEmail, IsString, Length, Matches, MinLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Length, Matches, MinLength } from 'class-validator';
 
 /** §2.1 request DTOs. Properties are snake_case to match the Flutter wire contract. */
 
@@ -82,4 +82,36 @@ export class LinkGuestDto {
   @IsString()
   @MinLength(8)
   password!: string;
+}
+
+export class SsoAppleDto {
+  // Apple's signed identity token (JWT) from `ASAuthorizationAppleIDCredential`.
+  @IsString()
+  identity_token!: string;
+
+  // Apple only sends the user's name on the very first sign-in; the client
+  // forwards it here so we can seed `users.full_name`.
+  @IsOptional()
+  @IsString()
+  @Length(0, 200)
+  full_name?: string;
+}
+
+export class SsoGoogleDto {
+  // Google Sign-In ID token (JWT) from the client SDK.
+  @IsString()
+  id_token!: string;
+}
+
+export class ChangeEmailRequestDto {
+  @IsEmail()
+  new_email!: string;
+}
+
+export class ChangeEmailVerifyDto {
+  @IsEmail()
+  new_email!: string;
+
+  @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
+  code!: string;
 }

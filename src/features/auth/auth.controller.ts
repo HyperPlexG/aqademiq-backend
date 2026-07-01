@@ -13,17 +13,20 @@ import {
   ForgotResetDto,
   ChangePasswordDto,
   LinkGuestDto,
+  SsoAppleDto,
+  SsoGoogleDto,
+  ChangeEmailRequestDto,
+  ChangeEmailVerifyDto,
 } from './dto/auth.dto';
 import type { SessionInfo } from '../../infra/token.service';
 
 /** The guard attaches these to the request after RS256 verification (§4.1). */
 type AuthedRequest = Request & { userId: string; sessionId: string; isGuest: boolean };
 
-/** Pull device/IP context off the request for session bookkeeping (§4.1). */
 function sessionInfo(req: Request): SessionInfo {
   const fwd = req.headers['x-forwarded-for'];
-  const ip = (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim()) || req.ip || null;
-  return { deviceInfo: req.headers['user-agent'] ?? null, ipAddress: ip };
+  const ip  = (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim()) || req.ip || null;
+  return { userAgent: req.headers['user-agent'] ?? null, ipAddress: ip };
 }
 
 /** §2.1/§4.1 — base route: /v1/auth */
@@ -39,8 +42,8 @@ export class AuthController {
 
   @Public()
   @Post('signup')
-  signup(@Body() dto: SignupDto) {
-    return this.svc.signup(dto);
+  signup(@Body() dto: SignupDto, @Req() req: Request) {
+    return this.svc.signup(dto, sessionInfo(req));
   }
 
   @Public()
@@ -51,8 +54,8 @@ export class AuthController {
 
   @Public()
   @Post('resend-otp')
-  resendOtp(@Body() dto: ResendOtpDto) {
-    return this.svc.resendOtp(dto);
+  resendOtp(@Body() dto: ResendOtpDto, @Req() req: Request) {
+    return this.svc.resendOtp(dto, sessionInfo(req));
   }
 
   @Public()
@@ -69,8 +72,8 @@ export class AuthController {
 
   @Public()
   @Post('forgot-password')
-  forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.svc.forgotPassword(dto);
+  forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req: Request) {
+    return this.svc.forgotPassword(dto, sessionInfo(req));
   }
 
   @Public()
@@ -94,7 +97,7 @@ export class AuthController {
 
   @Post('link-guest')
   linkGuest(@Body() dto: LinkGuestDto, @Req() req: AuthedRequest) {
-    return this.svc.linkGuest(req.userId, dto);
+    return this.svc.linkGuest(req.userId, dto, sessionInfo(req));
   }
 
   @Post('signout')
@@ -119,18 +122,28 @@ export class AuthController {
 
   @Public()
   @Post('sso/apple')
-  ssoApple(/* TODO §2.1/§4.1: verify Apple JWKS */) {
-    return this.svc.ssoApple();
+  ssoApple(@Body() dto: SsoAppleDto, @Req() req: Request) {
+    return this.svc.ssoApple(dto, sessionInfo(req));
   }
 
   @Public()
   @Post('sso/google')
-  ssoGoogle(/* TODO §2.1/§4.1: verify Google JWKS */) {
-    return this.svc.ssoGoogle();
+  ssoGoogle(@Body() dto: SsoGoogleDto, @Req() req: Request) {
+    return this.svc.ssoGoogle(dto, sessionInfo(req));
   }
 
   @Delete('account')
   deleteAccount(@Req() req: AuthedRequest) {
     return this.svc.deleteAccount(req.userId);
+  }
+
+  @Post('change-email/request')
+  changeEmailRequest(@Body() dto: ChangeEmailRequestDto, @Req() req: AuthedRequest) {
+    return this.svc.changeEmailRequest(req.userId, dto, sessionInfo(req));
+  }
+
+  @Post('change-email/verify')
+  changeEmailVerify(@Body() dto: ChangeEmailVerifyDto, @Req() req: AuthedRequest) {
+    return this.svc.changeEmailVerify(req.userId, dto);
   }
 }

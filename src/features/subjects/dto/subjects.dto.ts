@@ -1,4 +1,4 @@
-import { IsInt, IsNumber, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
+import { ArrayMinSize, IsArray, IsInt, IsNumber, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
 
 /** §2.3 subject DTOs (snake_case). color_hex is strict `#RRGGBB` (no alpha, §3). */
 
@@ -75,4 +75,12 @@ export class UpdateSubjectDto {
   @Min(0)
   @Max(4)
   mood?: number;
+}
+
+/** §03 subj-sort — full ordered id list; server assigns sort_order = index. */
+export class ReorderSubjectsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  ids!: string[];
 }

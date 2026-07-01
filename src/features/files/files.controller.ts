@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { FilesService } from './files.service';
-import { InitUploadDto, PatchFileDto } from './dto/files.dto';
+import { InitUploadDto, InitStagingUploadDto, PatchFileDto } from './dto/files.dto';
 
 /** §2.3/§4.4 — root-level file routes. */
 @Controller('/')
@@ -10,6 +10,14 @@ export class FilesController {
   @Post('uploads/init')
   initUpload(@Body() dto: InitUploadDto) {
     return this.svc.initUpload(dto);
+  }
+
+  /** No subject_id required yet — used by onboarding step 3 (upload syllabus
+   *  before any subject exists). Client PUTs the file, then passes the
+   *  returned `key` into `POST /onboarding/complete`. */
+  @Post('uploads/staging/init')
+  initStagingUpload(@Body() dto: InitStagingUploadDto) {
+    return this.svc.initStagingUpload(dto);
   }
 
   @Post('uploads/:id/commit')

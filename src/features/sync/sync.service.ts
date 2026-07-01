@@ -48,8 +48,8 @@ export class SyncService {
 
     // --- semesters ---
     const activeId = (
-      await this.prisma.user.findUnique({ where: { id: userId }, select: { active_semester_id: true } })
-    )?.active_semester_id ?? null;
+      await db.semester.findFirst({ where: { is_current: true }, select: { id: true } })
+    )?.id ?? null;
     const semesterRows = await db.semester.findMany({ where: { updated_at: { gt: sinceDate } } });
     const semesterUpserts = semesterRows
       .filter((s) => !s.deleted_at)

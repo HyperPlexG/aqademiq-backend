@@ -5,8 +5,8 @@ import { CreateSemesterDto, UpdateSemesterDto } from './dto/semesters.dto';
 
 /**
  * §2.3 — semesters with a single active term per user. The active semester is
- * tracked on `users.active_semester_id` (raw prisma — `User` has no user_id
- * column, so the tenant extension can't scope it). Soft-delete only: subjects
+ * tracked on `semesters.is_current` (at most one true row per user; enforced
+ * in `setActive` rather than a DB constraint). Soft-delete only: subjects
  * of a removed term are retained (hidden) so task references stay valid.
  */
 @Injectable()
@@ -118,12 +118,18 @@ export class SemestersService {
   }
 
   private async activeSemesterId(): Promise<string | null> {
-    const user = await this.prisma.user.findUnique({ where: { id: this.rc.userId }, select: { active_semester_id: true } });
-    return user?.active_semester_id ?? null;
+    const sem = await this.prisma.tenant.semester.findFirst({ where: { is_current: true, deleted_at: null } });
+    return sem?.id ?? null;
   }
 
   private async setActive(id: string | null) {
-    await this.prisma.user.update({ where: { id: this.rc.userId }, data: { active_semester_id: id } });
+    await this.prisma.$transaction([
+      this.prisma.semester.updateMany({
+        where: { user_id: this.rc.userId, is_current: true },
+        data: { is_current: false },
+      }),
+      ...(id ? [this.prisma.semester.update({ where: { id }, data: { is_current: true } })] : []),
+    ]);
   }
 
   private assertRange(start: string, end: string) {

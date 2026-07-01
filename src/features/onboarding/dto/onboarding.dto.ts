@@ -20,6 +20,21 @@ export class OnboardingSubjectDto {
   @Min(0)
   @Max(4)
   mood?: number;
+
+  // From `POST /uploads/staging/init` + a client PUT — attaches a syllabus
+  // to this subject once it's created in the same transaction (ob3).
+  @IsOptional()
+  @IsString()
+  syllabus_staging_key?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(0, 255)
+  syllabus_file_name?: string;
+
+  @IsOptional()
+  @IsString()
+  syllabus_mime_type?: string;
 }
 
 export class OnboardingSemesterDto {

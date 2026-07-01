@@ -1,8 +1,9 @@
 import { Injectable, NotFoundException, NotImplementedException } from '@nestjs/common';
+import * as crypto from 'node:crypto';
 import { PrismaService } from '../../infra/prisma.service';
 import { StorageService } from '../../infra/storage.service';
 import { RequestContext } from '../../common/request-context';
-import { InitUploadDto, PatchFileDto } from './dto/files.dto';
+import { InitUploadDto, InitStagingUploadDto, PatchFileDto } from './dto/files.dto';
 
 const KINDS = ['syllabus', 'slides', 'notes', 'paper'];
 
@@ -41,6 +42,20 @@ export class FilesService {
     const uploadUrl = await this.storage.presignUpload(key, dto.mime_type ?? 'application/octet-stream');
 
     return { file_id: file.id, upload_url: uploadUrl, key };
+  }
+
+  /** POST /uploads/staging/init — no subject yet (onboarding step 3). Returns
+   *  a signed PUT URL keyed by a fresh upload id; nothing is written to the
+   *  DB here since there's no owning subject to attach a row to yet. The
+   *  caller stashes `key`/`name`/`mime_type` and forwards them into
+   *  `POST /onboarding/complete`, which creates the real SubjectFile row once
+   *  the subject exists. */
+  async initStagingUpload(dto: InitStagingUploadDto) {
+    this.assertStorage();
+    const uploadId = crypto.randomUUID();
+    const key = this.storage.buildStagingKey(this.rc.userId, uploadId, dto.name);
+    const uploadUrl = await this.storage.presignUpload(key, dto.mime_type ?? 'application/octet-stream');
+    return { upload_id: uploadId, upload_url: uploadUrl, key, name: dto.name, mime_type: dto.mime_type ?? null };
   }
 
   /** POST /uploads/:id/commit — finalize after the client PUT; bump files_count. */
