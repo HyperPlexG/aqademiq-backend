@@ -40,9 +40,12 @@ jobs:
       # devDependencies are added — currently not installed.
 
   # ---- CD: deploy to Cloud Run on main (needs the paid GCP project) ----
+  # Paused until ready: set repo variable DEPLOY_ENABLED=true (Settings →
+  # Secrets and variables → Actions → Variables) once GCP/Cloud Run is set up.
+  # Until then this job is SKIPPED (not failed), so CI stays green.
   deploy:
     needs: ci
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     env:
       GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
