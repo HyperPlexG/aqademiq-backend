@@ -15,6 +15,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import { PrismaService } from '../../infra/prisma.service';
 import { TokenService, type SessionInfo } from '../../infra/token.service';
 import { RedisService } from '../../infra/redis.service';
+import { EmailService } from '../../infra/email.service';
 import {
   SignupDto,
   VerifyOtpDto,
@@ -62,6 +63,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly tokens: TokenService,
     private readonly redis: RedisService,
+    private readonly email: EmailService,
   ) {}
 
   // ---- guest -------------------------------------------------------------
@@ -569,8 +571,16 @@ export class AuthService {
         user_agent: userAgent ?? null,
       },
     });
-    // eslint-disable-next-line no-console
-    console.log(`[auth] OTP (${purpose}) for ${email}: ${code}`);
+
+    // Best-effort delivery via Resend. Never throws; when the provider is not
+    // configured this is a no-op and dev relies on the console log / dev_code.
+    await this.email.sendOtp(email, purpose, code);
+
+    // Only log the plaintext code outside production to avoid leaking it in logs.
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log(`[auth] OTP (${purpose}) for ${email}: ${code}`);
+    }
     return code;
   }
 
