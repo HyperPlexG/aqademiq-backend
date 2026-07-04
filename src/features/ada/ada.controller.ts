@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { AdaService } from './ada.service';
-import { CreateConversationDto, PostMessageDto } from './dto/ada.dto';
+import { CreateConversationDto, PostMessageDto, AdaUploadInitDto, PlanWeekDto } from './dto/ada.dto';
 
 /** §2.5/§4.3 — base route: /v1/ada */
 @Controller('ada')
@@ -43,12 +43,12 @@ export class AdaController {
   }
 
   @Post('uploads')
-  upload() {
-    return this.svc.upload();
+  upload(@Body() dto: AdaUploadInitDto) {
+    return this.svc.upload(dto);
   }
 
   @Post('plan-week')
-  planWeek() {
-    return this.svc.planWeek();
+  planWeek(@Body() dto: PlanWeekDto) {
+    return this.svc.planWeek(dto);
   }
 }

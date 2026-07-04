@@ -17,6 +17,9 @@ export class RedisService implements OnModuleDestroy {
     if (process.env.REDIS_AUTH_STRING) opts.password = process.env.REDIS_AUTH_STRING;
     if (process.env.REDIS_CA_CERT_PATH) opts.tls = { ca: [fs.readFileSync(process.env.REDIS_CA_CERT_PATH, 'utf8')] };
     this.client = new Redis(opts);
+    // Prevent Node from crashing on transient/unavailable Redis in environments
+    // where features can fail open (middleware already guards Redis failures).
+    this.client.on('error', () => undefined);
   }
   onModuleDestroy() { this.client.disconnect(); }
 }

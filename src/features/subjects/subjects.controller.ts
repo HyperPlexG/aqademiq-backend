@@ -1,8 +1,8 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { SubjectsService } from './subjects.service';
-import { CreateSubjectDto, UpdateSubjectDto } from './dto/subjects.dto';
+import { CreateSubjectDto, UpdateSubjectDto, ReorderSubjectsDto } from './dto/subjects.dto';
 
-/** §2.3 — base route: /v1/subjects */
+/** §2.3 — base route: /v1/subjects. Static `reorder` declared before `:id`. */
 @Controller('subjects')
 export class SubjectsController {
   constructor(private readonly svc: SubjectsService) {}
@@ -10,6 +10,11 @@ export class SubjectsController {
   @Get()
   list(@Query('semester_id') semesterId?: string) {
     return this.svc.list(semesterId);
+  }
+
+  @Patch('reorder')
+  reorder(@Body() dto: ReorderSubjectsDto) {
+    return this.svc.reorder(dto);
   }
 
   @Get(':id')

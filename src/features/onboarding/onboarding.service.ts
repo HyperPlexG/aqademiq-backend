@@ -43,22 +43,38 @@ export class OnboardingService {
       }
 
       const semester = await tx.semester.create({
-        data: { user_id: userId, name: sem.name, start: this.date(sem.start), end: this.date(sem.end) },
+        data: { user_id: userId, name: sem.name, start: this.date(sem.start), end: this.date(sem.end), is_current: true },
       });
-      await tx.user.update({ where: { id: userId }, data: { active_semester_id: semester.id } });
 
       const subjects = dto.subjects ?? [];
       for (let i = 0; i < subjects.length; i++) {
         const s = subjects[i];
-        await tx.subject.create({
+        const subject = await tx.subject.create({
           data: {
             user_id: userId,
             semester_id: semester.id,
             name: s.name,
             color_hex: s.color_hex ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+            sort_order: i,
             ...(s.mood !== undefined ? { mood: s.mood } : {}),
           },
         });
+
+        // ob3 — syllabus staged via `POST /uploads/staging/init` before this
+        // subject existed; attach it now that the subject has an id.
+        if (s.syllabus_staging_key) {
+          await tx.subjectFile.create({
+            data: {
+              subject_id: subject.id,
+              name: s.syllabus_file_name ?? 'Syllabus',
+              kind: 'syllabus',
+              s3_key: s.syllabus_staging_key,
+              mime_type: s.syllabus_mime_type ?? null,
+              scan_status: 'clean',
+            },
+          });
+          await tx.subject.update({ where: { id: subject.id }, data: { files_count: { increment: 1 } } });
+        }
       }
 
       await tx.settingsPrefs.upsert({

@@ -12,6 +12,7 @@ export interface CreateMessageParams {
   system: string;
   messages: any[];
   tools?: ToolDef[];
+  toolChoice?: { type: 'tool'; name: string };
   model?: string;
   maxTokens?: number;
 }
@@ -76,6 +77,7 @@ export class ClaudeService {
       system: params.system,
       messages: params.messages,
       ...(params.tools ? { tools: params.tools as any } : {}),
+      ...(params.toolChoice ? { tool_choice: params.toolChoice as any } : {}),
     });
   }
 

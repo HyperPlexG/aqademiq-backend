@@ -28,6 +28,20 @@ export class StorageService {
     return `quarantine/users/${userId}/subjects/${subjectId}/${fileId}/${safe}`;
   }
 
+  /** Object key for uploads staged before their parent record exists yet
+   *  (e.g. a syllabus attached during the onboarding wizard, before the
+   *  subject it belongs to has been created). */
+  buildStagingKey(userId: string, uploadId: string, name: string): string {
+    const safe = name.replace(/[^\w.\-]+/g, '_');
+    return `quarantine/users/${userId}/staging/${uploadId}/${safe}`;
+  }
+
+  /** Object key for a file attached to an Ada conversation. */
+  buildAdaAttachmentKey(userId: string, conversationId: string, fileId: string, name: string): string {
+    const safe = name.replace(/[^\w.\-]+/g, '_');
+    return `quarantine/users/${userId}/ada/${conversationId}/${fileId}/${safe}`;
+  }
+
   /** §4.4 step 1: signed PUT URL the client uploads to directly. */
   async presignUpload(key: string, contentType: string): Promise<string> {
     const [url] = await this.storage.bucket(this.userBucket).file(key).getSignedUrl({

@@ -1,7 +1,6 @@
-// Aqademiq data model — derived from BACKEND_REQUIREMENTS.md §3.
-// Every table is user-scoped (§3, §6 P0 checklist). snake_case via @map.
+// Aqademiq data model — Phase 1 migrated to match reference_docs/schema.md
+// snake_case via @map. Enums are Prisma-side; DB stores the string value.
 
-// ---------------- Auth & users (§2.1, §4.1) ----------------
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,169 +9,225 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ============================================================
+// Phase 1 — Auth, Identity & Access (matches schema.md Part A)
+// ============================================================
+
 model User {
-  id              String   @id @default(uuid())
-  email           String?  @unique               // null for guests
-  password_hash   String?
-  email_verified  Boolean  @default(false)
-  is_guest        Boolean  @default(true)         // guest = real anon user §4.1
-  active_semester_id String?
-  created_at      DateTime @default(now())
-  deleted_at      DateTime?                       // soft-delete / erasure grace §4.9
-  profile         UserProfile?
-  sessions        AuthSession[]
-  semesters       Semester[]
-  subjects        Subject[]
-  task_series     TaskSeries[]
-  mood_entries    MoodEntry[]
-  study_tags      StudyTag[]
-  focus_sessions  FocusSession[]
-  conversations   AdaConversation[]
-  devices         Device[]
-  activity_events ActivityEvent[]
+  id                  String    @id @default(uuid())
+  email               String?
+  full_name           String?
+  display_name        String?
+  gender              String?
+  date_of_birth       DateTime? @db.Date
+  avatar_url          String?
+  auth_provider       String    @default("guest")  // guest | email | google | apple
+  timezone            String    @default("UTC")
+  account_status      String    @default("active") // active | suspended | deleted
+  is_guest            Boolean   @default(false)
+  guest_token_hash    String?
+  onboarding_complete Boolean   @default(false)
+  onboarding_step     Int       @default(0)
+  referral_code       String?   @unique
+  referred_by         String?
+  referrer            User?     @relation("user_referrals", fields: [referred_by], references: [id])
+  referrals           User[]    @relation("user_referrals")
+  streak_days         Int       @default(0)
+  last_active_date    DateTime? @db.Date
+  last_login_at       DateTime?
+  deleted_at          DateTime?
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt @default(now())
+
+  // relations
+  profile               UserProfile?
+  auth_identities       AuthIdentity[]
+  sessions              UserSession[]
+  login_attempts        LoginAttempt[]
+  semesters             Semester[]
+  subjects              Subject[]
+  task_series           TaskSeries[]
+  mood_entries          MoodEntry[]
+  study_tags            StudyTag[]
+  focus_sessions        FocusSession[]
+  conversations         AdaConversation[]
+  devices               Device[]
+  activity_events       ActivityEvent[]
   settings              SettingsPrefs?
   email_preferences     EmailPreferences?
   notification_channels NotificationChannelPref[]
+
   @@map("users")
 }
+
+model AuthIdentity {
+  id               String   @id @default(uuid())
+  user_id          String
+  user             User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  provider         String   // email | google | apple
+  provider_subject String?
+  email            String?
+  email_verified   Boolean  @default(false)
+  // password_hash is stored here for provider='email' only.
+  // Not in schema.md but required for email auth — noted in changes_summary.
+  password_hash    String?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt @default(now())
+
+  @@unique([provider, provider_subject])
+  @@unique([user_id, provider])
+  @@map("auth_identities")
+}
+
+model EmailOtpCode {
+  id             String    @id @default(uuid())
+  email          String
+  purpose        String    @default("signup") // signup | login | change_email | password_reset
+  otp_hash       String
+  attempts_count Int       @default(0)
+  max_attempts   Int       @default(5)
+  expires_at     DateTime
+  consumed_at    DateTime?
+  ip_address     String?
+  user_agent     String?
+  created_at     DateTime  @default(now())
+
+  @@map("email_otp_codes")
+}
+
+model UserSession {
+  id                 String    @id @default(uuid())
+  user_id            String
+  user               User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  device_profile_id  String?   // FK to device_profiles — wired in Phase 9
+  session_token_hash String
+  refresh_token_hash String?
+  ip_address         String?
+  user_agent         String?
+  status             String    @default("active") // active | expired | logged_out | revoked
+  login_at           DateTime  @default(now())
+  last_active_at     DateTime  @default(now())
+  expires_at         DateTime
+  logged_out_at      DateTime?
+  login_attempts     LoginAttempt[]
+
+  @@map("user_sessions")
+}
+
+model LoginAttempt {
+  id                 String       @id @default(uuid())
+  user_id            String?
+  user               User?        @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  email_entered      String
+  status             String       // success | failed | blocked
+  failure_reason     String?
+  ip_address         String
+  user_agent         String?
+  created_session_id String?
+  created_session    UserSession? @relation(fields: [created_session_id], references: [id], onDelete: SetNull)
+  attempted_at       DateTime     @default(now())
+
+  @@map("login_attempts")
+}
+
+// ============================================================
+// Phases 2-11 — unchanged models (migrated in later phases)
+// ============================================================
 
 model UserProfile {
   user_id       String   @id
   user          User     @relation(fields: [user_id], references: [id])
   name          String?
   gender        String?
-  date_of_birth DateTime?                          // age gate §4.9
+  date_of_birth DateTime?
   university    String?
   program       String?
-  avatar_index  Int      @default(0)               // 0–7 preset §2.8
+  avatar_index  Int      @default(0)
   @@map("user_profiles")
 }
 
-model AuthSession {
-  id                 String   @id @default(uuid())
-  user_id            String
-  user               User     @relation(fields: [user_id], references: [id])
-  refresh_token_hash String                         // hashed at rest §4.1
-  device_info        String?
-  ip_address         String?
-  family_id          String                         // reuse-detection family §4.1
-  revoked_at         DateTime?
-  created_at         DateTime @default(now())
-  @@map("auth_sessions")
-}
-
-model EmailVerificationCode {
-  id            String   @id @default(uuid())
-  user_id       String
-  code_hash     String
-  type          String                              // signup | ...
-  expires_at    DateTime
-  attempt_count Int      @default(0)
-  created_at    DateTime @default(now())
-  @@map("email_verification_codes")
-}
-
-model PasswordResetToken {
-  id               String   @id @default(uuid())
-  user_id          String
-  reset_code_hash  String
-  expires_at       DateTime
-  created_at       DateTime @default(now())
-  @@map("password_reset_tokens")
-}
-
-model OAuthIdentity {
-  id           String @id @default(uuid())
-  user_id      String
-  provider     String                               // apple | google §2.1
-  provider_sub String
-  email        String?
-  @@unique([provider, provider_sub])
-  @@map("oauth_identities")
-}
-
-// ---------------- Academic structure (§2.3) ----------------
 model Semester {
-  id       String   @id @default(uuid())
-  user_id  String
-  user     User     @relation(fields: [user_id], references: [id])
-  name     String                                   // "Spring '26"
-  start    DateTime @db.Date
-  end      DateTime @db.Date
-  deleted_at DateTime?                              // soft-delete §2.3
-  updated_at DateTime @updatedAt @default(now())    // sync cursor §4.6
-  subjects Subject[]
+  id         String    @id @default(uuid())
+  user_id    String
+  user       User      @relation(fields: [user_id], references: [id])
+  name       String
+  start      DateTime  @db.Date
+  end        DateTime  @db.Date
+  is_current Boolean   @default(false)
+  deleted_at DateTime?
+  updated_at DateTime  @updatedAt @default(now())
+  subjects   Subject[]
   @@map("semesters")
 }
 
 model Subject {
-  id           String   @id @default(uuid())
+  id           String      @id @default(uuid())
   user_id      String
-  user         User     @relation(fields: [user_id], references: [id])
+  user         User        @relation(fields: [user_id], references: [id])
   semester_id  String
-  semester     Semester @relation(fields: [semester_id], references: [id])
+  semester     Semester    @relation(fields: [semester_id], references: [id])
   name         String
   code         String?
-  color_hex    String                               // #RRGGBB no alpha §3
+  color_hex    String
   credits      Float?
-  prof         String   @default("")
-  target_grade String   @default("")                // free string §3
-  mood         Int      @default(2)                 // 0–4
-  files_count  Int      @default(0)                 // cached §2.3
-  deleted_at   DateTime?                            // soft-delete only — FK throws §3
-  updated_at   DateTime @updatedAt @default(now())  // sync cursor §4.6
+  prof         String      @default("")
+  target_grade String      @default("")
+  mood         Int         @default(2)
+  files_count  Int         @default(0)
+  sort_order   Int         @default(0)
+  deleted_at   DateTime?
+  updated_at   DateTime    @updatedAt @default(now())
   files        SubjectFile[]
   task_series  TaskSeries[]
   @@map("subjects")
 }
 
 model SubjectFile {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   subject_id  String
-  subject     Subject  @relation(fields: [subject_id], references: [id])
+  subject     Subject   @relation(fields: [subject_id], references: [id])
   name        String
-  kind        String                                // syllabus|slides|notes|paper §3
-  important   Boolean  @default(false)
-  s3_key      String?                               // GCS object key
+  kind        String
+  important   Boolean   @default(false)
+  s3_key      String?
   mime_type   String?
   size_bytes  Int?
-  scan_status String   @default("none")
-  ocr_status  String   @default("none")
-  created_at  DateTime @default(now())
+  scan_status String    @default("none")
+  ocr_status  String    @default("none")
+  created_at  DateTime  @default(now())
   deleted_at  DateTime?
   @@map("subject_files")
 }
 
-// ---------------- Recurring-task engine (§4.2 — highest risk) ----------------
 model TaskSeries {
-  id           String   @id @default(uuid())
-  user_id      String
-  user         User     @relation(fields: [user_id], references: [id])
-  subject_id   String
-  subject      Subject  @relation(fields: [subject_id], references: [id])
-  title        String
-  duration_seconds Int  @default(300)
-  scheduled_at String?                              // naive local wall-clock or null=anytime §3
-  category     String?
-  anchor_date  DateTime @db.Date                    // series start
-  repeat_kind  String   @default("none")            // none|daily|weekdays|weekly|monthly|everyNDays|everyNWeeks|everyNMonths §3
-  repeat_interval Int   @default(1)
-  until_date   DateTime? @db.Date                   // §4.2 UNTIL bound (mock lacks)
-  created_at   DateTime @default(now())
-  updated_at   DateTime @updatedAt @default(now())  // sync cursor §4.6
-  deleted_at   DateTime?
-  overrides    OccurrenceOverride[]
-  steps        TaskStep[]
+  id              String               @id @default(uuid())
+  user_id         String
+  user            User                 @relation(fields: [user_id], references: [id])
+  subject_id      String
+  subject         Subject              @relation(fields: [subject_id], references: [id])
+  title           String
+  duration_seconds Int                 @default(300)
+  scheduled_at    String?
+  category        String?
+  anchor_date     DateTime             @db.Date
+  repeat_kind     String               @default("none")
+  repeat_interval Int                  @default(1)
+  until_date      DateTime?            @db.Date
+  created_at      DateTime             @default(now())
+  updated_at      DateTime             @updatedAt @default(now())
+  deleted_at      DateTime?
+  overrides       OccurrenceOverride[]
+  steps           TaskStep[]
   @@map("task_series")
 }
 
-// The linchpin (§3): keyed (series_id, occurrence_date); generation cache AND tombstone (§4.2)
 model OccurrenceOverride {
   series_id       String
   series          TaskSeries @relation(fields: [series_id], references: [id])
   occurrence_date DateTime   @db.Date
-  kind            String                            // DONE|DELETED|EDITED|MOVED §3
-  status          String?                           // PENDING|COMPLETE
+  kind            String
+  status          String?
   scheduled_at    String?
   moved_to_date   DateTime?  @db.Date
   updated_at      DateTime   @updatedAt
@@ -181,105 +236,102 @@ model OccurrenceOverride {
 }
 
 model TaskStep {
-  id        String  @id                             // {task}-s{i} or {task}-bd{ts}-{i} §3
-  series_id String
-  series    TaskSeries @relation(fields: [series_id], references: [id])
-  occurrence_date DateTime? @db.Date                // null = applies to series
-  title     String
-  duration_seconds Int @default(0)
-  status    String  @default("PENDING")
-  order_idx Int     @default(0)
+  id               String     @id
+  series_id        String
+  series           TaskSeries @relation(fields: [series_id], references: [id])
+  occurrence_date  DateTime?  @db.Date
+  title            String
+  duration_seconds Int        @default(0)
+  status           String     @default("PENDING")
+  order_idx        Int        @default(0)
   @@map("task_steps")
 }
 
-// ---------------- Mood / tags / streaks (§2.6, §2.7) ----------------
 model MoodEntry {
   id         String   @id @default(uuid())
   user_id    String
   user       User     @relation(fields: [user_id], references: [id])
-  date       DateTime @db.Date                      // local-midnight §3
-  mood_index Int?                                   // 0–4 nullable
+  date       DateTime @db.Date
+  mood_index Int?
   intention  String?
   reflection String?
-  updated_at DateTime @updatedAt @default(now())     // sync cursor §4.6
-  @@unique([user_id, date])                         // asymmetric merge §2.7
+  updated_at DateTime @updatedAt @default(now())
+  @@unique([user_id, date])
   @@map("mood_entries")
 }
 
 model StudyTag {
-  id      String @id @default(uuid())
-  user_id String
-  user    User   @relation(fields: [user_id], references: [id])
-  label   String
-  color   String
-  updated_at DateTime @updatedAt @default(now())     // sync cursor §4.6
-  @@unique([user_id, label])                        // case-insensitive dedup enforced in code §2.8
+  id         String   @id @default(uuid())
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id])
+  label      String
+  color      String
+  updated_at DateTime @updatedAt @default(now())
+  @@unique([user_id, label])
   @@map("study_tags")
 }
 
-model ActivityEvent {                                // append-only ledger §4.7
-  id       String   @id @default(uuid())
-  user_id  String
-  user     User     @relation(fields: [user_id], references: [id])
-  source   String                                   // task_completion | mood_log
-  ref_id   String
-  event_date DateTime @db.Date                       // derived from server time + tz §4.7
+model ActivityEvent {
+  id         String   @id @default(uuid())
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id])
+  source     String
+  ref_id     String
+  event_date DateTime @db.Date
   created_at DateTime @default(now())
-  @@unique([user_id, source, ref_id])               // idempotent re-sync §4.7
+  @@unique([user_id, source, ref_id])
   @@map("activity_events")
 }
 
-// ---------------- Focus (§2.4) ----------------
 model FocusSession {
-  id            String   @id @default(uuid())
-  user_id       String
-  user          User     @relation(fields: [user_id], references: [id])
-  planned_min   Int      @default(25)
-  elapsed_sec   Int      @default(0)
-  status        String   @default("RUNNING")        // RUNNING|PAUSED|COMPLETE
-  prism_mode    String?
-  task_id       String?
-  task_date     DateTime? @db.Date
-  mood_index    Int?
-  created_at    DateTime @default(now())
+  id           String    @id @default(uuid())
+  user_id      String
+  user         User      @relation(fields: [user_id], references: [id])
+  planned_min  Int       @default(25)
+  elapsed_sec  Int       @default(0)
+  status       String    @default("RUNNING")
+  prism_mode   String?
+  task_id      String?
+  task_date    DateTime? @db.Date
+  mood_index   Int?
+  created_at   DateTime  @default(now())
   @@map("focus_sessions")
 }
 
-// ---------------- Ada / AI (§2.5) ----------------
 model AdaConversation {
-  id             String   @id @default(uuid())
-  user_id        String
-  user           User     @relation(fields: [user_id], references: [id])
-  title          String?
-  is_active      Boolean  @default(true)
-  created_at     DateTime @default(now())
-  last_message_at DateTime @default(now())
-  messages       AdaMessage[]
+  id              String       @id @default(uuid())
+  user_id         String
+  user            User         @relation(fields: [user_id], references: [id])
+  title           String?
+  is_active       Boolean      @default(true)
+  created_at      DateTime     @default(now())
+  last_message_at DateTime     @default(now())
+  messages        AdaMessage[]
   @@map("ada_conversations")
 }
 
 model AdaMessage {
-  id              String   @id @default(uuid())
+  id              String          @id @default(uuid())
   conversation_id String
   conversation    AdaConversation @relation(fields: [conversation_id], references: [id])
   is_user         Boolean
   text            String?
-  plan            Json?                              // AdaPlanDay[] §3
+  plan            Json?
   plan_footer     String?
-  created_at      DateTime @default(now())
+  attachments     Json?
+  created_at      DateTime        @default(now())
   @@map("ada_messages")
 }
 
-// ---------------- Notifications (§2.9) ----------------
 model Device {
-  id             String   @id @default(uuid())
+  id             String            @id @default(uuid())
   user_id        String
-  user           User     @relation(fields: [user_id], references: [id])
+  user           User              @relation(fields: [user_id], references: [id])
   push_token     String
-  platform       String                              // ios | android
-  token_provider String                              // apns | fcm
-  timezone       String                              // IANA, stored server-side §4.5
-  permission     String   @default("granted")
+  platform       String
+  token_provider String
+  timezone       String
+  permission     String            @default("granted")
   revoked_at     DateTime?
   logs           NotificationLog[]
   @@map("devices")
@@ -289,7 +341,7 @@ model NotificationLog {
   id              String   @id @default(uuid())
   device_id       String
   device          Device   @relation(fields: [device_id], references: [id])
-  idempotency_key String   @unique                   // the dedup guarantee §4.5
+  idempotency_key String   @unique
   channel_key     String
   status          String   @default("queued")
   read_at         DateTime?
@@ -297,27 +349,25 @@ model NotificationLog {
   @@map("notification_logs")
 }
 
-// ---------------- Referrals (§2.10) ----------------
 model Referral {
-  code          String @id                            // UNIQUE code
-  owner_user_id String @unique
+  code          String   @id
+  owner_user_id String   @unique
   created_at    DateTime @default(now())
   @@map("referrals")
 }
 
-// ---------------- Settings & preferences (§2.8/§2.9) ----------------
 model SettingsPrefs {
   user_id                   String   @id
   user                      User     @relation(fields: [user_id], references: [id])
-  theme_mode                String   @default("system")  // light|dark|system
+  theme_mode                String   @default("system")
   prism_default_mode        String?
-  notification_sound        String   @default("Chime")   // Chime|Pulse|Glass|Drop|None §3
-  notification_time         String   @default("07:00")    // local wall-clock HH:MM
+  notification_sound        String   @default("Chime")
+  notification_time         String   @default("07:00")
   notification_time_morning String   @default("08:00")
   notification_time_review  String   @default("20:00")
-  daily_focus_goal_min      Int      @default(120)        // onboarding focus goal §2.1
-  work_best_times           Json?                          // onboarding work-best-times §2.1
-  education_level           String?                        // onboarding §2.1
+  daily_focus_goal_min      Int      @default(120)
+  work_best_times           Json?
+  education_level           String?
   updated_at                DateTime @updatedAt @default(now())
   @@map("settings_prefs")
 }
@@ -337,9 +387,9 @@ model NotificationChannelPref {
   id          String   @id @default(uuid())
   user_id     String
   user        User     @relation(fields: [user_id], references: [id])
-  channel_key String                                  // task_before|task_start|task_halfway|task_finished|morning|review|state_of_mind|motivational|product §2.9
+  channel_key String
   enabled     Boolean  @default(true)
-  send_time   String?                                  // local HH:MM for time-based channels
+  send_time   String?
   updated_at  DateTime @updatedAt @default(now())
   @@unique([user_id, channel_key])
   @@map("notification_channel_prefs")

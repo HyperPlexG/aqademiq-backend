@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, UnprocessableEntityException } from '@ne
 import { PrismaService } from '../../infra/prisma.service';
 import { RequestContext } from '../../common/request-context';
 import { occursOn, toUtcDate, ymd } from '../tasks/occurs-on';
-import { CreateSubjectDto, UpdateSubjectDto } from './dto/subjects.dto';
+import { CreateSubjectDto, UpdateSubjectDto, ReorderSubjectsDto } from './dto/subjects.dto';
 
 const MS_PER_DAY = 86_400_000;
 const LABEL_HORIZON_DAYS = 90;
@@ -29,7 +29,7 @@ export class SubjectsService {
     const subjects = await this.prisma.tenant.subject.findMany({
       where: { deleted_at: null, ...(semesterId ? { semester_id: semesterId } : {}) },
       include: { files: { where: { deleted_at: null } } },
-      orderBy: { name: 'asc' },
+      orderBy: [{ sort_order: 'asc' }, { name: 'asc' }],
     });
     const ids = subjects.map((s) => s.id);
     const series = ids.length
@@ -52,6 +52,7 @@ export class SubjectsService {
 
   async create(dto: CreateSubjectDto) {
     const semesterId = await this.resolveSemester(dto.semester_id);
+    const sortOrder = await this.prisma.tenant.subject.count({ where: { deleted_at: null } });
     const created = await this.prisma.tenant.subject.create({
       // user_id injected by the tenant extension at runtime.
       data: {
@@ -60,6 +61,7 @@ export class SubjectsService {
         color_hex: dto.color_hex,
         code: dto.code ?? null,
         credits: dto.credits ?? null,
+        sort_order: sortOrder,
         ...(dto.prof !== undefined ? { prof: dto.prof } : {}),
         ...(dto.target_grade !== undefined ? { target_grade: dto.target_grade } : {}),
         ...(dto.mood !== undefined ? { mood: dto.mood } : {}),
@@ -67,6 +69,23 @@ export class SubjectsService {
       include: { files: { where: { deleted_at: null } } },
     });
     return this.dto(created, []);
+  }
+
+  /** PATCH /subjects/reorder — subj-sort. Re-numbers sort_order to match the
+   *  given order; rejects if any id is unknown or not owned by the caller. */
+  async reorder(dto: ReorderSubjectsDto) {
+    const owned = await this.prisma.tenant.subject.findMany({
+      where: { id: { in: dto.ids }, deleted_at: null },
+      select: { id: true },
+    });
+    const ownedIds = new Set(owned.map((s) => s.id));
+    const missing = dto.ids.filter((id) => !ownedIds.has(id));
+    if (missing.length) throw new UnprocessableEntityException(`Unknown subject ids: ${missing.join(', ')}`);
+
+    await this.prisma.$transaction(
+      dto.ids.map((id, index) => this.prisma.subject.update({ where: { id }, data: { sort_order: index } })),
+    );
+    return this.list();
   }
 
   async update(id: string, dto: UpdateSubjectDto) {
@@ -128,15 +147,8 @@ export class SubjectsService {
       if (!sem) throw new UnprocessableEntityException('Unknown semester_id');
       return sem.id;
     }
-    const user = await this.prisma.user.findUnique({
-      where: { id: this.rc.userId },
-      select: { active_semester_id: true },
-    });
-    const activeId = user?.active_semester_id ?? null;
-    if (activeId) {
-      const ok = await this.prisma.tenant.semester.findFirst({ where: { id: activeId, deleted_at: null } });
-      if (ok) return ok.id;
-    }
+    const active = await this.prisma.tenant.semester.findFirst({ where: { is_current: true, deleted_at: null } });
+    if (active) return active.id;
     const any = await this.prisma.tenant.semester.findFirst({ where: { deleted_at: null }, orderBy: { start: 'desc' } });
     if (any) return any.id;
     // First-run resilience: a guest who adds a subject without onboarding has no
@@ -150,9 +162,8 @@ export class SubjectsService {
     const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 6, 1));
     const sem = await this.prisma.tenant.semester.create({
       // user_id injected by the tenant extension at runtime.
-      data: { name: 'My Semester', start, end } as any,
+      data: { name: 'My Semester', start, end, is_current: true } as any,
     });
-    await this.prisma.user.update({ where: { id: this.rc.userId }, data: { active_semester_id: sem.id } });
     return sem.id;
   }
 
@@ -196,6 +207,7 @@ export class SubjectsService {
       target_grade: subject.target_grade,
       mood: subject.mood,
       files_count: subject.files_count,
+      sort_order: subject.sort_order,
       next_label,
       focus_label,
       files: (subject.files ?? []).map((f: any) => ({
