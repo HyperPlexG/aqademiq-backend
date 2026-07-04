@@ -9,10 +9,12 @@ services:
     container_name: aqademiq-postgres
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: dev
-      POSTGRES_DB: aqademiq
+      # Must be the DECODED form of the password in .env DATABASE_URL (%40 -> @).
+      POSTGRES_PASSWORD: "R13Labz@aqademiq"
+      POSTGRES_DB: postgres
     ports:
-      - "5432:5432"
+      # Host port 5434 to avoid clashing with the Cloud SQL Auth Proxy on 5432.
+      - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
