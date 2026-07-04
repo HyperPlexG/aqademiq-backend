@@ -4,11 +4,6 @@ import { PrismaService } from '../../infra/prisma.service';
 import { RequestContext } from '../../common/request-context';
 import { RedeemDto } from './dto/referrals.dto';
 
-/**
- * §2.10 — referral codes. Each user owns one shareable code (created on demand).
- * `redeem` records attribution intent; the full reward ledger is P2, so balance
- * is currently 0 (the endpoint is functional so the referral screen works).
- */
 @Injectable()
 export class ReferralsService {
   constructor(
@@ -18,34 +13,60 @@ export class ReferralsService {
 
   /** POST /referrals/redeem — attribute the current user to a code's owner. */
   async redeem(dto: RedeemDto) {
-    const referral = await this.prisma.referral.findUnique({ where: { code: dto.code.toUpperCase() } });
-    if (!referral) throw new UnprocessableEntityException('Invalid referral code');
-    if (referral.owner_user_id === this.rc.userId) {
+    const referralCode = await this.prisma.referralCode.findUnique({
+      where: { code: dto.code.toUpperCase() },
+    });
+    if (!referralCode) throw new UnprocessableEntityException('Invalid referral code');
+    if (referralCode.user_id === this.rc.userId) {
       throw new BadRequestException('You cannot redeem your own code');
     }
-    // TODO(§2.10 P2): persist ReferralRedemption + credit the reward ledger.
-    return { status: 'redeemed', referrer_user_id: referral.owner_user_id };
+
+    const existingRedemption = await this.prisma.referralRedemption.findUnique({
+      where: { referred_user_id: this.rc.userId },
+    });
+    if (existingRedemption) {
+      throw new BadRequestException('You have already redeemed a referral code');
+    }
+
+    await this.prisma.referralRedemption.create({
+      data: {
+        referral_code_id: referralCode.id,
+        referred_user_id: this.rc.userId,
+      },
+    });
+
+    return { status: 'redeemed', referrer_user_id: referralCode.user_id };
   }
 
-  /** GET /referrals/rewards/balance — the user's own code + (P2) reward balance. */
+  /** GET /referrals/rewards/balance — the user's own code + reward balance. */
   async rewardBalance() {
     const code = await this.ensureCode();
-    return { code, balance: 0, redemptions: 0 };
+    const referralCode = await this.prisma.referralCode.findUnique({
+      where: { user_id: this.rc.userId },
+      include: { redemptions: true },
+    });
+    const redemptionsCount = referralCode?.redemptions.length ?? 0;
+    return { code, balance: redemptionsCount * 10, redemptions: redemptionsCount };
   }
 
   // ---- internals ---------------------------------------------------------
 
   private async ensureCode(): Promise<string> {
-    const existing = await this.prisma.referral.findUnique({ where: { owner_user_id: this.rc.userId } });
+    const existing = await this.prisma.referralCode.findUnique({
+      where: { user_id: this.rc.userId },
+    });
     if (existing) return existing.code;
-    // Generate a short unique code; retry on the rare collision.
     for (let i = 0; i < 5; i++) {
       const code = crypto.randomBytes(4).toString('hex').toUpperCase(); // 8 chars
       try {
-        const created = await this.prisma.referral.create({ data: { code, owner_user_id: this.rc.userId } });
+        const created = await this.prisma.referralCode.create({
+          data: { code, user_id: this.rc.userId },
+        });
         return created.code;
       } catch {
-        const now = await this.prisma.referral.findUnique({ where: { owner_user_id: this.rc.userId } });
+        const now = await this.prisma.referralCode.findUnique({
+          where: { user_id: this.rc.userId },
+        });
         if (now) return now.code;
       }
     }

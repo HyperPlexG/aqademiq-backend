@@ -6,14 +6,6 @@ import { CompleteOnboardingDto } from './dto/onboarding.dto';
 
 const DEFAULT_PALETTE = ['#4F8DFD', '#7C5CFC', '#FF5C7C', '#FFA53C', '#34C759', '#00B8D9', '#8E8E93', '#FF6633'];
 
-/**
- * §2.1 — atomic, idempotent onboarding completion. Creates profile + semester +
- * subjects + settings in a single transaction. Idempotent: if the user already
- * has subjects, it returns the current state without duplicating (pair with an
- * Idempotency-Key header for retry-safe replay).
- *
- * TODO(§2.5): trigger the initial Ada plan (async) once Vertex AI is wired.
- */
 @Injectable()
 export class OnboardingService {
   constructor(
@@ -25,9 +17,8 @@ export class OnboardingService {
   async complete(dto: CompleteOnboardingDto) {
     const userId = this.rc.userId;
 
-    // Idempotency: already onboarded (has a non-deleted subject) → return state.
-    const existingSubject = await this.prisma.subject.findFirst({ where: { user_id: userId, deleted_at: null } });
-    if (existingSubject) {
+    const existingCourse = await this.prisma.course.findFirst({ where: { user_id: userId } });
+    if (existingCourse) {
       return { ...(await this.summary(userId)), status: 'already_completed' };
     }
 
@@ -35,92 +26,115 @@ export class OnboardingService {
 
     await this.prisma.$transaction(async (tx) => {
       if (dto.name !== undefined) {
-        await tx.userProfile.upsert({
-          where: { user_id: userId },
-          create: { user_id: userId, name: dto.name },
-          update: { name: dto.name },
+        await tx.user.update({
+          where: { id: userId },
+          data: { full_name: dto.name, display_name: dto.name, onboarding_complete: true },
+        });
+      } else {
+        await tx.user.update({
+          where: { id: userId },
+          data: { onboarding_complete: true },
         });
       }
 
-      const semester = await tx.semester.create({
-        data: { user_id: userId, name: sem.name, start: this.date(sem.start), end: this.date(sem.end), is_current: true },
+      await tx.userProfile.upsert({
+        where: { user_id: userId },
+        create: {
+          user_id: userId,
+          study_level: dto.education_level ?? null,
+          daily_focus_goal_mins: dto.daily_focus_goal_min ?? 60,
+          onboarding_completed_at: new Date(),
+        },
+        update: {
+          study_level: dto.education_level ?? undefined,
+          daily_focus_goal_mins: dto.daily_focus_goal_min ?? undefined,
+          onboarding_completed_at: new Date(),
+        },
+      });
+
+      const term = await tx.academicTerm.create({
+        data: {
+          user_id: userId,
+          name: sem.name,
+          start_date: this.date(sem.start),
+          end_date: this.date(sem.end),
+          is_current: true,
+        },
       });
 
       const subjects = dto.subjects ?? [];
       for (let i = 0; i < subjects.length; i++) {
         const s = subjects[i];
-        const subject = await tx.subject.create({
+        const course = await tx.course.create({
           data: {
             user_id: userId,
-            semester_id: semester.id,
+            term_id: term.id,
             name: s.name,
-            color_hex: s.color_hex ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+            color: s.color_hex ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
             sort_order: i,
-            ...(s.mood !== undefined ? { mood: s.mood } : {}),
+            subject_feeling: s.mood ?? 3,
+            professor: '',
+            grade_system: 'letter',
           },
         });
 
-        // ob3 — syllabus staged via `POST /uploads/staging/init` before this
-        // subject existed; attach it now that the subject has an id.
         if (s.syllabus_staging_key) {
-          await tx.subjectFile.create({
+          await tx.subjectMaterial.create({
             data: {
-              subject_id: subject.id,
-              name: s.syllabus_file_name ?? 'Syllabus',
-              kind: 'syllabus',
-              s3_key: s.syllabus_staging_key,
+              user_id: userId,
+              course_id: course.id,
+              file_name: s.syllabus_file_name ?? 'Syllabus',
+              material_type: 'syllabus',
+              file_url: s.syllabus_staging_key,
+              processing_status: 'ready',
               mime_type: s.syllabus_mime_type ?? null,
-              scan_status: 'clean',
             },
           });
-          await tx.subject.update({ where: { id: subject.id }, data: { files_count: { increment: 1 } } });
         }
       }
 
-      await tx.settingsPrefs.upsert({
+      await tx.userAppSettings.upsert({
+        where: { user_id: userId },
+        create: { user_id: userId, appearance: 'system' },
+        update: {},
+      });
+
+      await tx.notificationPreferences.upsert({
         where: { user_id: userId },
         create: {
           user_id: userId,
-          ...(dto.daily_focus_goal_min !== undefined ? { daily_focus_goal_min: dto.daily_focus_goal_min } : {}),
-          ...(dto.education_level !== undefined ? { education_level: dto.education_level } : {}),
-          ...(dto.work_best_times !== undefined ? { work_best_times: dto.work_best_times as object } : {}),
+          morning_checkin_time: this.dateTime('08:00'),
+          evening_review_time: this.dateTime('20:00'),
+          weekly_review_time: this.dateTime('15:00'),
         },
-        update: {
-          ...(dto.daily_focus_goal_min !== undefined ? { daily_focus_goal_min: dto.daily_focus_goal_min } : {}),
-          ...(dto.education_level !== undefined ? { education_level: dto.education_level } : {}),
-          ...(dto.work_best_times !== undefined ? { work_best_times: dto.work_best_times as object } : {}),
-        },
-      });
-
-      await tx.emailPreferences.upsert({
-        where: { user_id: userId },
-        create: { user_id: userId },
         update: {},
       });
     });
 
     await this.rev.bump(userId, 'onboarding');
-    // referral_code attribution is deferred to the referrals feature (§2.10 P2).
     return { ...(await this.summary(userId)), status: 'completed' };
   }
 
   private async summary(userId: string) {
-    const [profile, semesters, subjects, settings] = await Promise.all([
+    const [profile, terms, courses] = await Promise.all([
       this.prisma.userProfile.findUnique({ where: { user_id: userId } }),
-      this.prisma.semester.findMany({ where: { user_id: userId, deleted_at: null } }),
-      this.prisma.subject.findMany({ where: { user_id: userId, deleted_at: null } }),
-      this.prisma.settingsPrefs.findUnique({ where: { user_id: userId } }),
+      this.prisma.academicTerm.findMany({ where: { user_id: userId } }),
+      this.prisma.course.findMany({ where: { user_id: userId } }),
     ]);
     return {
-      profile_name: profile?.name ?? null,
-      semesters: semesters.length,
-      subjects: subjects.length,
-      daily_focus_goal_min: settings?.daily_focus_goal_min ?? null,
+      profile_name: profile ? 'User' : null,
+      semesters: terms.length,
+      subjects: courses.length,
+      daily_focus_goal_min: profile?.daily_focus_goal_mins ?? null,
     };
   }
 
   private date(ymd: string): Date {
     return new Date(`${ymd}T00:00:00.000Z`);
+  }
+
+  private dateTime(timeStr: string): Date {
+    return new Date(`1970-01-01T${timeStr}:00.000Z`);
   }
 
   private todayYmd(): string {

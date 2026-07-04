@@ -13,29 +13,16 @@ import { occursOn, parseOccurrenceId, toUtcDate, ymd, dayDiff } from './occurs-o
 import { CreateTaskDto, QueryTasksDto, PatchTaskDto, ToggleTaskDto, MoveTasksDto, BreakdownDto } from './dto/tasks.dto';
 
 const MS_PER_DAY = 86_400_000;
-const RANGE_CAP_DAYS = 366; // §4.2 horizon cap for open range queries
+const RANGE_CAP_DAYS = 366;
 const COMPLETIONS_TTL = 300;
 
-type OverrideRow = {
-  series_id: string;
-  occurrence_date: Date;
-  kind: string;
-  status: string | null;
-  scheduled_at: string | null;
-  moved_to_date: Date | null;
-};
+interface SeriesLike {
+  anchor_date: Date | string;
+  repeat_kind: string;
+  repeat_interval: number;
+  until_date?: Date | string | null;
+}
 
-/**
- * §2.2/§4.2 — the recurring-task engine. Series + RepeatRule are stored; daily
- * occurrences are materialized lazily via `occursOn` (pure, see occurs-on.ts).
- * Divergence lives in OccurrenceOverride keyed `(series_id, occurrence_date)`,
- * which is both a generation cache and a DELETED tombstone. Occurrence ids are
- * deterministic `{series_id}@{yyyy-MM-dd}`.
- *
- * Tenant scoping: TaskSeries/Subject go through `prisma.tenant.*` (auto user_id
- * filter). OccurrenceOverride/TaskStep are not tenant models, so every mutation
- * first verifies series ownership via `loadOwnedSeries`.
- */
 @Injectable()
 export class TasksService {
   constructor(
@@ -46,7 +33,7 @@ export class TasksService {
     private readonly claude: ClaudeService,
   ) {}
 
-  /** GET /tasks?date= | ?from=&to= — day / range materialization (§4.2). */
+  /** GET /tasks?date= | ?from=&to= */
   async query(q: QueryTasksDto) {
     let start: string;
     let end: string;
@@ -63,96 +50,161 @@ export class TasksService {
     return { tasks: await this.materializeRange(start, end) };
   }
 
-  /** POST /tasks — quick-add or full form. Validates subject_id (422 if unknown). */
+  /** POST /tasks */
   async create(dto: CreateTaskDto) {
     const db = this.prisma.tenant;
 
-    let subjectId = dto.subject_id;
-    if (subjectId) {
-      const subj = await db.subject.findFirst({ where: { id: subjectId, deleted_at: null } });
-      if (!subj) throw new UnprocessableEntityException('Unknown subject_id');
+    let courseId = dto.subject_id;
+    if (courseId) {
+      const course = await db.course.findFirst({ where: { id: courseId } });
+      if (!course) throw new UnprocessableEntityException('Unknown subject_id');
     } else {
-      const first = await db.subject.findFirst({ where: { deleted_at: null }, orderBy: { name: 'asc' } });
+      const first = await db.course.findFirst({ orderBy: { name: 'asc' } });
       if (!first) throw new UnprocessableEntityException('No subject available — create a subject first');
-      subjectId = first.id;
+      courseId = first.id;
     }
 
     const anchorStr = dto.date ?? (dto.scheduled_at ? ymd(dto.scheduled_at) : this.today());
-    const created = await db.taskSeries.create({
-      // user_id is injected by the tenant extension at runtime; cast satisfies
-      // the static type, which still expects it on the create input.
+    const repeatRule = dto.repeat ? {
+      repeat_kind: dto.repeat.kind,
+      repeat_interval: dto.repeat.interval ?? 1,
+      until_date: dto.until_date ? toUtcDate(dto.until_date) : null,
+    } : null;
+
+    const scheduledStart = dto.scheduled_at ? new Date(dto.scheduled_at) : this.parseTimeStr(anchorStr, null);
+    const estimatedMins = dto.duration_seconds ? Math.max(1, Math.round(dto.duration_seconds / 60)) : 5;
+
+    const created = await db.task.create({
       data: {
-        subject_id: subjectId,
+        course_id: courseId,
         title: dto.title,
-        duration_seconds: dto.duration_seconds ?? 300,
-        scheduled_at: dto.scheduled_at ?? null,
-        category: dto.category ?? null,
-        anchor_date: toUtcDate(anchorStr),
-        repeat_kind: dto.repeat?.kind ?? 'none',
-        repeat_interval: dto.repeat?.interval ?? 1,
-        until_date: dto.until_date ? toUtcDate(dto.until_date) : null,
+        estimated_duration_mins: estimatedMins,
+        scheduled_start_at: dto.scheduled_at ? scheduledStart : null,
+        scheduled_end_at: dto.scheduled_at ? new Date(scheduledStart.getTime() + estimatedMins * 60 * 1000) : null,
+        due_at: toUtcDate(anchorStr),
+        task_type: dto.category ?? 'general',
+        repeat_rule: repeatRule ? JSON.stringify(repeatRule) : null,
+        status: 'pending',
+        priority: 'medium',
       } as any,
     });
 
     await this.invalidateCompletions();
-    return this.occurrenceDto({ ...created, steps: [] }, anchorStr, null);
+    return this.occurrenceDto({ ...created, steps: [] }, anchorStr);
   }
 
-  /** PATCH /tasks/:occ — edit one occurrence (EDITED override). */
+  /** PATCH /tasks/:occ — edit one occurrence */
   async patch(occId: string, dto: PatchTaskDto) {
-    const { series, dateStr, existing } = await this.resolveOccurrence(occId, { requireExists: true });
-    const occurrence_date = toUtcDate(dateStr);
+    const { task, dateStr, isVirtual } = await this.resolveOccurrence(occId);
+    
+    const dbData: Record<string, any> = {};
+    if (dto.scheduled_at !== undefined) {
+      if (dto.scheduled_at) {
+        const start = new Date(dto.scheduled_at);
+        dbData.scheduled_start_at = start;
+        const mins = task.estimated_duration_mins ?? 5;
+        dbData.scheduled_end_at = new Date(start.getTime() + mins * 60 * 1000);
+      } else {
+        dbData.scheduled_start_at = null;
+        dbData.scheduled_end_at = null;
+      }
+    }
+    if (dto.status !== undefined) {
+      dbData.status = dto.status === 'COMPLETE' ? 'completed' : 'pending';
+      if (dbData.status === 'completed') {
+        dbData.completed_at = new Date();
+      } else {
+        dbData.completed_at = null;
+      }
+    }
 
-    const data: Record<string, unknown> = {};
-    if (dto.scheduled_at !== undefined) data.scheduled_at = dto.scheduled_at;
-    if (dto.status !== undefined) data.status = dto.status;
-    if (Object.keys(data).length === 0) return this.buildOne(series, dateStr);
+    if (isVirtual) {
+      // Materialize virtual task as a concrete instance override
+      const mins = task.estimated_duration_mins ?? 5;
+      const start = dbData.scheduled_start_at !== undefined ? dbData.scheduled_start_at : (task.scheduled_start_at ? this.parseTimeStr(dateStr, this.formatTime(task.scheduled_start_at)) : null);
+      const end = start ? new Date(start.getTime() + mins * 60 * 1000) : null;
+      const status = dbData.status !== undefined ? dbData.status : 'pending';
 
-    const kind = existing && existing.kind !== 'DONE' ? existing.kind : 'EDITED';
-    await this.prisma.occurrenceOverride.upsert({
-      where: { series_id_occurrence_date: { series_id: series.id, occurrence_date } },
-      create: { series_id: series.id, occurrence_date, kind, ...data },
-      update: { kind, ...data },
-    });
-    await this.invalidateCompletions();
-    return this.buildOne(series, dateStr);
+      const materialized = await this.prisma.task.create({
+        data: {
+          user_id: this.rc.userId,
+          course_id: task.course_id,
+          title: task.title,
+          parent_task_id: task.id,
+          estimated_duration_mins: mins,
+          scheduled_start_at: start,
+          scheduled_end_at: end,
+          due_at: toUtcDate(dateStr),
+          status,
+          priority: task.priority ?? 'medium',
+          task_type: task.task_type ?? 'general',
+          completed_at: status === 'completed' ? new Date() : null,
+        },
+      });
+
+      await this.invalidateCompletions();
+      return this.buildOne(materialized.id, dateStr);
+    } else {
+      const updated = await this.prisma.task.update({
+        where: { id: task.id },
+        data: dbData,
+      });
+      await this.invalidateCompletions();
+      return this.buildOne(updated.id, dateStr);
+    }
   }
 
-  /** PATCH /tasks/:occ/toggle — flip done on one occurrence; siblings unaffected. */
+  /** PATCH /tasks/:occ/toggle */
   async toggle(occId: string, _q: ToggleTaskDto) {
-    const { existing } = await this.resolveOccurrence(occId, { requireExists: true });
-    return this.setDone(occId, existing?.status !== 'COMPLETE');
+    const { task, isVirtual } = await this.resolveOccurrence(occId);
+    const nextDone = isVirtual ? true : task.status !== 'completed';
+    return this.setDone(occId, nextDone);
   }
 
-  /**
-   * Set one occurrence's done state idempotently, keeping the §4.7 activity
-   * ledger in sync (so completions feed the streak). Shared by toggle and the
-   * focus-session "task-done sync" (§2.4).
-   */
+  /** Set one occurrence's done state idempotently */
   async setDone(occId: string, done: boolean) {
-    const { series, dateStr, existing } = await this.resolveOccurrence(occId, { requireExists: true });
-    const next = done ? 'COMPLETE' : 'PENDING';
-    await this.writeStatus(series.id, dateStr, existing, next);
+    const { task, dateStr, isVirtual } = await this.resolveOccurrence(occId);
+    const status = done ? 'completed' : 'pending';
+    const completedAt = done ? new Date() : null;
 
-    // event_date is the occurrence's effective day (its moved-to date if moved).
-    const eventDate = existing?.moved_to_date ?? toUtcDate(dateStr);
-    if (next === 'COMPLETE') {
-      await this.prisma.activityEvent.upsert({
-        where: { user_id_source_ref_id: { user_id: this.rc.userId, source: 'task_completion', ref_id: occId } },
-        create: { user_id: this.rc.userId, source: 'task_completion', ref_id: occId, event_date: eventDate },
-        update: { event_date: eventDate },
+    let targetTask: any = task;
+    if (isVirtual) {
+      const mins = task.estimated_duration_mins ?? 5;
+      const start = task.scheduled_start_at ? this.parseTimeStr(dateStr, this.formatTime(task.scheduled_start_at)) : null;
+      const end = start ? new Date(start.getTime() + mins * 60 * 1000) : null;
+
+      targetTask = await this.prisma.task.create({
+        data: {
+          user_id: this.rc.userId,
+          course_id: task.course_id,
+          title: task.title,
+          parent_task_id: task.id,
+          estimated_duration_mins: mins,
+          scheduled_start_at: start,
+          scheduled_end_at: end,
+          due_at: toUtcDate(dateStr),
+          status,
+          priority: task.priority ?? 'medium',
+          task_type: task.task_type ?? 'general',
+          completed_at: completedAt,
+        },
       });
     } else {
-      await this.prisma.activityEvent.deleteMany({
-        where: { user_id: this.rc.userId, source: 'task_completion', ref_id: occId },
+      targetTask = await this.prisma.task.update({
+        where: { id: task.id },
+        data: { status, completed_at: completedAt },
       });
     }
+
+    const eventDate = targetTask.due_at ?? toUtcDate(dateStr);
+    await this.adjustActivitySnapshot(eventDate, done ? 1 : -1);
+
     await this.redis.client.del(`streaks:current:${this.rc.userId}`);
     await this.invalidateCompletions();
-    return this.buildOne(series, dateStr);
+    return this.buildOne(targetTask.id, dateStr);
   }
 
-  /** POST /tasks/move — move occurrences from→to (preserves wall-clock time). */
+  /** POST /tasks/move */
   async move(dto: MoveTasksDto) {
     let occIds = dto.ids;
     if (!occIds || occIds.length === 0) {
@@ -162,84 +214,171 @@ export class TasksService {
     const movedTo = toUtcDate(dto.to);
     let moved = 0;
     for (const occId of occIds) {
-      const parsed = parseOccurrenceId(occId);
-      if (!parsed) continue;
-      const series = await this.loadOwnedSeries(parsed.seriesId);
-      if (!series) continue;
-      const occurrence_date = toUtcDate(parsed.date);
-      const existing = await this.findOverride(parsed.seriesId, parsed.date);
-      if (existing?.kind === 'DELETED') continue;
-      await this.prisma.occurrenceOverride.upsert({
-        where: { series_id_occurrence_date: { series_id: parsed.seriesId, occurrence_date } },
-        create: { series_id: parsed.seriesId, occurrence_date, kind: 'MOVED', moved_to_date: movedTo },
-        update: { kind: 'MOVED', moved_to_date: movedTo },
-      });
+      const { task, dateStr, isVirtual } = await this.resolveOccurrence(occId).catch(() => ({ task: null, dateStr: '', isVirtual: false }));
+      if (!task || task.status === 'cancelled') continue;
+
+      if (isVirtual) {
+        const mins = task.estimated_duration_mins ?? 5;
+        const start = task.scheduled_start_at ? this.parseTimeStr(dto.to, this.formatTime(task.scheduled_start_at)) : null;
+        const end = start ? new Date(start.getTime() + mins * 60 * 1000) : null;
+
+        const materialized = await this.prisma.task.create({
+          data: {
+            user_id: this.rc.userId,
+            course_id: task.course_id,
+            title: task.title,
+            parent_task_id: task.id,
+            estimated_duration_mins: mins,
+            scheduled_start_at: start,
+            scheduled_end_at: end,
+            due_at: movedTo,
+            status: 'pending',
+            priority: task.priority ?? 'medium',
+            task_type: task.task_type ?? 'general',
+          },
+        });
+        
+        // Cancel the original occurrence slot so it doesn't render twice
+        await this.prisma.task.create({
+          data: {
+            user_id: this.rc.userId,
+            course_id: task.course_id,
+            title: task.title,
+            parent_task_id: task.id,
+            estimated_duration_mins: mins,
+            due_at: toUtcDate(dateStr),
+            status: 'cancelled',
+            priority: task.priority ?? 'medium',
+            task_type: task.task_type ?? 'general',
+          },
+        });
+      } else {
+        await this.prisma.task.update({
+          where: { id: task.id },
+          data: { due_at: movedTo },
+        });
+        // Log in rescheduled history
+        await this.prisma.taskRescheduleHistory.create({
+          data: {
+            task_id: task.id,
+            old_scheduled_start_at: task.scheduled_start_at,
+            old_scheduled_end_at: task.scheduled_end_at,
+            new_scheduled_start_at: movedTo,
+            new_scheduled_end_at: null,
+            reason: 'User moved task',
+            changed_by: 'user',
+          },
+        });
+      }
       moved++;
     }
-    // TODO(§4.5): cancel + re-enqueue reminder jobs for the moved occurrences.
     await this.invalidateCompletions();
     return { moved, from: dto.from, to: dto.to };
   }
 
-  /** DELETE /tasks/:occ — tombstone override; prevents regeneration forever (§4.2). */
+  /** DELETE /tasks/:occ */
   async remove(occId: string) {
-    const { series, dateStr } = await this.resolveOccurrence(occId, { requireExists: false });
-    const occurrence_date = toUtcDate(dateStr);
-    await this.prisma.occurrenceOverride.upsert({
-      where: { series_id_occurrence_date: { series_id: series.id, occurrence_date } },
-      create: { series_id: series.id, occurrence_date, kind: 'DELETED' },
-      update: { kind: 'DELETED', moved_to_date: null },
-    });
+    const { task, dateStr, isVirtual } = await this.resolveOccurrence(occId);
+    if (isVirtual) {
+      // Materialize as cancelled/tombstone
+      const mins = task.estimated_duration_mins ?? 5;
+      await this.prisma.task.create({
+        data: {
+          user_id: this.rc.userId,
+          course_id: task.course_id,
+          title: task.title,
+          parent_task_id: task.id,
+          estimated_duration_mins: mins,
+          due_at: toUtcDate(dateStr),
+          status: 'cancelled',
+          priority: task.priority ?? 'medium',
+          task_type: task.task_type ?? 'general',
+        },
+      });
+    } else {
+      await this.prisma.task.update({
+        where: { id: task.id },
+        data: { status: 'cancelled' },
+      });
+    }
     await this.invalidateCompletions();
     return { status: 'deleted', id: occId };
   }
 
-  /** POST /tasks/:occ/breakdown — Claude Haiku 4.5 structured microsteps when
-   *  configured, regex/template fallback otherwise (or on any LLM error). */
+  /** POST /tasks/:occ/breakdown */
   async breakdown(occId: string, _dto: BreakdownDto) {
-    const { series, dateStr } = await this.resolveOccurrence(occId, { requireExists: false });
-    const ts = Date.now();
-    const occurrence_date = toUtcDate(dateStr);
+    const { task, dateStr, isVirtual } = await this.resolveOccurrence(occId);
+    let targetTaskId = task.id;
 
+    if (isVirtual) {
+      // Materialize virtual task to attach steps
+      const mins = task.estimated_duration_mins ?? 5;
+      const start = task.scheduled_start_at ? this.parseTimeStr(dateStr, this.formatTime(task.scheduled_start_at)) : null;
+      const end = start ? new Date(start.getTime() + mins * 60 * 1000) : null;
+
+      const materialized = await this.prisma.task.create({
+        data: {
+          user_id: this.rc.userId,
+          course_id: task.course_id,
+          title: task.title,
+          parent_task_id: task.id,
+          estimated_duration_mins: mins,
+          scheduled_start_at: start,
+          scheduled_end_at: end,
+          due_at: toUtcDate(dateStr),
+          status: 'pending',
+          priority: task.priority ?? 'medium',
+          task_type: task.task_type ?? 'general',
+        },
+      });
+      targetTaskId = materialized.id;
+    }
+
+    const durationSeconds = (task.estimated_duration_mins ?? 5) * 60;
     let steps: Array<{ title: string; duration_seconds: number }>;
     if (this.claude.isConfigured()) {
       try {
-        steps = await this.claude.breakdownSteps(series.title, series.duration_seconds || 0);
+        steps = await this.claude.breakdownSteps(task.title, durationSeconds);
       } catch {
-        steps = this.fallbackStepRows(series.title, series.duration_seconds || 0);
+        steps = this.fallbackStepRows(task.title, durationSeconds);
       }
     } else {
-      steps = this.fallbackStepRows(series.title, series.duration_seconds || 0);
+      steps = this.fallbackStepRows(task.title, durationSeconds);
     }
 
     const rows = steps.map((s, i) => ({
-      id: `${occId}-bd${ts}-${i}`,
-      series_id: series.id,
-      occurrence_date,
+      task_id: targetTaskId,
       title: s.title,
-      duration_seconds: s.duration_seconds,
-      status: 'PENDING',
-      order_idx: i,
+      status: 'pending',
+      order_index: i,
     }));
+
     await this.prisma.taskStep.createMany({ data: rows });
-    return { steps: rows.map((s) => ({ id: s.id, title: s.title, duration_seconds: s.duration_seconds, status: s.status })) };
+    const createdSteps = await this.prisma.taskStep.findMany({ where: { task_id: targetTaskId } });
+
+    return {
+      steps: createdSteps.map((s) => ({
+        id: s.id,
+        title: s.title,
+        duration_seconds: 0,
+        status: s.status === 'completed' ? 'COMPLETE' : 'PENDING',
+      })),
+    };
   }
 
-  /** GET /tasks/history/completions — { 'yyyy-MM-dd': count } heatmap (cached). */
+  /** GET /tasks/history/completions */
   async completions() {
     const cacheKey = `tasks:completions:${this.rc.userId}`;
     const cached = await this.redis.client.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
-    const series = await this.prisma.tenant.taskSeries.findMany({
-      where: { deleted_at: null },
-      select: { overrides: { where: { status: 'COMPLETE' }, select: { occurrence_date: true, moved_to_date: true } } },
+    const snapshots = await this.prisma.tenant.dailyActivitySnapshot.findMany({
+      select: { activity_date: true, tasks_completed: true },
     });
     const counts: Record<string, number> = {};
-    for (const s of series) {
-      for (const ov of s.overrides) {
-        const d = ymd(ov.moved_to_date ?? ov.occurrence_date);
-        counts[d] = (counts[d] ?? 0) + 1;
+    for (const s of snapshots) {
+      if (s.tasks_completed > 0) {
+        counts[ymd(s.activity_date)] = s.tasks_completed;
       }
     }
     await this.redis.client.set(cacheKey, JSON.stringify(counts), 'EX', COMPLETIONS_TTL);
@@ -248,131 +387,156 @@ export class TasksService {
 
   // ---- internals ---------------------------------------------------------
 
-  /** Materialize every occurrence in [start, end] inclusive, applying overrides. */
   private async materializeRange(start: string, end: string) {
     const startD = toUtcDate(start);
     const endD = toUtcDate(end);
-    const series = await this.prisma.tenant.taskSeries.findMany({
+
+    const allTasks = await this.prisma.tenant.task.findMany({
       where: {
-        deleted_at: null,
         OR: [
-          { AND: [{ anchor_date: { lte: endD } }, { OR: [{ until_date: null }, { until_date: { gte: startD } }] }] },
-          { overrides: { some: { moved_to_date: { gte: startD, lte: endD } } } },
+          // One-offs or template tasks
+          { parent_task_id: null },
+          // Concrete override tasks in range
+          {
+            parent_task_id: { not: null },
+            due_at: { gte: startD, lte: endD },
+          },
         ],
       },
-      include: {
-        steps: true,
-        overrides: {
-          where: {
-            OR: [{ occurrence_date: { gte: startD, lte: endD } }, { moved_to_date: { gte: startD, lte: endD } }],
-          },
-        },
-      },
+      include: { steps: true },
     });
+
+    const concreteTasks = allTasks.filter((t) => !t.repeat_rule && t.parent_task_id === null);
+    const templateTasks = allTasks.filter((t) => !!t.repeat_rule && t.parent_task_id === null);
+    const overrideTasks = allTasks.filter((t) => t.parent_task_id !== null);
 
     const out = new Map<string, ReturnType<TasksService['occurrenceDto']>>();
     const spanDays = dayDiff(start, end);
+
     for (let i = 0; i <= spanDays; i++) {
       const dStr = ymd(new Date(startD.getTime() + i * MS_PER_DAY));
-      for (const s of series) {
-        const ovDay = (s.overrides as OverrideRow[]).find((o) => ymd(o.occurrence_date) === dStr);
+      const currentDay = toUtcDate(dStr);
 
-        // (a) natural occurrence on this day, unless tombstoned or moved away.
-        if (occursOn(s, dStr)) {
-          const movedAway = ovDay?.kind === 'MOVED' && ovDay.moved_to_date && ymd(ovDay.moved_to_date) !== dStr;
-          if (ovDay?.kind !== 'DELETED' && !movedAway) {
-            const dto = this.occurrenceDto(s, dStr, ovDay ?? null);
+      // 1. Process concrete one-off tasks scheduled/due today
+      for (const t of concreteTasks) {
+        const matchesDate = (t.due_at && ymd(t.due_at) === dStr) || (t.scheduled_start_at && ymd(t.scheduled_start_at) === dStr);
+        if (matchesDate && t.status !== 'cancelled') {
+          const dto = this.occurrenceDto(t, dStr);
+          out.set(dto.id, dto);
+        }
+      }
+
+      // 2. Process template recurrences
+      for (const t of templateTasks) {
+        const series = this.getSeriesLike(t);
+        if (occursOn(series, dStr)) {
+          // Check if there is an override row for this template on this date
+          const override = overrideTasks.find((o) => o.parent_task_id === t.id && o.due_at && ymd(o.due_at) === dStr);
+          if (override) {
+            if (override.status !== 'cancelled') {
+              const dto = this.occurrenceDto(override, dStr);
+              out.set(dto.id, dto);
+            }
+          } else {
+            // Render virtual occurrence
+            const dto = this.occurrenceDto(t, dStr);
             out.set(dto.id, dto);
           }
         }
+      }
 
-        // (b) occurrences moved INTO this day (rendered under their stable id).
-        for (const ov of s.overrides as OverrideRow[]) {
-          if (ov.kind === 'MOVED' && ov.moved_to_date && ymd(ov.moved_to_date) === dStr) {
-            const dto = this.occurrenceDto(s, ymd(ov.occurrence_date), ov);
+      // 3. Process override tasks that were moved into today
+      for (const o of overrideTasks) {
+        if (o.due_at && ymd(o.due_at) === dStr && o.status !== 'cancelled') {
+          // If this override task matches today's date, render it
+          const parent = templateTasks.find((p) => p.id === o.parent_task_id);
+          if (parent) {
+            const dto = this.occurrenceDto(o, dStr);
             out.set(dto.id, dto);
           }
         }
       }
     }
+
     return [...out.values()];
   }
 
-  private occurrenceDto(series: any, occDateStr: string, override: OverrideRow | null) {
-    const status = override?.status === 'COMPLETE' ? 'COMPLETE' : 'PENDING';
-    const scheduled_at = override?.scheduled_at ?? series.scheduled_at ?? null;
-    const steps = (series.steps ?? [])
-      .filter((st: any) => st.occurrence_date == null || ymd(st.occurrence_date) === occDateStr)
-      .sort((a: any, b: any) => a.order_idx - b.order_idx)
-      .map((st: any) => ({ id: st.id, title: st.title, duration_seconds: st.duration_seconds, status: st.status }));
+  private occurrenceDto(task: any, dateStr: string) {
+    const repeatRule = typeof task.repeat_rule === 'string' ? JSON.parse(task.repeat_rule) : (task.repeat_rule ?? {});
+    const repeatKind = repeatRule?.repeat_kind ?? 'none';
+    const repeatInterval = repeatRule?.repeat_interval ?? 1;
+
+    const scheduled_at = task.scheduled_start_at ? this.formatTime(task.scheduled_start_at) : null;
+    const status = task.status === 'completed' ? 'COMPLETE' : 'PENDING';
+    const steps = (task.steps ?? [])
+      .sort((a: any, b: any) => a.order_index - b.order_index)
+      .map((st: any) => ({
+        id: st.id,
+        title: st.title,
+        duration_seconds: 0,
+        status: st.status === 'completed' ? 'COMPLETE' : 'PENDING',
+      }));
+
+    const isVirtual = task.parent_task_id === null && !!task.repeat_rule;
+    const stableId = isVirtual ? `${task.id}@${dateStr}` : task.id;
+
     return {
-      id: `${series.id}@${occDateStr}`,
-      title: series.title,
-      subject_id: series.subject_id,
-      duration_seconds: series.duration_seconds,
+      id: stableId,
+      title: task.title,
+      subject_id: task.course_id,
+      duration_seconds: (task.estimated_duration_mins ?? 5) * 60,
       scheduled_at,
       status,
-      category: series.category ?? null,
-      repeat: { kind: series.repeat_kind, interval: series.repeat_interval },
+      category: task.task_type ?? 'general',
+      repeat: { kind: repeatKind, interval: repeatInterval },
       steps,
     };
   }
 
-  /** Resolve an occurrence id to its owned series; optionally require the
-   *  occurrence to actually exist (occurs naturally or has a non-tombstone override). */
-  private async resolveOccurrence(occId: string, opts: { requireExists: boolean }) {
+  private async resolveOccurrence(occId: string) {
     const parsed = parseOccurrenceId(occId);
-    if (!parsed) throw new BadRequestException('Malformed occurrence id');
-    const series = await this.loadOwnedSeries(parsed.seriesId);
-    if (!series) throw new NotFoundException('Task not found');
-    const existing = await this.findOverride(parsed.seriesId, parsed.date);
-    if (existing?.kind === 'DELETED') throw new NotFoundException('Occurrence deleted');
-    if (opts.requireExists && !occursOn(series, parsed.date) && !existing) {
-      throw new NotFoundException('No such occurrence');
+    if (parsed) {
+      const task = await this.prisma.tenant.task.findUnique({
+        where: { id: parsed.seriesId },
+        include: { steps: true },
+      });
+      if (!task) throw new NotFoundException('Task template not found');
+      return { task, dateStr: parsed.date, isVirtual: true };
+    } else {
+      const task = await this.prisma.tenant.task.findUnique({
+        where: { id: occId },
+        include: { steps: true },
+      });
+      if (!task) throw new NotFoundException('Task not found');
+      return { task, dateStr: task.due_at ? ymd(task.due_at) : this.today(), isVirtual: false };
     }
-    return { series, dateStr: parsed.date, existing };
   }
 
-  private async writeStatus(seriesId: string, dateStr: string, existing: OverrideRow | null, status: string) {
-    const occurrence_date = toUtcDate(dateStr);
-    const keepDivergence = existing && (existing.scheduled_at || existing.moved_to_date);
-    if (status === 'PENDING' && !keepDivergence) {
-      if (existing) {
-        await this.prisma.occurrenceOverride.delete({
-          where: { series_id_occurrence_date: { series_id: seriesId, occurrence_date } },
-        });
-      }
-      return;
-    }
-    const kind = existing && existing.kind !== 'DONE' ? existing.kind : 'DONE';
-    await this.prisma.occurrenceOverride.upsert({
-      where: { series_id_occurrence_date: { series_id: seriesId, occurrence_date } },
-      create: { series_id: seriesId, occurrence_date, kind, status },
-      update: { kind, status },
+  private async buildOne(taskId: string, dateStr: string) {
+    const task = await this.prisma.tenant.task.findUnique({
+      where: { id: taskId },
+      include: { steps: true },
     });
+    if (!task) throw new NotFoundException('Task not found');
+    return this.occurrenceDto(task, dateStr);
   }
 
-  private async buildOne(series: any, occDateStr: string) {
-    const occurrence_date = toUtcDate(occDateStr);
-    const [ov, steps] = await Promise.all([
-      this.prisma.occurrenceOverride.findUnique({
-        where: { series_id_occurrence_date: { series_id: series.id, occurrence_date } },
-      }),
-      this.prisma.taskStep.findMany({
-        where: { series_id: series.id, OR: [{ occurrence_date }, { occurrence_date: null }] },
-      }),
-    ]);
-    return this.occurrenceDto({ ...series, steps }, occDateStr, ov as OverrideRow | null);
+  private getSeriesLike(task: any): SeriesLike {
+    const rule = typeof task.repeat_rule === 'string' ? JSON.parse(task.repeat_rule) : (task.repeat_rule ?? {});
+    return {
+      anchor_date: task.due_at ?? task.scheduled_start_at ?? task.created_at,
+      repeat_kind: rule.repeat_kind ?? 'none',
+      repeat_interval: rule.repeat_interval ?? 1,
+      until_date: rule.until_date ?? null,
+    };
   }
 
-  private loadOwnedSeries(seriesId: string) {
-    return this.prisma.tenant.taskSeries.findFirst({ where: { id: seriesId, deleted_at: null } });
-  }
-
-  private findOverride(seriesId: string, dateStr: string) {
-    return this.prisma.occurrenceOverride.findUnique({
-      where: { series_id_occurrence_date: { series_id: seriesId, occurrence_date: toUtcDate(dateStr) } },
-    }) as Promise<OverrideRow | null>;
+  private async adjustActivitySnapshot(date: Date, diff: number) {
+    await this.prisma.dailyActivitySnapshot.upsert({
+      where: { user_id_activity_date: { user_id: this.rc.userId, activity_date: date } },
+      create: { user_id: this.rc.userId, activity_date: date, tasks_completed: diff > 0 ? diff : 0 },
+      update: { tasks_completed: { increment: diff } },
+    });
   }
 
   private fallbackStepRows(title: string, totalSeconds: number): Array<{ title: string; duration_seconds: number }> {
@@ -382,8 +546,6 @@ export class TasksService {
     return titles.map((title) => ({ title, duration_seconds: per }));
   }
 
-  /** Called by every task mutation: drop the completions cache and bump the
-   *  per-user revision (advances the sync cursor + pushes a WS invalidation). */
   private async invalidateCompletions() {
     await this.redis.client.del(`tasks:completions:${this.rc.userId}`);
     await this.rev.bump(this.rc.userId, 'tasks');
@@ -391,5 +553,19 @@ export class TasksService {
 
   private today(): string {
     return ymd(new Date());
+  }
+
+  private parseTimeStr(dateStr: string, hhmm: string | null): Date {
+    const timeStr = hhmm ?? '00:00';
+    return new Date(`${dateStr}T${timeStr}:00.000Z`);
+  }
+
+  private formatTime(d: Date | null | undefined): string | null {
+    if (!d) return null;
+    try {
+      return d instanceof Date ? d.toISOString().slice(11, 16) : String(d).slice(11, 16);
+    } catch {
+      return null;
+    }
   }
 }

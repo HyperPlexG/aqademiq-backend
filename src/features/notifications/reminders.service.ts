@@ -10,16 +10,6 @@ interface DueReminder {
   body: string;
 }
 
-/**
- * §4.5 — per-tz reminder sweep. A cron tick resolves each active device's
- * **local wall-clock** time against the user's notification settings and
- * enqueues due reminders to the BullMQ `reminders` queue (the worker sends +
- * dedups). Cron is env-gated (REMINDERS_CRON=on) so it stays quiet in dev; the
- * sweep can also be triggered per-user for testing.
- *
- * Runs outside any request, so it uses raw `prisma.*` and iterates users
- * explicitly rather than the tenant extension.
- */
 @Injectable()
 export class RemindersService {
   constructor(
@@ -30,21 +20,21 @@ export class RemindersService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async cronSweep() {
-    if (process.env.REMINDERS_CRON !== 'on') return; // opt-in; off by default
+    if (process.env.REMINDERS_CRON !== 'on') return;
     await this.sweep();
   }
 
-  /** Sweep all devices (cron) or one user's (manual/test). `force` ignores the
-   *  time-of-day match and enqueues that channel for today (testing aid). */
   async sweep(userId?: string, force?: string) {
-    const devices = await this.prisma.device.findMany({
-      where: { revoked_at: null, ...(userId ? { user_id: userId } : {}) },
+    const devices = await this.prisma.deviceProfile.findMany({
+      where: userId ? { user_id: userId } : {},
     });
 
     let enqueued = 0;
     for (const d of devices) {
-      const { localDate, localHHMM } = this.localNow(d.timezone);
-      const settings = await this.prisma.settingsPrefs.findUnique({ where: { user_id: d.user_id } });
+      const u = await this.prisma.user.findUnique({ where: { id: d.user_id } });
+      const tz = u?.timezone ?? 'UTC';
+      const { localDate, localHHMM } = this.localNow(tz);
+      const settings = await this.prisma.notificationPreferences.findUnique({ where: { user_id: d.user_id } });
       const due = await this.computeDue(settings, localHHMM, force);
       for (const r of due) {
         const idempotencyKey = `${d.user_id}:${r.channel}:${localDate}`;
@@ -59,22 +49,33 @@ export class RemindersService {
     return { enqueued };
   }
 
-  /** Which reminder channels are due at this local time (§2.9 catalog subset). */
   private computeDue(settings: any, localHHMM: string, force?: string): DueReminder[] {
-    const morningAt = settings?.notification_time_morning ?? '08:00';
-    const reviewAt = settings?.notification_time_review ?? '20:00';
+    const formatTime = (t?: Date | null, def = '08:00') => {
+      if (!t) return def;
+      try {
+        return t instanceof Date ? t.toISOString().slice(11, 16) : String(t).slice(11, 16);
+      } catch {
+        return def;
+      }
+    };
+
+    const morningAt = formatTime(settings?.morning_checkin_time, '08:00');
+    const reviewAt = formatTime(settings?.evening_review_time, '20:00');
     const due: DueReminder[] = [];
 
-    if (force === 'morning' || localHHMM === morningAt) {
-      due.push({ channel: 'morning', title: 'Morning check-in', body: 'How are you feeling today? Set your intention 🎯' });
+    if (settings?.morning_checkin_enabled !== false) {
+      if (force === 'morning' || localHHMM === morningAt) {
+        due.push({ channel: 'morning', title: 'Morning check-in', body: 'How are you feeling today? Set your intention 🎯' });
+      }
     }
-    if (force === 'review' || localHHMM === reviewAt) {
-      due.push({ channel: 'review', title: 'Evening review', body: 'Take a moment to reflect on your day 🌙' });
+    if (settings?.evening_review_enabled !== false) {
+      if (force === 'review' || localHHMM === reviewAt) {
+        due.push({ channel: 'review', title: 'Evening review', body: 'Take a moment to reflect on your day 🌙' });
+      }
     }
     return due;
   }
 
-  /** Local date (yyyy-MM-dd) + HH:MM for an IANA timezone. */
   private localNow(tz: string): { localDate: string; localHHMM: string } {
     try {
       const parts = new Intl.DateTimeFormat('en-CA', {
@@ -95,7 +96,6 @@ export class RemindersService {
     }
   }
 
-  /** Manual trigger for the current user (test/debug). */
   triggerForCurrentUser(force?: string) {
     return this.sweep(this.rc.userId, force);
   }

@@ -5,14 +5,8 @@ import { StorageService } from '../../infra/storage.service';
 import { RequestContext } from '../../common/request-context';
 import { InitUploadDto, InitStagingUploadDto, PatchFileDto } from './dto/files.dto';
 
-const KINDS = ['syllabus', 'slides', 'notes', 'paper'];
+const KINDS = ['syllabus', 'lecture_slides', 'notes', 'past_papers', 'reading_list', 'other'];
 
-/**
- * §2.3/§4.4 — subject file lifecycle on GCS. 3-step upload: init (create row +
- * signed PUT) → client PUT → commit (mark clean, bump files_count, enqueue scan).
- * Downloads are owner-only signed URLs; foreign/deleted ids 404. Requires
- * GCS_USER_BUCKET — returns 501 when storage is unconfigured.
- */
 @Injectable()
 export class FilesService {
   constructor(
@@ -24,32 +18,30 @@ export class FilesService {
   /** POST /uploads/init — create the file row and return a signed PUT URL. */
   async initUpload(dto: InitUploadDto) {
     this.assertStorage();
-    const subject = await this.prisma.tenant.subject.findFirst({ where: { id: dto.subject_id, deleted_at: null } });
-    if (!subject) throw new NotFoundException('Subject not found');
+    const course = await this.prisma.tenant.course.findFirst({ where: { id: dto.subject_id } });
+    if (!course) throw new NotFoundException('Course not found');
 
-    const file = await this.prisma.subjectFile.create({
+    const materialType = this.mapKind(dto.kind);
+    const file = await this.prisma.subjectMaterial.create({
       data: {
-        subject_id: subject.id,
-        name: dto.name,
-        kind: this.normalizeKind(dto.kind),
+        user_id: this.rc.userId,
+        course_id: course.id,
+        material_type: materialType,
+        file_name: dto.name,
         mime_type: dto.mime_type ?? null,
-        size_bytes: dto.size_bytes ?? null,
-        scan_status: 'pending',
+        file_size_bytes: dto.size_bytes ? BigInt(dto.size_bytes) : null,
+        processing_status: 'uploaded',
+        metadata: { important: false },
       },
     });
-    const key = this.storage.buildKey(this.rc.userId, subject.id, file.id, dto.name);
-    await this.prisma.subjectFile.update({ where: { id: file.id }, data: { s3_key: key } });
+    const key = this.storage.buildKey(this.rc.userId, course.id, file.id, dto.name);
+    await this.prisma.subjectMaterial.update({ where: { id: file.id }, data: { file_url: key } });
     const uploadUrl = await this.storage.presignUpload(key, dto.mime_type ?? 'application/octet-stream');
 
     return { file_id: file.id, upload_url: uploadUrl, key };
   }
 
-  /** POST /uploads/staging/init — no subject yet (onboarding step 3). Returns
-   *  a signed PUT URL keyed by a fresh upload id; nothing is written to the
-   *  DB here since there's no owning subject to attach a row to yet. The
-   *  caller stashes `key`/`name`/`mime_type` and forwards them into
-   *  `POST /onboarding/complete`, which creates the real SubjectFile row once
-   *  the subject exists. */
+  /** POST /uploads/staging/init — staging upload */
   async initStagingUpload(dto: InitStagingUploadDto) {
     this.assertStorage();
     const uploadId = crypto.randomUUID();
@@ -58,41 +50,36 @@ export class FilesService {
     return { upload_id: uploadId, upload_url: uploadUrl, key, name: dto.name, mime_type: dto.mime_type ?? null };
   }
 
-  /** POST /uploads/:id/commit — finalize after the client PUT; bump files_count. */
+  /** POST /uploads/:id/commit — finalize after the client PUT. */
   async commitUpload(id: string) {
     this.assertStorage();
     const file = await this.ownedFile(id);
-    // TODO(§4.4): enqueue ClamAV scan; flip scan_status to clean on pass.
-    const updated = await this.prisma.subjectFile.update({
+    const updated = await this.prisma.subjectMaterial.update({
       where: { id: file.id },
-      data: { scan_status: 'clean' },
-    });
-    await this.prisma.subject.update({
-      where: { id: file.subject_id },
-      data: { files_count: { increment: 1 } },
+      data: { processing_status: 'ready' },
     });
     return this.dto(updated);
   }
 
-  /** DELETE /files/:id — soft-delete; decrement files_count. */
+  /** DELETE /files/:id — hard-delete. */
   async remove(id: string) {
     const file = await this.ownedFile(id);
-    await this.prisma.subjectFile.update({ where: { id: file.id }, data: { deleted_at: new Date() } });
-    await this.prisma.subject.update({
-      where: { id: file.subject_id },
-      data: { files_count: { decrement: 1 } },
-    });
+    await this.prisma.subjectMaterial.delete({ where: { id: file.id } });
     return { status: 'deleted', id };
   }
 
   /** PATCH /files/:id — star/important toggle or rename. */
   async patch(id: string, dto: PatchFileDto) {
     const file = await this.ownedFile(id);
-    const updated = await this.prisma.subjectFile.update({
+    const currentMeta = (file.metadata as any) ?? {};
+    const updated = await this.prisma.subjectMaterial.update({
       where: { id: file.id },
       data: {
-        ...(dto.important !== undefined ? { important: dto.important } : {}),
-        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.name !== undefined ? { file_name: dto.name } : {}),
+        metadata: {
+          ...currentMeta,
+          ...(dto.important !== undefined ? { important: dto.important } : {}),
+        },
       },
     });
     return this.dto(updated);
@@ -102,8 +89,8 @@ export class FilesService {
   async download(id: string) {
     this.assertStorage();
     const file = await this.ownedFile(id);
-    if (!file.s3_key) throw new NotFoundException('File has no stored object');
-    const url = await this.storage.presignDownload(file.s3_key);
+    if (!file.file_url) throw new NotFoundException('File has no stored object');
+    const url = await this.storage.presignDownload(file.file_url);
     return { url, expires_in: 300 };
   }
 
@@ -119,34 +106,49 @@ export class FilesService {
     }
   }
 
-  /** Load a non-deleted file and verify its subject belongs to the caller. */
+  /** Load a file and verify its course belongs to the caller. */
   private async ownedFile(id: string) {
-    const file = await this.prisma.subjectFile.findFirst({
-      where: { id, deleted_at: null },
-      include: { subject: true },
+    const file = await this.prisma.subjectMaterial.findFirst({
+      where: { id },
+      include: { course: true },
     });
-    if (!file || file.subject.user_id !== this.rc.userId || file.subject.deleted_at) {
+    if (!file || file.course.user_id !== this.rc.userId) {
       throw new NotFoundException('File not found');
     }
     return file;
   }
 
-  private normalizeKind(kind?: string): string {
+  private mapKind(kind?: string): string {
     const k = (kind ?? '').toLowerCase();
-    return KINDS.includes(k) ? k : 'notes';
+    const map: Record<string, string> = {
+      syllabus: 'syllabus',
+      slides: 'lecture_slides',
+      notes: 'notes',
+      paper: 'past_papers',
+    };
+    return map[k] ?? 'notes';
   }
 
   private dto(f: any) {
+    const important = (f.metadata as any)?.important ?? false;
+    const kindMap: Record<string, string> = {
+      syllabus: 'syllabus',
+      lecture_slides: 'slides',
+      notes: 'notes',
+      past_papers: 'paper',
+      reading_list: 'notes',
+      other: 'notes',
+    };
     return {
       id: f.id,
-      name: f.name,
-      kind: f.kind,
-      important: f.important,
+      name: f.file_name,
+      kind: kindMap[f.material_type] ?? 'notes',
+      important: important,
       mime_type: f.mime_type,
-      size_bytes: f.size_bytes,
-      scan_status: f.scan_status,
-      ocr_status: f.ocr_status,
-      created_at: f.created_at,
+      size_bytes: f.file_size_bytes ? Number(f.file_size_bytes) : null,
+      scan_status: f.processing_status === 'ready' ? 'clean' : 'pending',
+      ocr_status: 'none',
+      created_at: f.uploaded_at,
     };
   }
 }

@@ -15,69 +15,79 @@ export class DevicesService {
   /** POST /devices — register or re-register (idempotent on push_token). */
   async register(dto: RegisterDeviceDto) {
     this.assertValidTimezone(dto.timezone);
-    const existing = await this.prisma.tenant.device.findFirst({ where: { push_token: dto.push_token } });
+    
+    // Update user's timezone
+    await this.prisma.user.update({
+      where: { id: this.rc.userId },
+      data: { timezone: dto.timezone },
+    });
+
+    const existing = await this.prisma.tenant.deviceProfile.findFirst({ where: { push_token: dto.push_token } });
     if (existing) {
-      const updated = await this.prisma.device.update({
+      const updated = await this.prisma.deviceProfile.update({
         where: { id: existing.id },
         data: {
-          platform: dto.platform,
-          token_provider: dto.token_provider,
-          timezone: dto.timezone,
-          permission: dto.permission ?? existing.permission,
-          revoked_at: null,
+          device_type: dto.platform,
         },
       });
-      return this.dto(updated);
+      return this.dto(updated, dto.timezone);
     }
-    const created = await this.prisma.device.create({
+    const created = await this.prisma.deviceProfile.create({
       data: {
         user_id: this.rc.userId,
         push_token: dto.push_token,
-        platform: dto.platform,
-        token_provider: dto.token_provider,
-        timezone: dto.timezone,
-        permission: dto.permission ?? 'granted',
+        device_type: dto.platform,
       },
     });
-    return this.dto(created);
+    return this.dto(created, dto.timezone);
   }
 
   async update(id: string, dto: UpdateDeviceDto) {
-    await this.owned(id);
-    if (dto.timezone) this.assertValidTimezone(dto.timezone);
-    const updated = await this.prisma.device.update({
+    const existing = await this.owned(id);
+    let timezone: string = dto.timezone ?? 'UTC';
+    if (dto.timezone) {
+      this.assertValidTimezone(dto.timezone);
+      await this.prisma.user.update({
+        where: { id: this.rc.userId },
+        data: { timezone: dto.timezone },
+      });
+    } else {
+      const u = await this.prisma.user.findUnique({ where: { id: this.rc.userId } });
+      timezone = u?.timezone ?? 'UTC';
+    }
+    const updated = await this.prisma.deviceProfile.update({
       where: { id },
       data: {
         ...(dto.push_token !== undefined ? { push_token: dto.push_token } : {}),
-        ...(dto.timezone !== undefined ? { timezone: dto.timezone } : {}),
-        ...(dto.permission !== undefined ? { permission: dto.permission } : {}),
       },
     });
-    return this.dto(updated);
+    return this.dto(updated, timezone);
   }
 
   /** DELETE /devices/:id — revoke (soft) so delivery stops. */
   async remove(id: string) {
     await this.owned(id);
-    await this.prisma.device.update({ where: { id }, data: { revoked_at: new Date() } });
+    await this.prisma.deviceProfile.delete({ where: { id } });
     return { status: 'revoked', id };
   }
 
   /** POST /devices/:id/heartbeat — confirm alive; optional tz refresh on travel. */
   async heartbeat(id: string, dto: UpdateDeviceDto) {
     await this.owned(id);
-    if (dto.timezone) this.assertValidTimezone(dto.timezone);
-    await this.prisma.device.update({
-      where: { id },
-      data: { revoked_at: null, ...(dto.timezone ? { timezone: dto.timezone } : {}) },
-    });
+    if (dto.timezone) {
+      this.assertValidTimezone(dto.timezone);
+      await this.prisma.user.update({
+        where: { id: this.rc.userId },
+        data: { timezone: dto.timezone },
+      });
+    }
     return { status: 'ok', id };
   }
 
   // ---- internals ---------------------------------------------------------
 
   private async owned(id: string) {
-    const d = await this.prisma.tenant.device.findFirst({ where: { id } });
+    const d = await this.prisma.tenant.deviceProfile.findFirst({ where: { id } });
     if (!d) throw new NotFoundException('Device not found');
     return d;
   }
@@ -90,15 +100,15 @@ export class DevicesService {
     }
   }
 
-  private dto(d: any) {
+  private dto(d: any, timezone: string) {
     return {
       id: d.id,
       push_token: d.push_token,
-      platform: d.platform,
-      token_provider: d.token_provider,
-      timezone: d.timezone,
-      permission: d.permission,
-      revoked: d.revoked_at != null,
+      platform: d.device_type ?? 'ios',
+      token_provider: d.device_type === 'ios' ? 'apns' : 'fcm',
+      timezone: timezone,
+      permission: 'granted',
+      revoked: false,
     };
   }
 }

@@ -2,15 +2,8 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma.service';
 import { RequestContext } from '../../common/request-context';
 import { TasksService } from '../tasks/tasks.service';
-import { occurrenceId } from '../tasks/occurs-on';
 import { StartFocusDto, CheckpointFocusDto, CompleteFocusDto } from './dto/focus.dto';
 
-/**
- * §2.4 — focus (Pomodoro) sessions. Runs client-side, synced at checkpoints.
- * On complete, the linked task occurrence is atomically marked done (the P0
- * Focus→Plan "done sync"), routed through TasksService.setDone so it also feeds
- * the activity ledger / streak.
- */
 @Injectable()
 export class FocusService {
   constructor(
@@ -20,14 +13,19 @@ export class FocusService {
   ) {}
 
   async start(dto: StartFocusDto) {
+    let presetId: string | null = null;
+    if (dto.prism_mode) {
+      const preset = await this.prisma.prismPreset.findFirst({ where: { name: dto.prism_mode } });
+      presetId = preset?.id ?? null;
+    }
+
     const session = await this.prisma.focusSession.create({
       data: {
         user_id: this.rc.userId,
-        planned_min: dto.planned_min ?? 25,
-        prism_mode: dto.prism_mode ?? null,
+        planned_duration_mins: dto.planned_min ?? 25,
+        prism_preset_id: presetId,
         task_id: dto.task_id ?? null,
-        task_date: dto.task_date ? new Date(`${dto.task_date}T00:00:00.000Z`) : null,
-        status: 'RUNNING',
+        status: 'running',
       },
     });
     return this.dto(session);
@@ -35,36 +33,36 @@ export class FocusService {
 
   async checkpoint(id: string, dto: CheckpointFocusDto) {
     await this.owned(id);
+    const status = dto.status ? dto.status.toLowerCase() : undefined;
     const session = await this.prisma.focusSession.update({
       where: { id },
       data: {
-        ...(dto.elapsed_sec !== undefined ? { elapsed_sec: dto.elapsed_sec } : {}),
-        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        ...(dto.elapsed_sec !== undefined ? { actual_duration_mins: Math.floor(dto.elapsed_sec / 60) } : {}),
+        ...(status !== undefined ? { status: status } : {}),
       },
     });
     return this.dto(session);
   }
 
-  /** POST /:id/complete — mark COMPLETE, capture mood, and done-sync the task. */
+  /** POST /:id/complete */
   async complete(id: string, dto: CompleteFocusDto) {
     const existing = await this.owned(id);
     const session = await this.prisma.focusSession.update({
       where: { id },
       data: {
-        status: 'COMPLETE',
-        ...(dto.elapsed_sec !== undefined ? { elapsed_sec: dto.elapsed_sec } : {}),
-        ...(dto.mood_index !== undefined ? { mood_index: dto.mood_index } : {}),
+        status: 'completed',
+        was_completed: true,
+        ...(dto.elapsed_sec !== undefined ? { actual_duration_mins: Math.floor(dto.elapsed_sec / 60) } : {}),
+        ...(dto.mood_index !== undefined ? { mood_after: dto.mood_index } : {}),
       },
     });
 
-    // §2.4 P0 done-sync: if a task occurrence is linked, mark it complete.
     let linkedTask = null;
-    if (existing.task_id && existing.task_date) {
-      const occId = occurrenceId(existing.task_id, existing.task_date);
+    if (existing.task_id) {
       try {
-        linkedTask = await this.tasks.setDone(occId, true);
+        linkedTask = await this.tasks.setDone(existing.task_id, true);
       } catch {
-        // Linked occurrence may have been deleted/moved — don't fail completion.
+        // ignore errors
       }
     }
     return { ...this.dto(session), linked_task: linkedTask };
@@ -81,13 +79,13 @@ export class FocusService {
   private dto(s: any) {
     return {
       id: s.id,
-      planned_min: s.planned_min,
-      elapsed_sec: s.elapsed_sec,
-      status: s.status,
-      prism_mode: s.prism_mode,
+      planned_min: s.planned_duration_mins,
+      elapsed_sec: s.actual_duration_mins ? s.actual_duration_mins * 60 : 0,
+      status: (s.status ?? '').toUpperCase(),
+      prism_mode: s.prism_preset_id ? 'Preset' : null,
       task_id: s.task_id,
-      task_date: s.task_date ? s.task_date.toISOString().slice(0, 10) : null,
-      mood_index: s.mood_index,
+      task_date: null,
+      mood_index: s.mood_after,
       created_at: s.created_at,
     };
   }

@@ -158,7 +158,7 @@ export class TokenService implements OnModuleInit {
         user_id:            user.id,
         session_token_hash: '',          // filled in below after we know the id
         refresh_token_hash: this.hashSecret(secret),
-        ip_address:         info.ipAddress  ?? null,
+        ip_address:         info.ipAddress  ?? '127.0.0.1',
         user_agent:         info.userAgent  ?? null,
         status:             'active',
         login_at:           new Date(),

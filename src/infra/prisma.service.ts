@@ -3,8 +3,12 @@ import { PrismaClient } from '@prisma/client';
 import { RequestContext } from '../common/request-context';
 
 const TENANT_MODELS = new Set([
-  'User','UserProfile','Semester','Subject','SubjectFile','TaskSeries',
-  'MoodEntry','StudyTag','ActivityEvent','FocusSession','AdaConversation','Device',
+  'AuthIdentity', 'UserProfile', 'UserAppSettings', 'NotificationPreferences',
+  'StudyTag', 'CalendarConnection', 'DeviceProfile', 'UserSession', 'LoginAttempt',
+  'AcademicTerm', 'Course', 'SubjectMaterial', 'TaskTag', 'Task',
+  'PrismAudioProfile', 'FocusSession', 'MoodCheckin', 'AnalyticsSnapshot',
+  'DailyActivitySnapshot', 'AdaSession', 'CalendarEvent', 'ReferralCode',
+  'ShareEvent', 'AppRating', 'AppFeedback'
 ]);
 
 /** §3: application-level row scoping — every tenant query filtered by auth user.

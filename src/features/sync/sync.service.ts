@@ -8,16 +8,6 @@ import { SubjectsService } from '../subjects/subjects.service';
 const MS_PER_DAY = 86_400_000;
 const DEFAULT_WINDOW_DAYS = 14;
 
-/**
- * §4.6 — incremental delta sync. The cursor is the database clock (ms); each
- * collection returns rows whose `updated_at > since`, split into upserts and
- * tombstones (soft-deleted rows). Tasks are materialized occurrences, so the
- * day window is re-sent only when any series/override changed since the cursor.
- *
- * The WS revision stream (RevisionService) is the change *signal*; clients then
- * call this with their last cursor to pull the delta. `POST /mutations` remains
- * deferred — clients use per-feature endpoints with an Idempotency-Key header.
- */
 @Injectable()
 export class SyncService {
   constructor(
@@ -37,40 +27,61 @@ export class SyncService {
     const db = this.prisma.tenant;
     const userId = this.rc.userId;
 
-    // --- subjects (full DTO for upserts; ids for tombstones) ---
-    const subjectRows = await db.subject.findMany({ where: { updated_at: { gt: sinceDate } }, select: { id: true, deleted_at: true } });
-    const subjectUpserts = [];
-    const subjectTombstones: string[] = [];
-    for (const s of subjectRows) {
-      if (s.deleted_at) subjectTombstones.push(s.id);
-      else subjectUpserts.push(await this.subjects.get(s.id));
+    // --- courses ---
+    const courseRows = await db.course.findMany({
+      where: { updated_at: { gt: sinceDate } },
+      select: { id: true, is_archived: true },
+    });
+    const courseUpserts = [];
+    const courseTombstones: string[] = [];
+    for (const c of courseRows) {
+      if (c.is_archived) {
+        courseTombstones.push(c.id);
+      } else {
+        try {
+          courseUpserts.push(await this.subjects.get(c.id));
+        } catch {
+          courseTombstones.push(c.id);
+        }
+      }
     }
 
-    // --- semesters ---
+    // --- academic terms ---
     const activeId = (
-      await db.semester.findFirst({ where: { is_current: true }, select: { id: true } })
+      await db.academicTerm.findFirst({ where: { is_current: true }, select: { id: true } })
     )?.id ?? null;
-    const semesterRows = await db.semester.findMany({ where: { updated_at: { gt: sinceDate } } });
-    const semesterUpserts = semesterRows
-      .filter((s) => !s.deleted_at)
-      .map((s) => ({ id: s.id, name: s.name, start: this.ymdDate(s.start), end: this.ymdDate(s.end), is_active: s.id === activeId }));
-    const semesterTombstones = semesterRows.filter((s) => s.deleted_at).map((s) => s.id);
+    const termRows = await db.academicTerm.findMany({ where: { updated_at: { gt: sinceDate } } });
+    const semesterUpserts = termRows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      start: s.start_date ? this.ymdDate(s.start_date) : '',
+      end: s.end_date ? this.ymdDate(s.end_date) : '',
+      is_active: s.id === activeId,
+    }));
+    const semesterTombstones: string[] = [];
 
-    // --- tags (hard-deleted; no tombstone trail without a change log) ---
-    const tagRows = await db.studyTag.findMany({ where: { updated_at: { gt: sinceDate } } });
-    const tags = tagRows.map((t) => ({ id: t.id, label: t.label, color: t.color }));
+    // --- tags (using created_at since updated_at doesn't exist) ---
+    const tagRows = await db.studyTag.findMany({ where: { created_at: { gt: sinceDate } } });
+    const tags = tagRows.map((t) => ({ id: t.id, label: t.name, color: t.color }));
 
-    // --- mood ---
-    const moodRows = await db.moodEntry.findMany({ where: { updated_at: { gt: sinceDate } } });
-    const mood = moodRows.map((m) => ({ date: ymd(m.date), mood_index: m.mood_index, intention: m.intention, reflection: m.reflection }));
+    // --- mood checkins (using created_at) ---
+    const moodRows = await db.moodCheckin.findMany({ where: { created_at: { gt: sinceDate } } });
+    const mood = moodRows.map((m) => ({
+      date: ymd(m.checkin_date),
+      mood_index: m.mood_score - 1,
+      intention: m.checkin_type === 'morning' ? m.note : null,
+      reflection: m.checkin_type === 'evening' ? m.note : null,
+    }));
 
-    // --- tasks: re-send the window only if any series/override changed ---
-    const [seriesChanged, overrideChanged] = await Promise.all([
-      db.taskSeries.count({ where: { updated_at: { gt: sinceDate } } }),
-      this.prisma.occurrenceOverride.count({ where: { updated_at: { gt: sinceDate }, series: { user_id: userId } } }),
+    // --- tasks: check if tasks or history changed ---
+    const [tasksChanged, historyChanged] = await Promise.all([
+      db.task.count({ where: { updated_at: { gt: sinceDate } } }),
+      this.prisma.taskRescheduleHistory.count({
+        where: { created_at: { gt: sinceDate }, task: { user_id: userId } },
+      }),
     ]);
     let taskDelta: { window: { from: string; to: string }; items: unknown[] } | null = null;
-    if (seriesChanged > 0 || overrideChanged > 0) {
+    if (tasksChanged > 0 || historyChanged > 0) {
       const start = from ?? ymd(new Date());
       const end = to ?? ymd(new Date(Date.now() + (DEFAULT_WINDOW_DAYS - 1) * MS_PER_DAY));
       taskDelta = { window: { from: start, to: end }, items: (await this.tasks.query({ from: start, to: end })).tasks };
@@ -79,7 +90,7 @@ export class SyncService {
     return {
       cursor,
       changes: {
-        subjects: { upserts: subjectUpserts, tombstones: subjectTombstones },
+        subjects: { upserts: courseUpserts, tombstones: courseTombstones },
         semesters: { upserts: semesterUpserts, tombstones: semesterTombstones },
         tags: { upserts: tags },
         mood: { upserts: mood },

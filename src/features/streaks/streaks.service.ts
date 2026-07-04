@@ -7,14 +7,6 @@ import { toUtcDate, ymd } from '../tasks/occurs-on';
 const MS_PER_DAY = 86_400_000;
 const STREAK_TTL = 60;
 
-/**
- * §2.6/§4.7 — server-authoritative streaks. Computed from the append-only
- * ActivityEvent ledger (union of task_completion + mood_log days); the client
- * streak is never trusted. Streak = longest consecutive run of distinct
- * event_dates ending today (or yesterday if today is empty). Redis-cached.
- *
- * TODO(§4.7): nightly BullMQ recompute per tz bucket for at-risk nudges.
- */
 @Injectable()
 export class StreaksService {
   constructor(
@@ -39,13 +31,13 @@ export class StreaksService {
     return result;
   }
 
-  /** GET /activity-dates — sorted union of all active days. */
+  /** GET /activity-dates */
   async activityDates() {
     const dates = [...(await this.activeDateSet())].sort();
     return { dates };
   }
 
-  /** GET /week-count — active-day count within the ISO week of `date`. */
+  /** GET /week-count */
   async weekCount(dateStr?: string) {
     const ref = toUtcDate(dateStr ?? ymd(new Date()));
     const dow = ref.getUTCDay();
@@ -67,8 +59,8 @@ export class StreaksService {
   // ---- internals ---------------------------------------------------------
 
   private async activeDateSet(): Promise<Set<string>> {
-    const events = await this.prisma.tenant.activityEvent.findMany({ select: { event_date: true } });
-    return new Set(events.map((e) => ymd(e.event_date)));
+    const snapshots = await this.prisma.tenant.dailyActivitySnapshot.findMany({ select: { activity_date: true } });
+    return new Set(snapshots.map((s) => ymd(s.activity_date)));
   }
 
   /** Consecutive run ending today, or yesterday if today is empty. */
