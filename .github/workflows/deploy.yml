@@ -150,7 +150,7 @@ jobs:
             --port 8080 \
             --service-account "aqademiq-runner@$GCP_PROJECT.iam.gserviceaccount.com" \
             --add-cloudsql-instances "$CLOUD_SQL_CONNECTION" \
-            --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=$GCP_PROJECT,GCP_REGION=$GCP_REGION,REDIS_HOST=$REDIS_HOST,REDIS_PORT=$REDIS_PORT,JWT_PRIVATE_KEY_PATH=/secrets/private/jwt_private.pem,JWT_PUBLIC_KEY_PATH=/secrets/public/jwt_public.pem" \
+            --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=$GCP_PROJECT,GCP_REGION=$GCP_REGION,REDIS_HOST=$REDIS_HOST,REDIS_PORT=$REDIS_PORT,JWT_PRIVATE_KEY_PATH=/secrets/private/jwt_private.pem,JWT_PUBLIC_KEY_PATH=/secrets/public/jwt_public.pem,AI_PROVIDER=gemini_vertex,GEMINI_MODEL=gemini-2.5-flash,GEMINI_MODEL_FAST=gemini-2.5-flash,VERTEX_REGION=us-east5" \
             --set-secrets "DATABASE_URL=DATABASE_URL:latest,/secrets/private/jwt_private.pem=JWT_PRIVATE_PEM:latest,/secrets/public/jwt_public.pem=JWT_PUBLIC_PEM:latest"
           SERVICE_URL="$(gcloud run services describe "$CLOUD_RUN_SERVICE" --region "$GCP_REGION" --format='value(status.url)')"
           echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"

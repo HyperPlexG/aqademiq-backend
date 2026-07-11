@@ -18,7 +18,7 @@
   - **DB:** PostgreSQL via **Prisma 5** (`@prisma/client`)
   - **Cache/queue/pubsub:** Redis via `ioredis` + **BullMQ**
   - **Auth:** custom RS256 JWT via `jose`, passwords via `argon2`
-  - **AI:** Claude via Anthropic API or Vertex AI (`@anthropic-ai/sdk`, `@anthropic-ai/vertex-sdk`)
+  - **AI:** Gemini 2.5 Flash (Vertex AI or Google AI Studio), or legacy Claude via Anthropic API / Vertex Model Garden (`@google-cloud/vertexai`, `@google/generative-ai`, `@anthropic-ai/sdk`, `@anthropic-ai/vertex-sdk`)
   - **Storage:** Google Cloud Storage (`@google-cloud/storage`)
   - **Push:** FCM via `firebase-admin` (APNs stubbed)
   - **Realtime:** Socket.IO (`@nestjs/platform-socket.io`, `@nestjs/websockets`)
@@ -74,7 +74,7 @@ disk with `EMIT_OPENAPI=1 npm run start:dev` (writes `openapi.json`).
 | Postgres | `DATABASE_URL` | required |
 | Redis | `REDIS_HOST`, `REDIS_PORT`, `REDIS_AUTH_STRING`, `REDIS_CA_CERT_PATH` | required |
 | Auth | `JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH`, `ACCESS_TTL_SECONDS` (900), `REFRESH_TTL_DAYS` (60) | RS256 keys |
-| AI | `AI_PROVIDER`, `ANTHROPIC_API_KEY`, `GCP_PROJECT_ID`, `VERTEX_REGION`, `CLAUDE_OPUS_MODEL`, `CLAUDE_HAIKU_MODEL` | auto-detected if blank; optional |
+| AI | `AI_PROVIDER`, `GEMINI_MODEL`, `GEMINI_MODEL_FAST`, `GOOGLE_AI_API_KEY`, `ANTHROPIC_API_KEY`, `GCP_PROJECT_ID`, `VERTEX_REGION`, `CLAUDE_OPUS_MODEL`, `CLAUDE_HAIKU_MODEL` | `gemini_vertex` / `gemini_studio` / `anthropic` / `vertex` / `none`; auto-detected if blank |
 | Storage | `GCS_USER_BUCKET`, `GCS_PRISM_CDN_BUCKET` | optional (files return 501 if unset) |
 | SSO | `GOOGLE_OAUTH_CLIENT_IDS`, `APPLE_OAUTH_CLIENT_IDS` | comma-separated audiences |
 | Email | `EMAIL_PROVIDER_API_KEY`, `EMAIL_FROM` | |
@@ -129,7 +129,8 @@ keyed by a hash of the bearer token, not `userId`.
 |---|---|---|---|
 | PostgreSQL | Prisma | primary datastore | required |
 | Redis (Memorystore) | ioredis / BullMQ | cache, rate limit, JWT deny-list, idempotency, sync cursor, pub/sub, queues | required |
-| Claude (Anthropic API or Vertex) | SDKs | Ada chat, task breakdown, week planning | yes — `provider='none'` fallback |
+| Gemini (Vertex AI or Google AI Studio) | `@google-cloud/vertexai`, `@google/generative-ai` | Ada chat, task breakdown, week planning | yes — `provider='none'` fallback |
+| Claude (Anthropic API or Vertex Model Garden) | `@anthropic-ai/sdk`, `@anthropic-ai/vertex-sdk` | Ada chat, task breakdown, week planning (legacy) | yes — `provider='none'` fallback |
 | Google Cloud Storage | `@google-cloud/storage` | presigned file upload/download, Prism CDN | yes — 501 if bucket unset |
 | FCM | firebase-admin | push notifications | yes — no-op if unset |
 | Google/Apple OAuth | (verification in auth service) | SSO sign-in | optional |
@@ -153,7 +154,9 @@ keyed by a hash of the bearer token, not `userId`.
     refresh-reuse detection (revoked token replayed → kill all user sessions).
   - `redis.service.ts` — `RedisService`. Shared `ioredis` client with AUTH/TLS,
     reconnect strategy, and swallowed error events (features fail open).
-  - `claude.service.ts` — `ClaudeService`. Provider auto-detect
+  - `claude.service.ts` — `ClaudeService` (AI client). Provider auto-detect:
+    `gemini_vertex` / `gemini_studio` / `anthropic` / `vertex` / `none`.
+    Gemini responses are adapted to the Anthropic-shaped contract Ada expects.
     (`anthropic` | `vertex` | `none`). `createMessage()` for Ada (Opus),
     `breakdownSteps()` for task microsteps via a forced Haiku tool call.
   - `storage.service.ts` — `StorageService`. GCS v4 presigned upload/download

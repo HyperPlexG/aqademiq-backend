@@ -467,7 +467,11 @@ preset `avatar_index` (0–7). See §12 Profile.
   conversation and grounds itself using read-only tools (`list_subjects`,
   `list_day_tasks`). The client only sends `text` (+ optional `attachments`);
   there is no client-supplied context parameter.
-- **AI not configured** (no `ANTHROPIC_API_KEY`/`GCP_PROJECT_ID`): messages are
+- **AI provider:** `AI_PROVIDER=gemini_vertex` (Vertex AI, prod default) or
+  `gemini_studio` (Google AI Studio API key). Legacy Claude providers
+  (`anthropic`, `vertex`) remain supported. Model: `gemini-2.5-flash` via
+  `GEMINI_MODEL` / `GEMINI_MODEL_FAST`.
+- **AI not configured** (`AI_PROVIDER=none` or missing credentials): messages are
   still saved; the assistant reply is a fixed placeholder with `plan: null`.
   `plan-week` returns **501** in that case.
 - **Two-step apply-plan safety gate (§4.3):** Ada only *proposes*. An assistant
