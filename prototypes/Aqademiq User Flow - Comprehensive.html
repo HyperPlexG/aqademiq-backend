@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aqademiq — Comprehensive User Flow</title>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --paper: #f4f3f0; --mat: #d9d6d0; --ink: #1a1320; --muted: #8a847d;
+      --line: #c4bfb6;
+    }
+    html, body { width: 100%; height: 100%; overflow: hidden;
+      font-family: "Plus Jakarta Sans", system-ui, sans-serif; background: var(--mat); color: var(--ink); }
+    #viewport { position: fixed; inset: 0; overflow: hidden; cursor: grab;
+      background:
+        radial-gradient(circle at 1px 1px, rgba(0,0,0,0.05) 1px, transparent 0) 0 0 / 28px 28px,
+        var(--mat); }
+    #viewport.grabbing { cursor: grabbing; }
+    #stage { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+    #canvas { position: relative; }
+
+    svg.wires { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+    .wire { fill: none; stroke-width: 2; }
+    .wlabel { font: 700 10px "Plus Jakarta Sans", sans-serif; fill: #7d776f; }
+    .wlabel-bg { fill: var(--paper); }
+
+    /* lanes */
+    .lane { position: absolute; border-radius: 26px; }
+    .lane-cap { position: absolute; display: flex; align-items: center; gap: 10px;
+      font-size: 12px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
+    .lane-cap .seg { font-family: "Playfair Display", serif; font-size: 19px; font-weight: 800;
+      letter-spacing: 0; text-transform: none; opacity: .95; }
+    .lane-dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+
+    /* nodes */
+    .node { position: absolute; background: #fff; border-radius: 15px; padding: 9px 12px 9px 15px;
+      display: flex; flex-direction: column; justify-content: center; overflow: hidden;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08); cursor: pointer;
+      transition: transform .14s ease, box-shadow .14s ease; }
+    .node:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(0,0,0,0.17); }
+    .node .ntag { font-size: 8.5px; font-weight: 800; letter-spacing: 0.12em; margin-bottom: 3px; }
+    .node .ntitle { font-size: 12.5px; font-weight: 700; line-height: 1.18; color: var(--ink);
+      text-wrap: balance; }
+    .node.hub { box-shadow: 0 4px 20px rgba(0,0,0,0.16); }
+    .node.hub .ntitle { font-size: 13.5px; font-weight: 800; }
+    .node.modal { background: #faf9f7; }
+    .node.modal .ntitle { font-weight: 600; color: #4a443d; }
+    .node.modal::after { content: 'overlay'; position: absolute; top: 7px; right: 9px;
+      font-size: 7px; font-weight: 800; letter-spacing: 0.08em; color: #b8b2a9; text-transform: uppercase; }
+    .node.dim { opacity: 0.28; }
+    .node.sel { outline: 2.5px solid var(--ink); outline-offset: 2px; }
+
+    /* rail */
+    #railLabel { position: absolute; writing-mode: vertical-rl; transform: rotate(180deg);
+      font-size: 11px; font-weight: 800; letter-spacing: 0.18em; text-transform: uppercase; color: #6b5cf0; }
+
+    /* header */
+    #header { position: absolute; display: flex; align-items: center; gap: 16px; }
+    #header h1 { font-family: "Playfair Display", serif; font-size: 34px; font-weight: 800; letter-spacing: -0.5px; }
+    #header p { font-size: 13px; color: var(--muted); margin-top: 3px; font-weight: 600; }
+
+    /* legend */
+    #legend { position: absolute; background: rgba(255,255,255,0.7); backdrop-filter: blur(4px);
+      border: 1px solid rgba(0,0,0,0.06); border-radius: 16px; padding: 14px 16px; }
+    #legend .lg-h { font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--muted); margin: 0 0 8px; }
+    #legend .lg-h:not(:first-child) { margin-top: 13px; }
+    .lg-row { display: flex; align-items: center; gap: 9px; font-size: 11.5px; font-weight: 600; color: #4a443d; margin-bottom: 6px; }
+    .lg-sw { width: 13px; height: 13px; border-radius: 4px; flex-shrink: 0; }
+    .lg-line { width: 22px; height: 0; flex-shrink: 0; border-top-width: 2.5px; border-top-style: solid; }
+
+    /* controls */
+    #controls { position: fixed; right: 22px; bottom: 22px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
+    #controls button { width: 42px; height: 42px; border: none; border-radius: 13px; background: #fff;
+      box-shadow: 0 3px 14px rgba(0,0,0,0.16); font-size: 19px; font-weight: 700; color: var(--ink); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; transition: transform .1s; }
+    #controls button:hover { transform: translateY(-1px); }
+    #controls button:active { transform: translateY(0); }
+    #controls .lbl { font-size: 10px; font-weight: 800; }
+
+    /* detail panel */
+    #detail { position: fixed; top: 0; right: 0; bottom: 0; width: 340px; background: #fff;
+      box-shadow: -8px 0 40px rgba(0,0,0,0.16); padding: 26px 26px 30px; z-index: 40;
+      transform: translateX(100%); transition: transform .26s cubic-bezier(.4,0,.2,1); overflow-y: auto; }
+    #detail.open { transform: translateX(0); }
+    #detail .dclose { position: absolute; top: 18px; right: 18px; width: 30px; height: 30px; border-radius: 50%;
+      background: var(--paper); border: none; cursor: pointer; font-size: 15px; color: var(--muted); }
+    #detail .dtag { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 800;
+      letter-spacing: 0.04em; padding: 5px 11px; border-radius: 100px; color: #fff; margin-bottom: 16px; }
+    #detail h2 { font-family: "Playfair Display", serif; font-size: 25px; font-weight: 800; line-height: 1.1; margin-bottom: 6px; }
+    #detail .dsec { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 18px; }
+    #detail .ddesc { font-size: 14px; line-height: 1.55; color: #3a342e; margin-bottom: 22px; }
+    #detail .dlabel { font-size: 10.5px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 9px; }
+    #detail .dgroup { margin-bottom: 20px; }
+    .dlink { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 12px;
+      background: var(--paper); margin-bottom: 7px; cursor: pointer; transition: background .12s; }
+    .dlink:hover { background: #ebe9e4; }
+    .dlink .da { font-size: 13px; color: #b0a99f; flex-shrink: 0; }
+    .dlink .dn { font-size: 12.5px; font-weight: 700; }
+    .dlink .de { font-size: 10.5px; color: var(--muted); margin-left: auto; font-weight: 600; }
+    .dempty { font-size: 12.5px; color: #b0a99f; font-style: italic; }
+    #detail .dkind { display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: 0.06em;
+      text-transform: uppercase; padding: 3px 9px; border-radius: 100px; background: var(--paper); color: var(--muted); margin-left: 8px; vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <div id="viewport">
+    <div id="stage"><div id="canvas"></div></div>
+  </div>
+
+  <div id="controls">
+    <button id="zin" title="Zoom in">+</button>
+    <button id="zout" title="Zoom out">&minus;</button>
+    <button id="fit" class="lbl" title="Fit to screen">FIT</button>
+  </div>
+
+  <aside id="detail">
+    <button class="dclose" onclick="closeDetail()">&times;</button>
+    <div id="dbody"></div>
+  </aside>
+
+  <script>
+  /* ───────────────────────── FAMILIES (colour system) ───────────────────────── */
+  const FAM = {
+    entry:   { c: '#6b5cf0', name: 'Entry & onboarding' },
+    plan:    { c: '#2a9d6b', name: 'Plan · daily loop' },
+    subj:    { c: '#2f80ed', name: 'Subjects' },
+    focus:   { c: '#1499a3', name: 'Focus' },
+    ada:     { c: '#e85476', name: 'Ada AI' },
+    support: { c: '#e8a430', name: 'Profile · mood · settings' },
+  };
+
+  /* ───────────────────────── BANDS (every screen) ─────────────────────────────
+     spine  = primary screens in journey order (one row)
+     modals = overlays / dialogs / variant states (wrapped grid beneath)
+     core:true bands sit on the bottom-navigation rail.
+     node = [id, title, desc, {hub}]                                            */
+  const BANDS = [
+    { fam: 'entry', seg: '00', label: 'Entry & Auth',
+      spine: [
+        ['splash', 'Splash', 'Brand splash with the Ada ice-cube mascot; auto-advances to Welcome.'],
+        ['welcome', 'Welcome', 'The fork: Jump in as a guest, Sign up, or Sign in.', { hub: 1 }],
+        ['auth', 'Sign in', 'Returning users sign in with email + password.'],
+        ['signup', 'Create account', 'New account by email; sends a verification code.'],
+        ['otp', 'OTP verify', 'Enter the 6-digit code to confirm the email address.'],
+      ], modals: [] },
+
+    { fam: 'entry', seg: '00b', label: 'Guest Mode',
+      spine: [
+        ['guest-home', 'Guest home', 'The full Plan/Home, usable with no account; a gentle setup nudge sits on top.', { hub: 1 }],
+        ['guest-subjects', 'Guest Subjects', 'Subjects tab in its empty state — prompts you to add your first subject.'],
+      ], modals: [
+        ['guest-ada', 'Ada → setup prompt', 'Tapping Ada (a gated feature) invites you to set up an account.'],
+        ['guest-stats', 'Stats → setup prompt', 'Tapping Stats (gated) invites you to set up an account.'],
+        ['guest-save', 'Save-progress prompt', 'After a real session, a prompt offers to save progress / create an account.'],
+      ] },
+
+    { fam: 'entry', seg: '01', label: 'Onboarding',
+      spine: [
+        ['ob-referral', 'Referral code', 'Optional referral-code entry before the guided setup.'],
+        ['ob1', 'Step 1 · Name', 'Tell Ada your name.'],
+        ['ob2', 'Step 2 · Subjects', 'Pick the subjects you study this term.'],
+        ['ob-mood', 'Step 3 · Feelings', 'Rate how you feel about each subject so Ada can weight the plan.'],
+        ['ob3', 'Step 4 · Syllabus', 'Upload a syllabus for Ada to parse into tasks.'],
+        ['ob4', 'Step 5 · Peak + goal', 'Set your peak focus time and a weekly study goal.'],
+        ['ob5', 'Step 6 · Meet Prism', 'Meet Prism, the focus-audio companion.'],
+        ['adaload', 'Ada builds week', 'Ada assembles your personalised first week.'],
+      ], modals: [
+        ['ob2-add', 'Add subject', 'Popup to add a subject that wasn’t in the suggested list.'],
+      ] },
+
+    { fam: 'plan', seg: '02', label: 'Plan / Home', core: true,
+      spine: [
+        ['plan-timeline', 'Timeline', 'Home base — the day as a vertical timeline of tasks. Default landing screen.', { hub: 1 }],
+        ['plan-breakdown', 'Microtasks', 'A task expanded into Ada-suggested microtasks / subtasks.'],
+        ['plan-list', 'List grouping', 'The same day shown as a grouped list instead of a timeline.'],
+        ['plan-otherday', 'Another day', 'Viewing a different day; a Today button jumps back.'],
+        ['plan-addtask', 'Add task form', 'The full add-task form — title, tag, time, date, duration, repeat.'],
+      ], modals: [
+        ['plan-anytime-collapsed', 'Anytime collapsed', 'The “Anytime” section folded away.'],
+        ['plan-planned-collapsed', 'Planned collapsed', 'The “Planned” section folded away.'],
+        ['plan-month', 'Month picker', 'Calendar month picker.'],
+        ['plan-month-next', 'Month → next', 'Month picker advanced a month.'],
+        ['plan-monthyear', 'Month + year wheel', 'Combined month / year wheel selector.'],
+        ['plan-quickadd', 'Quick add', 'Lightweight add bar from the + button.'],
+        ['plan-menu', '··· menu', 'Per-day overflow menu.'],
+        ['plan-grouping', 'Grouping submenu', 'Switch how the day’s tasks are grouped.'],
+        ['plan-logmood', 'Log mood', 'Quick mood-log popup.'],
+        ['plan-resched', 'Reschedule', 'Reschedule the remaining tasks.'],
+        ['plan-move', 'Move date', 'Move selected tasks to another date.'],
+        ['plan-pick-time', 'Time of day', 'Pick a time-of-day bucket (morning / afternoon…).'],
+        ['plan-pick-time-custom', 'Specific time', 'Exact clock-time dialog.'],
+        ['plan-pick-date', 'Date picker', 'Choose the task’s date.'],
+        ['plan-pick-duration', 'Duration', 'Pick how long the task takes.'],
+        ['plan-pick-duration-custom', 'Custom duration', 'Exact-duration dialog.'],
+        ['plan-pick-repeat', 'Repeat', 'Recurrence picker.'],
+        ['plan-pick-repeat-custom', 'Custom repeat', 'Custom recurrence dialog.'],
+      ] },
+
+    { fam: 'subj', seg: '03', label: 'Subjects', core: true,
+      spine: [
+        ['subj-list', 'Subjects list', 'Every subject, as a list or grid (toggle via Tweaks).', { hub: 1 }],
+        ['subj-detail', 'Subject detail', 'A subject’s page with its info and a files bucket.'],
+        ['subj-add', 'Add / edit subject', 'Create or edit a subject — name, colour, target.'],
+      ], modals: [
+        ['subj-add-gpa', 'Target as GPA', 'Express the subject’s goal as a GPA.'],
+        ['subj-add-pct', 'Target as %', 'Express the subject’s goal as a percentage.'],
+        ['subj-file', 'Add file', 'Attach a file to the subject.'],
+        ['subj-menu', '··· semester menu', 'Semester-level overflow menu.'],
+        ['subj-add-sem', 'Add semester', 'Create a new semester.'],
+        ['subj-edit-sem', 'Edit semesters', 'Rename / reorder semesters.'],
+        ['subj-sort', 'Sort subjects', 'Change the subject sort order.'],
+        ['subj-share', 'Share / referral', 'Share sheet / invite a friend.'],
+      ] },
+
+    { fam: 'focus', seg: '04', label: 'Focus', core: true,
+      spine: [
+        ['fc-set', 'Set timer', 'Set up a session — choose duration, link a task, pick a Prism mode.', { hub: 1 }],
+        ['fc-running', 'Running', 'Session in progress; the Ada ice-cube melts as time passes.'],
+        ['fc-paused', 'Paused', 'Paused — the cube re-freezes until you resume.'],
+        ['fc-end', 'Session complete', 'End-of-session summary and mood capture.'],
+      ], modals: [
+        ['fc-link', 'Link a task', 'Attach a plan task to this focus session.'],
+        ['fc-duration', 'Set time', 'Choose the session length.'],
+        ['fc-prism', 'Prism mode', 'Pick a Prism focus-audio mode.'],
+      ] },
+
+    { fam: 'ada', seg: '05', label: 'Ada AI', core: true,
+      spine: [
+        ['ada-empty', 'Ada intro', 'Ada’s intro / empty conversation state.', { hub: 1 }],
+        ['ada-chat', 'Ada chat', 'An active conversation with Ada, the planning assistant.'],
+      ], modals: [
+        ['ada-history', 'Chat history', 'Past conversations (tap ☰).'],
+      ] },
+
+    { fam: 'support', seg: '06', label: 'Profile / Stats', core: true,
+      spine: [
+        ['profile-top', 'Profile · top', 'Top of the profile — streak orb, key stats, the mood week.', { hub: 1 }],
+        ['profile-main', 'Profile · hub', 'Lower profile — achievements, links, and the way into Settings.'],
+      ], modals: [
+        ['referral', 'Referral sheet', 'Invite-a-friend sheet (tap ↑).'],
+      ] },
+
+    { fam: 'support', seg: '07', label: 'Mood Check-in',
+      spine: [
+        ['mood-morning', 'Morning check-in', 'Start-of-day mood; the Ada blob morphs to match.'],
+        ['mood-evening', 'Evening reflection', 'End-of-day reflection on how the day went.'],
+      ], modals: [] },
+
+    { fam: 'support', seg: '09', label: 'Context & Overflow',
+      spine: [
+        ['task-swipe', 'Swipe actions', 'Swipe a task to reveal quick actions.'],
+      ], modals: [
+        ['task-overflow', 'Task action sheet', 'Long-press a task for the full action sheet.'],
+      ] },
+
+    { fam: 'support', seg: '13', label: 'Settings',
+      spine: [
+        ['settings-home', 'Settings home', 'The settings hub — profile card, study tags, preferences.', { hub: 1 }],
+        ['settings-profile', 'Profile (edit)', 'Edit personal information form.'],
+        ['settings-account', 'Account & About', 'Account actions + About (the home, scrolled).'],
+        ['settings-notif', 'Notifications', 'Notification preferences.'],
+        ['settings-sounds', 'Prism / sounds', 'Prism focus audio and in-app sounds.'],
+        ['settings-email', 'Email settings', 'Email & marketing preferences.'],
+      ], modals: [
+        ['settings-addtag', 'Add new tag', 'Create a study tag — name + colour.'],
+        ['settings-notif-more', 'Notifications scrolled', 'Further notification options.'],
+        ['settings-appearance', 'Appearance', 'Light / Dark / System appearance sheet.'],
+        ['settings-editname', 'Edit name', 'Edit your display name (sheet).'],
+        ['settings-email-change', 'Change email', 'Change your email address (sheet).'],
+      ] },
+  ];
+
+  /* ───────────────────────── EDGES ─────────────────────────────────────────────
+     [from, to, kind, label?]   kind: flow | modal | cross | loop                 */
+  const EDGES = [
+    // Entry
+    ['splash', 'welcome', 'flow'],
+    ['welcome', 'auth', 'flow', 'Sign in'],
+    ['welcome', 'signup', 'flow', 'Sign up'],
+    ['welcome', 'guest-home', 'cross', 'Jump in'],
+    ['signup', 'otp', 'flow'],
+    ['otp', 'ob-referral', 'cross', 'Verified'],
+    ['auth', 'plan-timeline', 'cross', 'Returning'],
+    // Guest
+    ['guest-home', 'guest-subjects', 'flow'],
+    ['guest-home', 'guest-ada', 'modal', 'Tap Ada'],
+    ['guest-home', 'guest-stats', 'modal', 'Tap Stats'],
+    ['guest-home', 'guest-save', 'modal', 'Session end'],
+    ['guest-ada', 'ob-referral', 'cross', 'Set up'],
+    ['guest-save', 'signup', 'cross', 'Save'],
+    // Onboarding
+    ['ob-referral', 'ob1', 'flow'],
+    ['ob1', 'ob2', 'flow'],
+    ['ob2', 'ob2-add', 'modal', 'Add'],
+    ['ob2', 'ob-mood', 'flow'],
+    ['ob-mood', 'ob3', 'flow'],
+    ['ob3', 'ob4', 'flow'],
+    ['ob4', 'ob5', 'flow'],
+    ['ob5', 'adaload', 'flow'],
+    ['adaload', 'plan-timeline', 'cross', 'Enter app'],
+    // Plan
+    ['plan-timeline', 'plan-breakdown', 'flow', 'Expand'],
+    ['plan-timeline', 'plan-list', 'flow', 'List'],
+    ['plan-timeline', 'plan-anytime-collapsed', 'modal'],
+    ['plan-timeline', 'plan-planned-collapsed', 'modal'],
+    ['plan-timeline', 'plan-otherday', 'flow', 'Pick day'],
+    ['plan-otherday', 'plan-month', 'modal', 'Calendar'],
+    ['plan-month', 'plan-month-next', 'modal'],
+    ['plan-month', 'plan-monthyear', 'modal', 'Year'],
+    ['plan-timeline', 'plan-quickadd', 'modal', '+ Quick'],
+    ['plan-quickadd', 'plan-addtask', 'flow', 'Details'],
+    ['plan-timeline', 'plan-menu', 'modal', '···'],
+    ['plan-menu', 'plan-grouping', 'modal'],
+    ['plan-menu', 'plan-logmood', 'modal'],
+    ['plan-menu', 'plan-resched', 'modal'],
+    ['plan-resched', 'plan-move', 'modal'],
+    ['plan-timeline', 'plan-addtask', 'flow', 'Add task'],
+    ['plan-addtask', 'plan-pick-time', 'modal', 'Time'],
+    ['plan-pick-time', 'plan-pick-time-custom', 'modal'],
+    ['plan-addtask', 'plan-pick-date', 'modal', 'Date'],
+    ['plan-addtask', 'plan-pick-duration', 'modal', 'Length'],
+    ['plan-pick-duration', 'plan-pick-duration-custom', 'modal'],
+    ['plan-addtask', 'plan-pick-repeat', 'modal', 'Repeat'],
+    ['plan-pick-repeat', 'plan-pick-repeat-custom', 'modal'],
+    ['plan-timeline', 'task-swipe', 'cross', 'Swipe'],
+    ['plan-timeline', 'task-overflow', 'cross', 'Long-press'],
+    // Subjects
+    ['subj-list', 'subj-detail', 'flow', 'Open'],
+    ['subj-list', 'subj-add', 'flow', '+ Subject'],
+    ['subj-add', 'subj-add-gpa', 'modal', 'GPA'],
+    ['subj-add', 'subj-add-pct', 'modal', '%'],
+    ['subj-detail', 'subj-file', 'modal', '+ File'],
+    ['subj-list', 'subj-menu', 'modal', '···'],
+    ['subj-menu', 'subj-add-sem', 'modal'],
+    ['subj-menu', 'subj-edit-sem', 'modal'],
+    ['subj-menu', 'subj-sort', 'modal'],
+    ['subj-detail', 'subj-share', 'modal', 'Share'],
+    // Focus
+    ['fc-set', 'fc-link', 'modal', 'Link'],
+    ['fc-set', 'fc-duration', 'modal', 'Time'],
+    ['fc-set', 'fc-prism', 'modal', 'Prism'],
+    ['fc-set', 'fc-running', 'flow', 'Start'],
+    ['fc-running', 'fc-paused', 'flow', 'Pause'],
+    ['fc-paused', 'fc-running', 'loop', 'Resume'],
+    ['fc-running', 'fc-end', 'flow', 'Done'],
+    ['fc-end', 'plan-timeline', 'cross', 'Back to plan'],
+    // Ada
+    ['ada-empty', 'ada-chat', 'flow', 'Ask'],
+    ['ada-chat', 'ada-history', 'modal', 'History'],
+    ['ada-chat', 'plan-timeline', 'cross', 'Added to plan'],
+    // Profile
+    ['profile-top', 'profile-main', 'flow', 'Scroll'],
+    ['profile-main', 'referral', 'modal', 'Invite'],
+    ['profile-main', 'settings-home', 'cross', 'Settings'],
+    // Mood (time / system triggered)
+    ['mood-morning', 'plan-timeline', 'cross', 'Start day'],
+    ['plan-timeline', 'mood-evening', 'cross', 'End of day'],
+    // Settings
+    ['settings-home', 'settings-addtag', 'modal', '+ Tag'],
+    ['settings-home', 'settings-profile', 'flow', 'Profile'],
+    ['settings-profile', 'settings-editname', 'modal', 'Name'],
+    ['settings-profile', 'settings-email-change', 'modal', 'Email'],
+    ['settings-home', 'settings-account', 'flow', 'Scroll'],
+    ['settings-home', 'settings-notif', 'flow', 'Notifs'],
+    ['settings-notif', 'settings-notif-more', 'flow', 'Scroll'],
+    ['settings-home', 'settings-appearance', 'modal', 'Appearance'],
+    ['settings-home', 'settings-sounds', 'flow', 'Prism'],
+    ['settings-account', 'settings-email', 'flow', 'Email'],
+  ];
+
+  /* ───────────────────────── LAYOUT ───────────────────────────────────────────── */
+  const NW = 158, NH = 64, MW = 150, MH = 54;
+  const PITCHX = 246, PITCHY = 112;
+  const LEFTPAD = 320, TOP = 150, LABELH = 50, BANDGAP = 48;
+  const SPINEMAX = 8, MODALMAX = 8;
+
+  const NODE = {};        // id -> {id, title, desc, fam, seg, kind, x, y, w, h}
+  let maxCols = 0;
+
+  // first pass: tabulate columns to size the canvas
+  BANDS.forEach(b => {
+    maxCols = Math.max(maxCols, Math.min(b.spine.length, SPINEMAX), Math.min(b.modals.length, MODALMAX));
+  });
+  const CW = LEFTPAD + maxCols * PITCHX + 60;
+
+  let cursorY = TOP;
+  const lanes = [];
+  const railPts = [];
+
+  BANDS.forEach(b => {
+    const fam = FAM[b.fam];
+    const laneTop = cursorY;
+    const rowY = cursorY + LABELH;
+    // spine row(s)
+    const spineRows = Math.ceil(b.spine.length / SPINEMAX) || 1;
+    b.spine.forEach((n, i) => {
+      const col = i % SPINEMAX, r = Math.floor(i / SPINEMAX);
+      const x = LEFTPAD + col * PITCHX, y = rowY + r * PITCHY;
+      NODE[n[0]] = { id: n[0], title: n[1], desc: n[2], fam: b.fam, seg: b.seg, band: b.label,
+        kind: (n[3] && n[3].hub) ? 'hub' : 'screen', x, y, w: NW, h: NH };
+      if (i === 0 && b.core) railPts.push({ y: y + NH / 2 });
+    });
+    // modal grid
+    const modalTop = rowY + spineRows * PITCHY;
+    const modalRows = Math.ceil(b.modals.length / MODALMAX);
+    b.modals.forEach((n, i) => {
+      const col = i % MODALMAX, r = Math.floor(i / MODALMAX);
+      const x = LEFTPAD + col * PITCHX + 4, y = modalTop + r * PITCHY;
+      NODE[n[0]] = { id: n[0], title: n[1], desc: n[2], fam: b.fam, seg: b.seg, band: b.label,
+        kind: 'modal', x, y, w: MW, h: MH };
+    });
+    const bandH = LABELH + (spineRows + modalRows) * PITCHY + 6;
+    lanes.push({ top: laneTop, h: bandH, fam: b.fam, seg: b.seg, label: b.label });
+    cursorY = laneTop + bandH + BANDGAP;
+  });
+  const CH = cursorY + 40;
+
+  /* ───────────────────────── RENDER ───────────────────────────────────────────── */
+  const canvas = document.getElementById('canvas');
+  canvas.style.width = CW + 'px';
+  canvas.style.height = CH + 'px';
+
+  // lanes
+  lanes.forEach(l => {
+    const fam = FAM[l.fam];
+    const band = document.createElement('div');
+    band.className = 'lane';
+    band.style.cssText = `top:${l.top}px;left:36px;width:${CW - 96}px;height:${l.h}px;` +
+      `background:${fam.c}0c;box-shadow:inset 0 0 0 1.5px ${fam.c}24;`;
+    canvas.appendChild(band);
+    const cap = document.createElement('div');
+    cap.className = 'lane-cap';
+    cap.style.cssText = `top:${l.top + 16}px;left:54px;color:${fam.c};`;
+    cap.innerHTML = `<span class="lane-dot" style="background:${fam.c}"></span>` +
+      `<span class="seg">${l.seg}</span>&nbsp;&middot;&nbsp;${l.label}`;
+    canvas.appendChild(cap);
+  });
+
+  // bottom-nav rail (connects the 5 core tab roots)
+  if (railPts.length > 1) {
+    const railX = LEFTPAD - 30;
+    const y0 = railPts[0].y, y1 = railPts[railPts.length - 1].y;
+    const rail = document.createElement('div');
+    rail.style.cssText = `position:absolute;left:${railX}px;top:${y0}px;width:3px;height:${y1 - y0}px;` +
+      `background:linear-gradient(${FAM.plan.c},${FAM.support.c});border-radius:3px;opacity:.8;`;
+    canvas.appendChild(rail);
+    railPts.forEach(p => {
+      const tick = document.createElement('div');
+      tick.style.cssText = `position:absolute;left:${railX}px;top:${p.y - 4}px;width:30px;height:8px;` +
+        `border-top:2px dotted #6b5cf0;opacity:.5;`;
+      canvas.appendChild(tick);
+      const dot = document.createElement('div');
+      dot.style.cssText = `position:absolute;left:${railX - 4}px;top:${p.y - 5}px;width:11px;height:11px;` +
+        `border-radius:50%;background:#fff;box-shadow:0 0 0 3px #6b5cf0;`;
+      canvas.appendChild(dot);
+    });
+    const rl = document.createElement('div');
+    rl.id = 'railLabel';
+    rl.style.cssText = `left:${railX - 28}px;top:${y0}px;height:${y1 - y0}px;display:flex;align-items:center;`;
+    rl.textContent = 'Bottom-nav tabs';
+    canvas.appendChild(rl);
+  }
+
+  // wires
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('class', 'wires');
+  svg.setAttribute('width', CW); svg.setAttribute('height', CH);
+  const defs = document.createElementNS(svgNS, 'defs');
+  ['#b7b1a8', FAM.entry.c, FAM.plan.c, FAM.subj.c, FAM.focus.c, FAM.ada.c, FAM.support.c].forEach((c, i) => {
+    const m = document.createElementNS(svgNS, 'marker');
+    m.setAttribute('id', 'arr' + i); m.setAttribute('viewBox', '0 0 10 10');
+    m.setAttribute('refX', '8'); m.setAttribute('refY', '5');
+    m.setAttribute('markerWidth', '7'); m.setAttribute('markerHeight', '7');
+    m.setAttribute('orient', 'auto-start-reverse');
+    const p = document.createElementNS(svgNS, 'path');
+    p.setAttribute('d', 'M0,0 L10,5 L0,10 z'); p.setAttribute('fill', c);
+    m.appendChild(p); defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+  canvas.appendChild(svg);
+
+  const famIdx = { entry: 1, plan: 2, subj: 3, focus: 4, ada: 5, support: 6 };
+  const edgeEls = [];
+
+  EDGES.forEach(([a, bId, kind, label]) => {
+    const s = NODE[a], t = NODE[bId];
+    if (!s || !t) return;
+    const sc = { cx: s.x + s.w / 2, cy: s.y + s.h / 2 };
+    const tc = { cx: t.x + t.w / 2, cy: t.y + t.h / 2 };
+    const dx = tc.cx - sc.cx, dy = tc.cy - sc.cy;
+    let sx, sy, tx, ty, c1x, c1y, c2x, c2y;
+    const k = Math.max(48, Math.hypot(dx, dy) * 0.32);
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      if (dx >= 0) { sx = s.x + s.w; sy = sc.cy; tx = t.x; ty = tc.cy; c1x = sx + k; c1y = sy; c2x = tx - k; c2y = ty; }
+      else { sx = s.x; sy = sc.cy; tx = t.x + t.w; ty = tc.cy; c1x = sx - k; c1y = sy; c2x = tx + k; c2y = ty; }
+    } else {
+      if (dy >= 0) { sx = sc.cx; sy = s.y + s.h; tx = tc.cx; ty = t.y; c1x = sx; c1y = sy + k; c2x = tx; c2y = ty - k; }
+      else { sx = sc.cx; sy = s.y; tx = tc.cx; ty = t.y + t.h; c1x = sx; c1y = sy - k; c2x = tx; c2y = ty + k; }
+    }
+    const fi = (kind === 'modal') ? 0 : famIdx[s.fam];
+    const col = (kind === 'modal') ? '#b7b1a8' : FAM[s.fam].c;
+    const p = document.createElementNS(svgNS, 'path');
+    p.setAttribute('class', 'wire');
+    p.setAttribute('d', `M${sx},${sy} C${c1x},${c1y} ${c2x},${c2y} ${tx},${ty}`);
+    p.setAttribute('stroke', col);
+    p.setAttribute('marker-end', 'url(#arr' + fi + ')');
+    p.setAttribute('stroke-opacity', kind === 'cross' ? '0.5' : (kind === 'modal' ? '0.55' : '0.8'));
+    if (kind === 'modal') p.setAttribute('stroke-dasharray', '2 5');
+    if (kind === 'loop') p.setAttribute('stroke-dasharray', '7 5');
+    if (kind === 'cross') p.setAttribute('stroke-width', '2');
+    p.dataset.a = a; p.dataset.b = bId;
+    svg.appendChild(p);
+    edgeEls.push(p);
+
+    if (label) {
+      const mx = (c1x + c2x) / 2, my = (c1y + c2y) / 2;
+      const g = document.createElementNS(svgNS, 'g');
+      g.dataset.a = a; g.dataset.b = bId; g.style.opacity = '1';
+      const rect = document.createElementNS(svgNS, 'rect');
+      const wpx = label.length * 5.7 + 12;
+      rect.setAttribute('x', mx - wpx / 2); rect.setAttribute('y', my - 8);
+      rect.setAttribute('width', wpx); rect.setAttribute('height', 16);
+      rect.setAttribute('rx', '8'); rect.setAttribute('class', 'wlabel-bg');
+      const txt = document.createElementNS(svgNS, 'text');
+      txt.setAttribute('x', mx); txt.setAttribute('y', my + 3.4);
+      txt.setAttribute('text-anchor', 'middle'); txt.setAttribute('class', 'wlabel');
+      txt.textContent = label;
+      g.appendChild(rect); g.appendChild(txt); svg.appendChild(g);
+      edgeEls.push(g);
+    }
+  });
+
+  // nodes
+  const nodeEls = {};
+  Object.values(NODE).forEach(n => {
+    const fam = FAM[n.fam];
+    const el = document.createElement('div');
+    el.className = 'node' + (n.kind === 'hub' ? ' hub' : '') + (n.kind === 'modal' ? ' modal' : '');
+    el.style.cssText = `left:${n.x}px;top:${n.y}px;width:${n.w}px;height:${n.h}px;` +
+      `box-shadow:${n.kind === 'modal' ? 'inset 0 0 0 1.5px ' + fam.c + '40' : 'inset 4px 0 0 ' + fam.c}` +
+      (n.kind === 'hub' ? ', 0 4px 20px rgba(0,0,0,0.16)' : (n.kind === 'modal' ? '' : ', 0 2px 12px rgba(0,0,0,0.08)')) + ';';
+    el.innerHTML = `<div class="ntag" style="color:${fam.c}">${n.seg}${n.kind === 'hub' ? ' · HUB' : ''}</div>` +
+      `<div class="ntitle">${n.title}</div>`;
+    el.addEventListener('click', (e) => { e.stopPropagation(); selectNode(n.id); });
+    el.addEventListener('mouseenter', () => highlight(n.id));
+    el.addEventListener('mouseleave', () => { if (!selectedId) clearHighlight(); });
+    canvas.appendChild(el);
+    nodeEls[n.id] = el;
+  });
+
+  // header
+  const header = document.createElement('div');
+  header.id = 'header';
+  header.style.cssText = `top:34px;left:54px;`;
+  const blob = `<svg width="50" height="50" viewBox="0 0 60 60">
+    <rect x="8" y="8" width="44" height="44" rx="13" fill="#6b5cf0"/>
+    <ellipse cx="22" cy="20" rx="8" ry="5.5" fill="rgba(255,255,255,0.30)" transform="rotate(-20 22 20)"/>
+    <circle cx="24" cy="31" r="3.1" fill="#fff"/><circle cx="38" cy="31" r="3.1" fill="#fff"/>
+    <path d="M25 39 Q31 45 37 39" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round"/></svg>`;
+  const nScreens = Object.keys(NODE).length;
+  header.innerHTML = blob + `<div><h1>Aqademiq · User Flow</h1>` +
+    `<p>${nScreens} screens · ${BANDS.length} sections · every transition in V1 (Guest Mode)</p></div>`;
+  canvas.appendChild(header);
+
+  // legend
+  const legend = document.createElement('div');
+  legend.id = 'legend';
+  legend.style.cssText = `top:34px;left:${CW - 320}px;`;
+  legend.innerHTML =
+    `<p class="lg-h">Journeys</p>` +
+    Object.values(FAM).map(f => `<div class="lg-row"><span class="lg-sw" style="background:${f.c}"></span>${f.name}</div>`).join('') +
+    `<p class="lg-h">Reading the map</p>` +
+    `<div class="lg-row"><span class="lg-line" style="border-color:#2a9d6b"></span>Primary navigation</div>` +
+    `<div class="lg-row"><span class="lg-line" style="border-color:#b7b1a8;border-top-style:dotted"></span>Opens an overlay / dialog</div>` +
+    `<div class="lg-row"><span class="lg-line" style="border-color:#8a847d;border-top-style:dashed"></span>Jump / loop between journeys</div>` +
+    `<div class="lg-row"><span class="lg-sw" style="background:#fff;box-shadow:inset 4px 0 0 #6b5cf0,0 1px 4px rgba(0,0,0,.15)"></span>Screen &nbsp;·&nbsp; <b style="margin-left:4px">HUB</b> = tab root</div>` +
+    `<div class="lg-row"><span class="lg-sw" style="background:#faf9f7;box-shadow:inset 0 0 0 1.5px #b7b1a8"></span>Overlay / sheet / dialog</div>`;
+  canvas.appendChild(legend);
+
+  /* ───────────────────────── INTERACTION (pan / zoom / select) ─────────────────── */
+  const vp = document.getElementById('viewport');
+  const stage = document.getElementById('stage');
+  let scale = 1, tx = 0, ty = 0;
+
+  function apply() { stage.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; }
+  function fit() {
+    const pad = 70;
+    const s = Math.min((vp.clientWidth - pad) / CW, (vp.clientHeight - pad) / CH);
+    scale = Math.min(s, 1);
+    tx = (vp.clientWidth - CW * scale) / 2;
+    ty = (vp.clientHeight - CH * scale) / 2;
+    apply();
+  }
+  function zoomAt(cx, cy, factor) {
+    const ns = Math.min(2.4, Math.max(0.18, scale * factor));
+    tx = cx - (cx - tx) * (ns / scale);
+    ty = cy - (cy - ty) * (ns / scale);
+    scale = ns; apply();
+  }
+  document.getElementById('zin').onclick = () => zoomAt(vp.clientWidth / 2, vp.clientHeight / 2, 1.25);
+  document.getElementById('zout').onclick = () => zoomAt(vp.clientWidth / 2, vp.clientHeight / 2, 0.8);
+  document.getElementById('fit').onclick = fit;
+
+  vp.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey || Math.abs(e.deltaY) > 0) {
+      const r = vp.getBoundingClientRect();
+      zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.12 : 0.89);
+    }
+  }, { passive: false });
+
+  let dragging = false, sx0 = 0, sy0 = 0, tx0 = 0, ty0 = 0, moved = false;
+  vp.addEventListener('pointerdown', (e) => {
+    dragging = true; moved = false; sx0 = e.clientX; sy0 = e.clientY; tx0 = tx; ty0 = ty;
+    vp.classList.add('grabbing'); vp.setPointerCapture(e.pointerId);
+  });
+  vp.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    tx = tx0 + (e.clientX - sx0); ty = ty0 + (e.clientY - sy0);
+    if (Math.abs(e.clientX - sx0) + Math.abs(e.clientY - sy0) > 4) moved = true;
+    apply();
+  });
+  vp.addEventListener('pointerup', (e) => { dragging = false; vp.classList.remove('grabbing'); });
+  vp.addEventListener('click', (e) => { if (!moved) { closeDetail(); } });
+
+  /* highlight + detail */
+  let selectedId = null;
+  const inMap = {}, outMap = {};
+  EDGES.forEach(([a, b, kind, label]) => {
+    (outMap[a] = outMap[a] || []).push({ to: b, kind, label });
+    (inMap[b] = inMap[b] || []).push({ from: a, kind, label });
+  });
+
+  function neighborSet(id) {
+    const set = new Set([id]);
+    (outMap[id] || []).forEach(e => set.add(e.to));
+    (inMap[id] || []).forEach(e => set.add(e.from));
+    return set;
+  }
+  function highlight(id) {
+    const keep = neighborSet(id);
+    Object.values(NODE).forEach(n => nodeEls[n.id].classList.toggle('dim', !keep.has(n.id)));
+    edgeEls.forEach(el => {
+      const on = el.dataset.a === id || el.dataset.b === id;
+      el.style.opacity = on ? '1' : '0.12';
+    });
+  }
+  function clearHighlight() {
+    Object.values(NODE).forEach(n => nodeEls[n.id].classList.remove('dim'));
+    edgeEls.forEach(el => el.style.opacity = '1');
+  }
+
+  const detail = document.getElementById('detail');
+  function selectNode(id) {
+    selectedId = id;
+    Object.values(nodeEls).forEach(el => el.classList.remove('sel'));
+    nodeEls[id].classList.add('sel');
+    highlight(id);
+    const n = NODE[id];
+    const fam = FAM[n.fam];
+    const outs = (outMap[id] || []);
+    const ins = (inMap[id] || []);
+    const kindName = n.kind === 'hub' ? 'Tab root' : (n.kind === 'modal' ? 'Overlay / sheet' : 'Screen');
+    const linkRow = (oid, label, dir) => {
+      const m = NODE[oid]; if (!m) return '';
+      return `<div class="dlink" onclick="selectNode('${oid}')">` +
+        `<span class="da">${dir}</span><span class="dn">${m.title}</span>` +
+        `<span class="de">${label ? label : m.seg}</span></div>`;
+    };
+    document.getElementById('dbody').innerHTML =
+      `<div class="dtag" style="background:${fam.c}">${n.seg} · ${n.band}</div>` +
+      `<h2>${n.title}<span class="dkind">${kindName}</span></h2>` +
+      `<div class="dsec">${fam.name}</div>` +
+      `<div class="ddesc">${n.desc}</div>` +
+      `<div class="dgroup"><div class="dlabel">Leads to (${outs.length})</div>` +
+        (outs.length ? outs.map(e => linkRow(e.to, e.label, '→')).join('') : `<div class="dempty">Terminal / returns via bottom nav.</div>`) +
+      `</div>` +
+      `<div class="dgroup"><div class="dlabel">Reached from (${ins.length})</div>` +
+        (ins.length ? ins.map(e => linkRow(e.from, e.label, '←')).join('') : `<div class="dempty">Entry point.</div>`) +
+      `</div>`;
+    detail.classList.add('open');
+  }
+  function closeDetail() {
+    selectedId = null; detail.classList.remove('open');
+    Object.values(nodeEls).forEach(el => el.classList.remove('sel'));
+    clearHighlight();
+  }
+  window.selectNode = selectNode;
+  window.closeDetail = closeDetail;
+
+  fit();
+  window.addEventListener('resize', () => { if (!selectedId) fit(); });
+  </script>
+</body>
+</html>
