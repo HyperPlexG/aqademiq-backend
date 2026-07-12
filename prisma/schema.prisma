@@ -1,0 +1,704 @@
+// Aqademiq data model — Updated to final SQL schema
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// PART A — Auth, Identity & Access
+// ============================================================
+
+model User {
+  id                  String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email               String?    @unique
+  full_name           String?
+  display_name        String?    @db.VarChar(100)
+  gender              String?    @db.VarChar(50)
+  date_of_birth       DateTime?  @db.Date
+  avatar_url          String?
+  auth_provider       String     @default("email") @db.VarChar(50)
+  timezone            String     @default("UTC") @db.VarChar(100)
+  account_status      String     @default("active") @db.VarChar(20)
+  is_guest            Boolean    @default(false)
+  guest_token_hash    String?
+  onboarding_complete Boolean    @default(false)
+  onboarding_step     Int        @default(0) @db.SmallInt
+  referral_code       String?    @unique @db.VarChar(50)
+  referred_by         String?    @db.Uuid
+  streak_days         Int        @default(0)
+  last_active_date    DateTime?  @db.Date
+  last_login_at       DateTime?  @db.Timestamptz
+  deleted_at          DateTime?  @db.Timestamptz
+  created_at          DateTime   @default(now()) @db.Timestamptz
+  updated_at          DateTime   @default(now()) @db.Timestamptz
+
+  referrer            User?      @relation("UserReferrals", fields: [referred_by], references: [id], onDelete: SetNull)
+  referrals           User[]     @relation("UserReferrals")
+
+  auth_identities         AuthIdentity[]
+  user_profile            UserProfile?
+  app_settings            UserAppSettings?
+  notification_preferences NotificationPreferences?
+  study_tags              StudyTag[]
+  task_tags               TaskTag[]
+  calendar_connections     CalendarConnection[]
+  device_profiles         DeviceProfile[]
+  sessions                UserSession[]
+  login_attempts          LoginAttempt[]
+  academic_terms          AcademicTerm[]
+  courses                 Course[]
+  subject_materials       SubjectMaterial[]
+  tasks                   Task[]
+  focus_sessions          FocusSession[]
+  mood_checkins           MoodCheckin[]
+  analytics_snapshots     AnalyticsSnapshot[]
+  daily_activity_snapshots DailyActivitySnapshot[]
+  ada_sessions            AdaSession[]
+  calendar_events         CalendarEvent[]
+  referral_code_record    ReferralCode?
+  referral_redemptions    ReferralRedemption[]
+  share_events            ShareEvent[]
+  app_ratings             AppRating[]
+  app_feedback            AppFeedback[]
+  prism_audio_profiles    PrismAudioProfile?
+
+  @@map("users")
+}
+
+model AuthIdentity {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id          String   @db.Uuid
+  user             User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  provider         String   @db.VarChar(50)
+  provider_subject String?  @db.VarChar(255)
+  email            String?  @db.VarChar(255)
+  email_verified   Boolean  @default(false)
+  password_hash    String?
+  created_at       DateTime @default(now()) @db.Timestamptz
+  updated_at       DateTime @default(now()) @db.Timestamptz
+
+  @@unique([provider, provider_subject])
+  @@unique([user_id, provider])
+  @@map("auth_identities")
+}
+
+model EmailOtpCode {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email          String    @db.VarChar(255)
+  purpose        String    @default("signup") @db.VarChar(50)
+  otp_hash       String
+  attempts_count Int       @default(0)
+  max_attempts   Int       @default(5)
+  expires_at     DateTime  @db.Timestamptz
+  consumed_at    DateTime? @db.Timestamptz
+  ip_address     String?   @db.VarChar(45)
+  user_agent     String?
+  created_at     DateTime  @default(now()) @db.Timestamptz
+
+  @@map("email_otp_codes")
+}
+
+model UserProfile {
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                 String    @unique @db.Uuid
+  user                    User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  university              String?   @db.VarChar(255)
+  program                 String?   @db.VarChar(255)
+  study_level             String?   @db.VarChar(100)
+  peak_time               String?   @db.VarChar(50)
+  daily_focus_goal_mins   Int       @default(60)
+  focus_duration_mins     Int       @default(25)
+  break_duration_mins     Int       @default(5)
+  haptics_enabled         Boolean   @default(true)
+  onboarding_completed_at DateTime? @db.Timestamptz
+  referral_code_used      String?   @db.VarChar(50)
+  created_at              DateTime  @default(now()) @db.Timestamptz
+  updated_at              DateTime  @default(now()) @db.Timestamptz
+
+  @@map("user_profiles")
+}
+
+model UserAppSettings {
+  id                             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                        String   @unique @db.Uuid
+  user                           User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  appearance                     String   @default("system") @db.VarChar(20)
+  accent_color                   String   @default("#6b5cf0") @db.VarChar(7)
+  subjects_layout                String   @default("list") @db.VarChar(20)
+  focus_timer_style              String   @default("ice_melt") @db.VarChar(50)
+  haptics_enabled                Boolean  @default(true)
+  play_prism_in_focus            Boolean  @default(true)
+  in_app_sounds_enabled          Boolean  @default(true)
+  sound_create_task_enabled       Boolean  @default(true)
+  sound_complete_task_enabled     Boolean  @default(true)
+  sound_task_countdown_enabled    Boolean  @default(true)
+  sound_subtask_complete_enabled  Boolean  @default(true)
+  created_at                     DateTime @default(now()) @db.Timestamptz
+  updated_at                     DateTime @default(now()) @db.Timestamptz
+
+  @@map("user_app_settings")
+}
+
+model NotificationPreferences {
+  id                         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                    String   @unique @db.Uuid
+  user                       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  push_enabled               Boolean  @default(true)
+  email_enabled              Boolean  @default(true)
+  before_task_enabled        Boolean  @default(true)
+  when_task_starts_enabled   Boolean  @default(true)
+  halfway_through_enabled    Boolean  @default(false)
+  when_task_finished_enabled Boolean  @default(false)
+  morning_checkin_enabled    Boolean  @default(true)
+  morning_checkin_time       DateTime @db.Time
+  evening_review_enabled     Boolean  @default(true)
+  evening_review_time        DateTime @db.Time
+  weekly_review_enabled      Boolean  @default(true)
+  weekly_review_day          Int      @default(0) @db.SmallInt
+  weekly_review_time         DateTime @db.Time
+  state_of_mind_reminder     Boolean  @default(true)
+  motivational_enabled       Boolean  @default(true)
+  product_updates_enabled    Boolean  @default(false)
+  notification_sound         String   @default("Chime") @db.VarChar(100)
+  created_at                 DateTime @default(now()) @db.Timestamptz
+  updated_at                 DateTime @default(now()) @db.Timestamptz
+
+  @@map("notification_preferences")
+}
+
+model StudyTag {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String?  @db.Uuid
+  user       User?    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  name       String   @db.VarChar(100)
+  color      String?  @db.VarChar(7)
+  is_system  Boolean  @default(false)
+  created_at DateTime @default(now()) @db.Timestamptz
+
+  @@map("study_tags")
+}
+
+model CalendarConnection {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String   @db.Uuid
+  user              User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  provider          String   @db.VarChar(50)
+  access_token_enc  String
+  refresh_token_enc String?
+  token_expires_at  DateTime? @db.Timestamptz
+  calendar_email    String?  @db.VarChar(255)
+  is_active         Boolean  @default(true)
+  created_at        DateTime @default(now()) @db.Timestamptz
+  updated_at        DateTime @default(now()) @db.Timestamptz
+
+  calendar_events   CalendarEvent[]
+
+  @@map("calendar_connections")
+}
+
+model DeviceProfile {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String   @db.Uuid
+  user           User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  device_name    String?  @db.VarChar(255)
+  device_type    String?  @db.VarChar(100)
+  push_token     String?
+  biometric_sync Boolean  @default(false)
+  registered_at  DateTime @default(now()) @db.Timestamptz
+  updated_at     DateTime @default(now()) @db.Timestamptz
+
+  sessions       UserSession[]
+
+  @@map("device_profiles")
+}
+
+model UserSession {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String    @db.Uuid
+  user               User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  device_profile_id  String?   @db.Uuid
+  device_profile     DeviceProfile? @relation(fields: [device_profile_id], references: [id], onDelete: SetNull)
+  session_token_hash String
+  refresh_token_hash String?
+  ip_address         String    @db.VarChar(45)
+  user_agent         String?
+  status             String    @default("active") @db.VarChar(20)
+  login_at           DateTime  @default(now()) @db.Timestamptz
+  last_active_at     DateTime  @default(now()) @db.Timestamptz
+  expires_at         DateTime  @db.Timestamptz
+  logged_out_at      DateTime? @db.Timestamptz
+
+  login_attempts     LoginAttempt[]
+
+  @@map("user_sessions")
+}
+
+model LoginAttempt {
+  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String?      @db.Uuid
+  user               User?        @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  email_entered      String       @db.VarChar(255)
+  status             String       @db.VarChar(20)
+  failure_reason     String?
+  ip_address         String       @db.VarChar(45)
+  user_agent         String?
+  created_session_id String?      @db.Uuid
+  created_session    UserSession? @relation(fields: [created_session_id], references: [id], onDelete: SetNull)
+  attempted_at       DateTime     @default(now()) @db.Timestamptz
+
+  @@map("login_attempts")
+}
+
+// ============================================================
+// PART B — Academic Structure
+// ============================================================
+
+model AcademicTerm {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @db.Uuid
+  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  name       String    @db.VarChar(100)
+  start_date DateTime? @db.Date
+  end_date   DateTime? @db.Date
+  is_current Boolean   @default(false)
+  created_at DateTime  @default(now()) @db.Timestamptz
+  updated_at DateTime  @default(now()) @db.Timestamptz
+
+  courses    Course[]
+
+  @@unique([user_id, name])
+  @@map("academic_terms")
+}
+
+model Course {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String    @db.Uuid
+  user               User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  term_id            String?   @db.Uuid
+  term               AcademicTerm? @relation(fields: [term_id], references: [id], onDelete: SetNull)
+  name               String    @db.VarChar(255)
+  code               String?   @db.VarChar(50)
+  professor          String?   @db.VarChar(255)
+  color              String?   @db.VarChar(7)
+  credits            Decimal?  @db.Decimal(4, 1)
+  grade_system       String    @default("letter") @db.VarChar(20)
+  target_grade_text  String?   @db.VarChar(20)
+  target_gpa         Decimal?  @db.Decimal(3, 2)
+  target_percentage  Decimal?  @db.Decimal(5, 2)
+  current_gpa        Decimal?  @db.Decimal(3, 2)
+  current_percentage Decimal?  @db.Decimal(5, 2)
+  subject_feeling    Int?      @db.SmallInt
+  syllabus_status    String    @default("missing") @db.VarChar(30)
+  sort_order         Int       @default(0)
+  is_archived        Boolean   @default(false)
+  archived_at        DateTime? @db.Timestamptz
+  created_at         DateTime  @default(now()) @db.Timestamptz
+  updated_at         DateTime  @default(now()) @db.Timestamptz
+
+  subject_materials  SubjectMaterial[]
+  tasks              Task[]
+  focus_sessions     FocusSession[]
+  ada_sessions       AdaSession[]
+
+  @@map("courses")
+}
+
+model SubjectMaterial {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String   @db.Uuid
+  user              User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  course_id         String   @db.Uuid
+  course            Course   @relation(fields: [course_id], references: [id], onDelete: Cascade)
+  material_type     String   @db.VarChar(50)
+  file_name         String?  @db.VarChar(500)
+  file_url          String?
+  mime_type         String?  @db.VarChar(255)
+  file_size_bytes   BigInt?
+  processing_status String   @default("uploaded") @db.VarChar(30)
+  extracted_text    String?
+  metadata          Json     @default("{}")
+  uploaded_at       DateTime @default(now()) @db.Timestamptz
+  updated_at        DateTime @default(now()) @db.Timestamptz
+
+  @@map("subject_materials")
+}
+
+// ============================================================
+// PART C — Tasks, Microtasks & Tags
+// ============================================================
+
+model TaskTag {
+  id         String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String?           @db.Uuid
+  user       User?             @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  label      String            @db.VarChar(100)
+  color      String?           @db.VarChar(7)
+  is_system  Boolean           @default(false)
+  created_at DateTime          @default(now()) @db.Timestamptz
+  links      TaskTagLink[]
+
+  @@map("task_tags")
+}
+
+model Task {
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                 String    @db.Uuid
+  user                    User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  course_id               String?   @db.Uuid
+  course                  Course?   @relation(fields: [course_id], references: [id], onDelete: SetNull)
+  parent_task_id          String?   @db.Uuid
+  parent_task             Task?     @relation("TaskSubtasks", fields: [parent_task_id], references: [id], onDelete: Cascade)
+  subtasks                Task[]    @relation("TaskSubtasks")
+  title                   String    @db.VarChar(255)
+  description             String?
+  task_type               String    @default("assignment") @db.VarChar(50)
+  priority                String    @default("medium") @db.VarChar(20)
+  status                  String    @default("pending") @db.VarChar(20)
+  planner_section         String    @default("anytime") @db.VarChar(20)
+  scheduled_start_at      DateTime? @db.Timestamptz
+  scheduled_end_at        DateTime? @db.Timestamptz
+  due_at                  DateTime? @db.Timestamptz
+  estimated_duration_mins Int?
+  actual_duration_mins    Int?
+  reminder_at             DateTime? @db.Timestamptz
+  repeat_rule             String?
+  is_micro_task           Boolean   @default(false)
+  order_index             Int       @default(0)
+  source                  String    @default("manual") @db.VarChar(30)
+  metadata                Json      @default("{}")
+  completed_at            DateTime? @db.Timestamptz
+  created_at              DateTime  @default(now()) @db.Timestamptz
+  updated_at              DateTime  @default(now()) @db.Timestamptz
+
+  tag_links               TaskTagLink[]
+  steps                   TaskStep[]
+  reschedule_history      TaskRescheduleHistory[]
+  focus_sessions          FocusSession[]
+  ada_plan_items          AdaGeneratedPlanItem[]
+  calendar_events         CalendarEvent[]
+  ada_sessions            AdaSession[]
+
+  @@map("tasks")
+}
+
+model TaskTagLink {
+  task_id    String   @db.Uuid
+  task       Task     @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  tag_id     String   @db.Uuid
+  tag        TaskTag  @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+  created_at DateTime @default(now()) @db.Timestamptz
+
+  @@id([task_id, tag_id])
+  @@map("task_tag_links")
+}
+
+model TaskStep {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  task_id      String    @db.Uuid
+  task         Task      @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  title        String    @db.VarChar(500)
+  description  String?
+  status       String    @default("pending") @db.VarChar(20)
+  order_index  Int       @default(0)
+  completed_at DateTime? @db.Timestamptz
+  created_at   DateTime  @default(now()) @db.Timestamptz
+  updated_at   DateTime  @default(now()) @db.Timestamptz
+
+  @@map("task_steps")
+}
+
+model TaskRescheduleHistory {
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  task_id                String    @db.Uuid
+  task                   Task      @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  old_scheduled_start_at DateTime? @db.Timestamptz
+  old_scheduled_end_at   DateTime? @db.Timestamptz
+  new_scheduled_start_at DateTime? @db.Timestamptz
+  new_scheduled_end_at   DateTime? @db.Timestamptz
+  reason                 String?
+  changed_by             String    @default("user") @db.VarChar(30)
+  created_at             DateTime  @default(now()) @db.Timestamptz
+
+  @@map("task_reschedule_history")
+}
+
+// ============================================================
+// PART D — Prism & Focus Sessions
+// ============================================================
+
+model PrismPreset {
+  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                  String              @unique @db.VarChar(100)
+  description           String?
+  is_system             Boolean             @default(true)
+  created_at            DateTime            @default(now()) @db.Timestamptz
+  audio_profiles        PrismAudioProfile[]
+  focus_sessions        FocusSession[]
+
+  @@map("prism_presets")
+}
+
+model PrismAudioProfile {
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String       @unique @db.Uuid
+  user              User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  default_preset_id String?      @db.Uuid
+  default_preset    PrismPreset? @relation(fields: [default_preset_id], references: [id], onDelete: SetNull)
+  volume_level      Int          @default(50) @db.SmallInt
+  adaptive_audio    Boolean      @default(true)
+  play_in_focus     Boolean      @default(true)
+  created_at        DateTime     @default(now()) @db.Timestamptz
+  updated_at        DateTime     @default(now()) @db.Timestamptz
+
+  @@map("prism_audio_profiles")
+}
+
+model FocusSession {
+  id                    String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id               String       @db.Uuid
+  user                  User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  task_id               String?      @db.Uuid
+  task                  Task?        @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  course_id             String?      @db.Uuid
+  course                Course?      @relation(fields: [course_id], references: [id], onDelete: SetNull)
+  prism_preset_id       String?      @db.Uuid
+  prism_preset          PrismPreset? @relation(fields: [prism_preset_id], references: [id], onDelete: SetNull)
+  started_at            DateTime     @default(now()) @db.Timestamptz
+  ended_at              DateTime?    @db.Timestamptz
+  planned_duration_mins Int?
+  actual_duration_mins  Int?
+  paused_duration_mins  Int          @default(0)
+  interruption_count    Int          @default(0)
+  status                String       @default("completed") @db.VarChar(20)
+  was_completed         Boolean      @default(false)
+  mood_before           Int?         @db.SmallInt
+  mood_after            Int?         @db.SmallInt
+  session_rating        Int?         @db.SmallInt
+  notes                 String?
+  metadata              Json         @default("{}")
+  created_at            DateTime     @default(now()) @db.Timestamptz
+
+  mood_checkins         MoodCheckin[]
+
+  @@map("focus_sessions")
+}
+
+// ============================================================
+// PART E — Mood & Check-ins
+// ============================================================
+
+model MoodCheckin {
+  id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id          String        @db.Uuid
+  user             User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  focus_session_id String?       @db.Uuid
+  focus_session    FocusSession? @relation(fields: [focus_session_id], references: [id], onDelete: SetNull)
+  checkin_type     String        @db.VarChar(30)
+  mood_score       Int           @db.SmallInt
+  mood_label       String?       @db.VarChar(50)
+  note             String?
+  checkin_date     DateTime      @default(now()) @db.Date
+  created_at       DateTime      @default(now()) @db.Timestamptz
+
+  @@map("mood_checkins")
+}
+
+// ============================================================
+// PART F — Analytics
+// ============================================================
+
+model AnalyticsSnapshot {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String   @db.Uuid
+  user                User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  week_start          DateTime @db.Date
+  focus_minutes_total Int      @default(0)
+  tasks_completed     Int      @default(0)
+  tasks_created       Int      @default(0)
+  productivity_score  Decimal? @db.Decimal(5, 2)
+  session_count       Int      @default(0)
+  avg_mood            Decimal? @db.Decimal(4, 2)
+  streak_at_snapshot  Int      @default(0)
+  created_at          DateTime @default(now()) @db.Timestamptz
+
+  @@unique([user_id, week_start])
+  @@map("analytics_snapshots")
+}
+
+model DailyActivitySnapshot {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String   @db.Uuid
+  user                User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  activity_date       DateTime @db.Date
+  focus_minutes_total Int      @default(0)
+  tasks_completed     Int      @default(0)
+  tasks_created       Int      @default(0)
+  mood_score_avg      Decimal? @db.Decimal(4, 2)
+  focus_session_count Int      @default(0)
+  streak_day_number   Int      @default(0)
+  created_at          DateTime @default(now()) @db.Timestamptz
+  updated_at          DateTime @default(now()) @db.Timestamptz
+
+  @@unique([user_id, activity_date])
+  @@map("daily_activity_snapshots")
+}
+
+// ============================================================
+// PART G — Ada AI
+// ============================================================
+
+model AdaSession {
+  id           String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String                 @db.Uuid
+  user         User                   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  course_id    String?                @db.Uuid
+  course       Course?                @relation(fields: [course_id], references: [id], onDelete: SetNull)
+  task_id      String?                @db.Uuid
+  task         Task?                  @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  session_type String                 @default("general") @db.VarChar(50)
+  title        String?                @db.VarChar(255)
+  is_active    Boolean                @default(true)
+  context      Json                   @default("{}")
+  started_at   DateTime               @default(now()) @db.Timestamptz
+  ended_at     DateTime?              @db.Timestamptz
+  created_at   DateTime               @default(now()) @db.Timestamptz
+  updated_at   DateTime               @default(now()) @db.Timestamptz
+  messages     AdaMessage[]
+  plan_items   AdaGeneratedPlanItem[]
+
+  @@map("ada_sessions")
+}
+
+model AdaMessage {
+  id                String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ada_session_id    String     @db.Uuid
+  ada_session       AdaSession @relation(fields: [ada_session_id], references: [id], onDelete: Cascade)
+  role              String     @db.VarChar(20)
+  content           String
+  attachments       Json       @default("[]")
+  metadata          Json       @default("{}")
+  model             String?    @db.VarChar(100)
+  prompt_tokens     Int?
+  completion_tokens Int?
+  sent_at           DateTime   @default(now()) @db.Timestamptz
+
+  @@map("ada_messages")
+}
+
+model AdaGeneratedPlanItem {
+  id               String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ada_session_id   String     @db.Uuid
+  ada_session      AdaSession @relation(fields: [ada_session_id], references: [id], onDelete: Cascade)
+  task_id          String?    @db.Uuid
+  task             Task?      @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  title            String     @db.VarChar(500)
+  planned_start_at DateTime?  @db.Timestamptz
+  planned_end_at   DateTime?  @db.Timestamptz
+  status           String     @default("suggested") @db.VarChar(30)
+  created_at       DateTime   @default(now()) @db.Timestamptz
+
+  @@map("ada_generated_plan_items")
+}
+
+// ============================================================
+// PART H — Calendar Events
+// ============================================================
+
+model CalendarEvent {
+  id                     String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  calendar_connection_id String             @db.Uuid
+  calendar_connection    CalendarConnection @relation(fields: [calendar_connection_id], references: [id], onDelete: Cascade)
+  user_id                String?            @db.Uuid
+  user                   User?              @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  task_id                String?            @db.Uuid
+  task                   Task?              @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  external_event_id      String?            @db.VarChar(500)
+  title                  String             @db.VarChar(500)
+  description            String?
+  starts_at              DateTime           @db.Timestamptz
+  ends_at                DateTime?          @db.Timestamptz
+  is_all_day             Boolean            @default(false)
+  event_source           String             @default("external") @db.VarChar(30)
+  sync_status            String             @default("synced") @db.VarChar(30)
+  metadata               Json               @default("{}")
+  synced_at              DateTime           @default(now()) @db.Timestamptz
+  created_at             DateTime           @default(now()) @db.Timestamptz
+  updated_at             DateTime           @default(now()) @db.Timestamptz
+
+  @@unique([calendar_connection_id, external_event_id])
+  @@map("calendar_events")
+}
+
+// ============================================================
+// PART I — Referral & Share
+// ============================================================
+
+model ReferralCode {
+  id         String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String               @unique @db.Uuid
+  user       User                 @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  code       String               @unique @db.VarChar(50)
+  is_active  Boolean              @default(true)
+  created_at DateTime             @default(now()) @db.Timestamptz
+  redemptions ReferralRedemption[]
+
+  @@map("referral_codes")
+}
+
+model ReferralRedemption {
+  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  referral_code_id String       @db.Uuid
+  referral_code    ReferralCode @relation(fields: [referral_code_id], references: [id], onDelete: Cascade)
+  referred_user_id String       @unique @db.Uuid
+  referred_user    User         @relation(fields: [referred_user_id], references: [id], onDelete: Cascade)
+  redeemed_at      DateTime     @default(now()) @db.Timestamptz
+
+  @@map("referral_redemptions")
+}
+
+model ShareEvent {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String?  @db.Uuid
+  user       User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  share_type String   @db.VarChar(50)
+  task_id    String?  @db.Uuid
+  channel    String?  @db.VarChar(100)
+  created_at DateTime @default(now()) @db.Timestamptz
+
+  @@map("share_events")
+}
+
+// ============================================================
+// PART J — Ratings & Feedback
+// ============================================================
+
+model AppRating {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String?  @db.Uuid
+  user        User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  rating      Int      @db.SmallInt
+  platform    String?  @db.VarChar(20)
+  app_version String?  @db.VarChar(50)
+  comment     String?
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  @@map("app_ratings")
+}
+
+model AppFeedback {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id       String?  @db.Uuid
+  user          User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  feedback_type String   @default("general") @db.VarChar(50)
+  text          String
+  platform      String?  @db.VarChar(20)
+  app_version   String?  @db.VarChar(50)
+  metadata      Json     @default("{}")
+  created_at    DateTime @default(now()) @db.Timestamptz
+
+  @@map("app_feedback")
+}

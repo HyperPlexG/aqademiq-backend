@@ -1,0 +1,33 @@
+# Local dev dependencies for the Aqademiq backend.
+# Matches the defaults in .env.example (Postgres 5432 / Redis 6379).
+#   docker compose up -d      # start
+#   docker compose down       # stop (keeps data)
+#   docker compose down -v    # stop + wipe data
+services:
+  postgres:
+    image: postgres:16
+    container_name: aqademiq-postgres
+    environment:
+      POSTGRES_USER: postgres
+      # Must be the DECODED form of the password in .env DATABASE_URL (%40 -> @).
+      POSTGRES_PASSWORD: "R13Labz@aqademiq"
+      POSTGRES_DB: postgres
+    ports:
+      # Host port 5434 to avoid clashing with the Cloud SQL Auth Proxy on 5432.
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: aqademiq-redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
