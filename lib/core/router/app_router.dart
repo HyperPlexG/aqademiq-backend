@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../features/ada/presentation/ada_screen.dart';
+import '../../features/auth/presentation/forgot_password_screen.dart';
 import '../../features/auth/presentation/guest_ada_prompt.dart';
 import '../../features/auth/presentation/guest_save_prompt.dart';
 import '../../features/auth/presentation/guest_stats_prompt.dart';
@@ -44,6 +45,7 @@ abstract final class Routes {
   static const signin = '/signin';
   static const signup = '/signup';
   static const verify = '/verify';
+  static const forgot = '/forgot';
 
   // Onboarding steps.
   static const obReferral = '/onboarding/referral';
@@ -98,6 +100,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: Routes.signin, builder: (_, _) => const SigninScreen()),
       GoRoute(path: Routes.signup, builder: (_, _) => const SignupScreen()),
       GoRoute(path: Routes.verify, builder: (_, _) => const OtpScreen()),
+      GoRoute(path: Routes.forgot, builder: (_, _) => const ForgotPasswordScreen()),
       GoRoute(path: Routes.guestAda, builder: (_, _) => const GuestAdaPrompt()),
       GoRoute(path: Routes.guestStats, builder: (_, _) => const GuestStatsPrompt()),
       GoRoute(path: Routes.guestSave, builder: (_, _) => const GuestSavePrompt()),

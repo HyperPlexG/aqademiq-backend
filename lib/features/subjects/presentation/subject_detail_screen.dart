@@ -6,6 +6,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_radius.dart';
 import '../../../core/theme/app_text.dart';
 import '../../../core/utils/hex_color.dart';
+import '../../../core/utils/launch_external.dart';
 import '../../../data/models/subject.dart';
 import '../../../data/repositories/subjects_repository.dart';
 import '../../../shared/widgets/mood_blob.dart';
@@ -16,12 +17,6 @@ import 'widgets/subject_form_sheet.dart';
 class SubjectDetailScreen extends ConsumerWidget {
   const SubjectDetailScreen({super.key, required this.id});
   final String id;
-
-  static const List<(IconData, String, String, Color)> _files = [
-    (Icons.picture_as_pdf, 'Course syllabus.pdf', '420 KB', Color(0xFFE85476)),
-    (Icons.slideshow, 'Lecture 1–9 slides.pdf', '8.2 MB', Color(0xFFE8A430)),
-    (Icons.description, 'My parsing notes.md', '12 KB', Color(0xFF5CBBFF)),
-  ];
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -111,16 +106,19 @@ class SubjectDetailScreen extends ConsumerWidget {
                 ],
               ),
               const SizedBox(height: 7),
-              for (final f in _files) ...[
-                _FileRow(
-                  icon: f.$1,
-                  name: f.$2,
-                  size: f.$3,
-                  color: f.$4,
-                  onTap: () => _previewFile(context),
-                ),
-                const SizedBox(height: 6),
-              ],
+              if (subject.files.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Text(
+                    'No materials yet — add one above.',
+                    style: AppText.sans(size: 11.5, color: colors.textDim),
+                  ),
+                )
+              else
+                for (final f in subject.files) ...[
+                  _fileRowFor(context, ref, f),
+                  const SizedBox(height: 6),
+                ],
             ],
           ),
         ),
@@ -144,12 +142,52 @@ class SubjectDetailScreen extends ConsumerWidget {
     );
   }
 
-  /// Previewing a real material needs backend file storage (§8 pass) — stay
-  /// honest until then rather than faking a viewer.
-  void _previewFile(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('File preview is coming soon.')),
+  Widget _fileRowFor(BuildContext context, WidgetRef ref, SubjectFile f) {
+    final (icon, color) = _fileVisual(f.kind);
+    return _FileRow(
+      icon: icon,
+      name: f.name,
+      size: f.sizeLabel ?? '',
+      color: color,
+      onTap: () => _previewFile(context, ref, f.id),
     );
+  }
+
+  (IconData, Color) _fileVisual(String? kind) {
+    switch (kind) {
+      case 'syllabus':
+        return (Icons.picture_as_pdf, const Color(0xFFE85476));
+      case 'slides':
+      case 'lecture_slides':
+        return (Icons.slideshow, const Color(0xFFE8A430));
+      case 'paper':
+      case 'past_papers':
+        return (Icons.article, const Color(0xFF7C5CFC));
+      case 'notes':
+        return (Icons.description, const Color(0xFF5CBBFF));
+      default:
+        return (Icons.insert_drive_file, const Color(0xFF8E8E93));
+    }
+  }
+
+  /// Opens a short-TTL signed URL for the material. In mock mode (or without
+  /// GCS configured) there's no real object, so we say so rather than faking it.
+  Future<void> _previewFile(BuildContext context, WidgetRef ref, String fileId) async {
+    final messenger = ScaffoldMessenger.of(context);
+    String? url;
+    try {
+      url = await ref.read(subjectsRepositoryProvider).fileDownloadUrl(fileId);
+    } on Object catch (_) {
+      url = null;
+    }
+    if (!context.mounted) return;
+    if (url == null) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Preview is available once the file is uploaded.')),
+      );
+      return;
+    }
+    await openExternal(context, Uri.parse(url));
   }
 }
 

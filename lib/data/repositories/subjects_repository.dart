@@ -35,6 +35,9 @@ class SubjectsRepository {
   }
 
   Future<void> deleteSemester(String id) => _source.deleteSemester(id);
+
+  Future<String?> fileDownloadUrl(String fileId) =>
+      _source.fileDownloadUrl(fileId);
 }
 
 final subjectsRepositoryProvider = Provider<SubjectsRepository>((ref) {

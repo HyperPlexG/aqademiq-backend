@@ -26,17 +26,64 @@ class MockMoodSource implements MoodSource {
   }
 }
 
+/// Live impl against `/v1/mood-entries`. Wire `mood_index` is 0–4 (backend
+/// stores 1–5 internally). Morning logs carry an `intention`; evening a
+/// `reflection`.
 class ApiMoodSource implements MoodSource {
   ApiMoodSource(this._dio);
-  // Retained for the §8 wiring pass; real requests use this Dio.
-  // ignore: unused_field
   final Dio _dio;
 
-  Never _notWired() =>
-      throw UnimplementedError('ApiMoodSource is wired in the §8 pass.');
+  static String _ymd(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
   @override
-  Future<List<MoodLogDto>> week() => _notWired();
+  Future<List<MoodLogDto>> week() async {
+    final res = await _dio.get<Map<String, dynamic>>('/v1/mood-entries/week');
+    final days = (res.data?['days'] as List?) ?? const [];
+    final out = <MoodLogDto>[];
+    for (final raw in days) {
+      final d = (raw as Map).cast<String, dynamic>();
+      final mi = d['mood_index'];
+      if (mi is num) {
+        out.add(MoodLogDto(
+          id: 'mood-${d['date']}-morning',
+          date: DateTime.parse(d['date'] as String),
+          phase: 'morning',
+          mood: mi.toInt(),
+          note: d['intention'] as String?,
+        ));
+      }
+    }
+    return out;
+  }
+
   @override
-  Future<MoodLogDto> log(MoodLogDto entry) => _notWired();
+  Future<MoodLogDto> log(MoodLogDto entry) async {
+    final dateStr = _ymd(entry.date);
+    Map<String, dynamic> data;
+    if (entry.phase == 'evening') {
+      final res = await _dio.post<Map<String, dynamic>>(
+        '/v1/mood-entries/$dateStr/reflection',
+        data: {'reflection': entry.note ?? ''},
+      );
+      data = res.data ?? const {};
+    } else {
+      final res = await _dio.post<Map<String, dynamic>>(
+        '/v1/mood-entries',
+        data: {
+          'date': dateStr,
+          'mood_index': entry.mood,
+          if (entry.note != null) 'intention': entry.note,
+        },
+      );
+      data = res.data ?? const {};
+    }
+    return MoodLogDto(
+      id: entry.id.isEmpty ? 'mood-$dateStr-${entry.phase}' : entry.id,
+      date: DateTime.tryParse('${data['date'] ?? dateStr}') ?? entry.date,
+      phase: entry.phase,
+      mood: (data['mood_index'] as num?)?.toInt() ?? entry.mood,
+      note: (data['intention'] ?? data['reflection'] ?? entry.note) as String?,
+    );
+  }
 }

@@ -13,6 +13,18 @@ abstract class SubjectTarget with _$SubjectTarget {
   }) = _SubjectTarget;
 }
 
+/// A material attached to a subject (syllabus, slides, notes, …).
+@freezed
+abstract class SubjectFile with _$SubjectFile {
+  const factory SubjectFile({
+    required String id,
+    required String name,
+    String? kind, // syllabus | slides | notes | paper | …
+    String? sizeLabel, // e.g. "8.2 MB"
+    @Default(false) bool important,
+  }) = _SubjectFile;
+}
+
 /// A study subject (course).
 @freezed
 abstract class Subject with _$Subject {
@@ -30,6 +42,7 @@ abstract class Subject with _$Subject {
     String? nextLabel, // e.g. "Viva · 3 days"
     double? focusHours, // this week
     @Default(0) int fileCount,
+    @Default(<SubjectFile>[]) List<SubjectFile> files,
   }) = _Subject;
 }
 

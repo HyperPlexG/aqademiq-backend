@@ -281,9 +281,284 @@ as double,
 
 
 /// @nodoc
+mixin _$SubjectFileDto {
+
+ String get id; String get name; String? get kind; String? get sizeLabel; bool get important;
+/// Create a copy of SubjectFileDto
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$SubjectFileDtoCopyWith<SubjectFileDto> get copyWith => _$SubjectFileDtoCopyWithImpl<SubjectFileDto>(this as SubjectFileDto, _$identity);
+
+  /// Serializes this SubjectFileDto to a JSON map.
+  Map<String, dynamic> toJson();
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is SubjectFileDto&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.sizeLabel, sizeLabel) || other.sizeLabel == sizeLabel)&&(identical(other.important, important) || other.important == important));
+}
+
+@JsonKey(includeFromJson: false, includeToJson: false)
+@override
+int get hashCode => Object.hash(runtimeType,id,name,kind,sizeLabel,important);
+
+@override
+String toString() {
+  return 'SubjectFileDto(id: $id, name: $name, kind: $kind, sizeLabel: $sizeLabel, important: $important)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $SubjectFileDtoCopyWith<$Res>  {
+  factory $SubjectFileDtoCopyWith(SubjectFileDto value, $Res Function(SubjectFileDto) _then) = _$SubjectFileDtoCopyWithImpl;
+@useResult
+$Res call({
+ String id, String name, String? kind, String? sizeLabel, bool important
+});
+
+
+
+
+}
+/// @nodoc
+class _$SubjectFileDtoCopyWithImpl<$Res>
+    implements $SubjectFileDtoCopyWith<$Res> {
+  _$SubjectFileDtoCopyWithImpl(this._self, this._then);
+
+  final SubjectFileDto _self;
+  final $Res Function(SubjectFileDto) _then;
+
+/// Create a copy of SubjectFileDto
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? name = null,Object? kind = freezed,Object? sizeLabel = freezed,Object? important = null,}) {
+  return _then(_self.copyWith(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as String,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
+as String,kind: freezed == kind ? _self.kind : kind // ignore: cast_nullable_to_non_nullable
+as String?,sizeLabel: freezed == sizeLabel ? _self.sizeLabel : sizeLabel // ignore: cast_nullable_to_non_nullable
+as String?,important: null == important ? _self.important : important // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [SubjectFileDto].
+extension SubjectFileDtoPatterns on SubjectFileDto {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _SubjectFileDto value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _SubjectFileDto() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _SubjectFileDto value)  $default,){
+final _that = this;
+switch (_that) {
+case _SubjectFileDto():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _SubjectFileDto value)?  $default,){
+final _that = this;
+switch (_that) {
+case _SubjectFileDto() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String name,  String? kind,  String? sizeLabel,  bool important)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _SubjectFileDto() when $default != null:
+return $default(_that.id,_that.name,_that.kind,_that.sizeLabel,_that.important);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String name,  String? kind,  String? sizeLabel,  bool important)  $default,) {final _that = this;
+switch (_that) {
+case _SubjectFileDto():
+return $default(_that.id,_that.name,_that.kind,_that.sizeLabel,_that.important);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String name,  String? kind,  String? sizeLabel,  bool important)?  $default,) {final _that = this;
+switch (_that) {
+case _SubjectFileDto() when $default != null:
+return $default(_that.id,_that.name,_that.kind,_that.sizeLabel,_that.important);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+@JsonSerializable()
+
+class _SubjectFileDto implements SubjectFileDto {
+  const _SubjectFileDto({required this.id, required this.name, this.kind, this.sizeLabel, this.important = false});
+  factory _SubjectFileDto.fromJson(Map<String, dynamic> json) => _$SubjectFileDtoFromJson(json);
+
+@override final  String id;
+@override final  String name;
+@override final  String? kind;
+@override final  String? sizeLabel;
+@override@JsonKey() final  bool important;
+
+/// Create a copy of SubjectFileDto
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$SubjectFileDtoCopyWith<_SubjectFileDto> get copyWith => __$SubjectFileDtoCopyWithImpl<_SubjectFileDto>(this, _$identity);
+
+@override
+Map<String, dynamic> toJson() {
+  return _$SubjectFileDtoToJson(this, );
+}
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _SubjectFileDto&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.sizeLabel, sizeLabel) || other.sizeLabel == sizeLabel)&&(identical(other.important, important) || other.important == important));
+}
+
+@JsonKey(includeFromJson: false, includeToJson: false)
+@override
+int get hashCode => Object.hash(runtimeType,id,name,kind,sizeLabel,important);
+
+@override
+String toString() {
+  return 'SubjectFileDto(id: $id, name: $name, kind: $kind, sizeLabel: $sizeLabel, important: $important)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$SubjectFileDtoCopyWith<$Res> implements $SubjectFileDtoCopyWith<$Res> {
+  factory _$SubjectFileDtoCopyWith(_SubjectFileDto value, $Res Function(_SubjectFileDto) _then) = __$SubjectFileDtoCopyWithImpl;
+@override @useResult
+$Res call({
+ String id, String name, String? kind, String? sizeLabel, bool important
+});
+
+
+
+
+}
+/// @nodoc
+class __$SubjectFileDtoCopyWithImpl<$Res>
+    implements _$SubjectFileDtoCopyWith<$Res> {
+  __$SubjectFileDtoCopyWithImpl(this._self, this._then);
+
+  final _SubjectFileDto _self;
+  final $Res Function(_SubjectFileDto) _then;
+
+/// Create a copy of SubjectFileDto
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? name = null,Object? kind = freezed,Object? sizeLabel = freezed,Object? important = null,}) {
+  return _then(_SubjectFileDto(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as String,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
+as String,kind: freezed == kind ? _self.kind : kind // ignore: cast_nullable_to_non_nullable
+as String?,sizeLabel: freezed == sizeLabel ? _self.sizeLabel : sizeLabel // ignore: cast_nullable_to_non_nullable
+as String?,important: null == important ? _self.important : important // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+
+}
+
+
+/// @nodoc
 mixin _$SubjectDto {
 
- String get id; String get name; String get color; String get semesterId; String? get code; SubjectTargetDto? get target; String? get targetGrade; String? get professor; int? get credits; int? get mood; String? get nextLabel; double? get focusHours; int get fileCount;
+ String get id; String get name; String get color; String get semesterId; String? get code; SubjectTargetDto? get target; String? get targetGrade; String? get professor; int? get credits; int? get mood; String? get nextLabel; double? get focusHours; int get fileCount; List<SubjectFileDto> get files;
 /// Create a copy of SubjectDto
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -296,16 +571,16 @@ $SubjectDtoCopyWith<SubjectDto> get copyWith => _$SubjectDtoCopyWithImpl<Subject
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is SubjectDto&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.color, color) || other.color == color)&&(identical(other.semesterId, semesterId) || other.semesterId == semesterId)&&(identical(other.code, code) || other.code == code)&&(identical(other.target, target) || other.target == target)&&(identical(other.targetGrade, targetGrade) || other.targetGrade == targetGrade)&&(identical(other.professor, professor) || other.professor == professor)&&(identical(other.credits, credits) || other.credits == credits)&&(identical(other.mood, mood) || other.mood == mood)&&(identical(other.nextLabel, nextLabel) || other.nextLabel == nextLabel)&&(identical(other.focusHours, focusHours) || other.focusHours == focusHours)&&(identical(other.fileCount, fileCount) || other.fileCount == fileCount));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is SubjectDto&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.color, color) || other.color == color)&&(identical(other.semesterId, semesterId) || other.semesterId == semesterId)&&(identical(other.code, code) || other.code == code)&&(identical(other.target, target) || other.target == target)&&(identical(other.targetGrade, targetGrade) || other.targetGrade == targetGrade)&&(identical(other.professor, professor) || other.professor == professor)&&(identical(other.credits, credits) || other.credits == credits)&&(identical(other.mood, mood) || other.mood == mood)&&(identical(other.nextLabel, nextLabel) || other.nextLabel == nextLabel)&&(identical(other.focusHours, focusHours) || other.focusHours == focusHours)&&(identical(other.fileCount, fileCount) || other.fileCount == fileCount)&&const DeepCollectionEquality().equals(other.files, files));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,name,color,semesterId,code,target,targetGrade,professor,credits,mood,nextLabel,focusHours,fileCount);
+int get hashCode => Object.hash(runtimeType,id,name,color,semesterId,code,target,targetGrade,professor,credits,mood,nextLabel,focusHours,fileCount,const DeepCollectionEquality().hash(files));
 
 @override
 String toString() {
-  return 'SubjectDto(id: $id, name: $name, color: $color, semesterId: $semesterId, code: $code, target: $target, targetGrade: $targetGrade, professor: $professor, credits: $credits, mood: $mood, nextLabel: $nextLabel, focusHours: $focusHours, fileCount: $fileCount)';
+  return 'SubjectDto(id: $id, name: $name, color: $color, semesterId: $semesterId, code: $code, target: $target, targetGrade: $targetGrade, professor: $professor, credits: $credits, mood: $mood, nextLabel: $nextLabel, focusHours: $focusHours, fileCount: $fileCount, files: $files)';
 }
 
 
@@ -316,7 +591,7 @@ abstract mixin class $SubjectDtoCopyWith<$Res>  {
   factory $SubjectDtoCopyWith(SubjectDto value, $Res Function(SubjectDto) _then) = _$SubjectDtoCopyWithImpl;
 @useResult
 $Res call({
- String id, String name, String color, String semesterId, String? code, SubjectTargetDto? target, String? targetGrade, String? professor, int? credits, int? mood, String? nextLabel, double? focusHours, int fileCount
+ String id, String name, String color, String semesterId, String? code, SubjectTargetDto? target, String? targetGrade, String? professor, int? credits, int? mood, String? nextLabel, double? focusHours, int fileCount, List<SubjectFileDto> files
 });
 
 
@@ -333,7 +608,7 @@ class _$SubjectDtoCopyWithImpl<$Res>
 
 /// Create a copy of SubjectDto
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? name = null,Object? color = null,Object? semesterId = null,Object? code = freezed,Object? target = freezed,Object? targetGrade = freezed,Object? professor = freezed,Object? credits = freezed,Object? mood = freezed,Object? nextLabel = freezed,Object? focusHours = freezed,Object? fileCount = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? name = null,Object? color = null,Object? semesterId = null,Object? code = freezed,Object? target = freezed,Object? targetGrade = freezed,Object? professor = freezed,Object? credits = freezed,Object? mood = freezed,Object? nextLabel = freezed,Object? focusHours = freezed,Object? fileCount = null,Object? files = null,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
@@ -348,7 +623,8 @@ as int?,mood: freezed == mood ? _self.mood : mood // ignore: cast_nullable_to_no
 as int?,nextLabel: freezed == nextLabel ? _self.nextLabel : nextLabel // ignore: cast_nullable_to_non_nullable
 as String?,focusHours: freezed == focusHours ? _self.focusHours : focusHours // ignore: cast_nullable_to_non_nullable
 as double?,fileCount: null == fileCount ? _self.fileCount : fileCount // ignore: cast_nullable_to_non_nullable
-as int,
+as int,files: null == files ? _self.files : files // ignore: cast_nullable_to_non_nullable
+as List<SubjectFileDto>,
   ));
 }
 /// Create a copy of SubjectDto
@@ -445,10 +721,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String name,  String color,  String semesterId,  String? code,  SubjectTargetDto? target,  String? targetGrade,  String? professor,  int? credits,  int? mood,  String? nextLabel,  double? focusHours,  int fileCount)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String name,  String color,  String semesterId,  String? code,  SubjectTargetDto? target,  String? targetGrade,  String? professor,  int? credits,  int? mood,  String? nextLabel,  double? focusHours,  int fileCount,  List<SubjectFileDto> files)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _SubjectDto() when $default != null:
-return $default(_that.id,_that.name,_that.color,_that.semesterId,_that.code,_that.target,_that.targetGrade,_that.professor,_that.credits,_that.mood,_that.nextLabel,_that.focusHours,_that.fileCount);case _:
+return $default(_that.id,_that.name,_that.color,_that.semesterId,_that.code,_that.target,_that.targetGrade,_that.professor,_that.credits,_that.mood,_that.nextLabel,_that.focusHours,_that.fileCount,_that.files);case _:
   return orElse();
 
 }
@@ -466,10 +742,10 @@ return $default(_that.id,_that.name,_that.color,_that.semesterId,_that.code,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String name,  String color,  String semesterId,  String? code,  SubjectTargetDto? target,  String? targetGrade,  String? professor,  int? credits,  int? mood,  String? nextLabel,  double? focusHours,  int fileCount)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String name,  String color,  String semesterId,  String? code,  SubjectTargetDto? target,  String? targetGrade,  String? professor,  int? credits,  int? mood,  String? nextLabel,  double? focusHours,  int fileCount,  List<SubjectFileDto> files)  $default,) {final _that = this;
 switch (_that) {
 case _SubjectDto():
-return $default(_that.id,_that.name,_that.color,_that.semesterId,_that.code,_that.target,_that.targetGrade,_that.professor,_that.credits,_that.mood,_that.nextLabel,_that.focusHours,_that.fileCount);case _:
+return $default(_that.id,_that.name,_that.color,_that.semesterId,_that.code,_that.target,_that.targetGrade,_that.professor,_that.credits,_that.mood,_that.nextLabel,_that.focusHours,_that.fileCount,_that.files);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -486,10 +762,10 @@ return $default(_that.id,_that.name,_that.color,_that.semesterId,_that.code,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String name,  String color,  String semesterId,  String? code,  SubjectTargetDto? target,  String? targetGrade,  String? professor,  int? credits,  int? mood,  String? nextLabel,  double? focusHours,  int fileCount)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String name,  String color,  String semesterId,  String? code,  SubjectTargetDto? target,  String? targetGrade,  String? professor,  int? credits,  int? mood,  String? nextLabel,  double? focusHours,  int fileCount,  List<SubjectFileDto> files)?  $default,) {final _that = this;
 switch (_that) {
 case _SubjectDto() when $default != null:
-return $default(_that.id,_that.name,_that.color,_that.semesterId,_that.code,_that.target,_that.targetGrade,_that.professor,_that.credits,_that.mood,_that.nextLabel,_that.focusHours,_that.fileCount);case _:
+return $default(_that.id,_that.name,_that.color,_that.semesterId,_that.code,_that.target,_that.targetGrade,_that.professor,_that.credits,_that.mood,_that.nextLabel,_that.focusHours,_that.fileCount,_that.files);case _:
   return null;
 
 }
@@ -501,7 +777,7 @@ return $default(_that.id,_that.name,_that.color,_that.semesterId,_that.code,_tha
 @JsonSerializable()
 
 class _SubjectDto implements SubjectDto {
-  const _SubjectDto({required this.id, required this.name, required this.color, required this.semesterId, this.code, this.target, this.targetGrade, this.professor, this.credits, this.mood, this.nextLabel, this.focusHours, this.fileCount = 0});
+  const _SubjectDto({required this.id, required this.name, required this.color, required this.semesterId, this.code, this.target, this.targetGrade, this.professor, this.credits, this.mood, this.nextLabel, this.focusHours, this.fileCount = 0, final  List<SubjectFileDto> files = const <SubjectFileDto>[]}): _files = files;
   factory _SubjectDto.fromJson(Map<String, dynamic> json) => _$SubjectDtoFromJson(json);
 
 @override final  String id;
@@ -517,6 +793,13 @@ class _SubjectDto implements SubjectDto {
 @override final  String? nextLabel;
 @override final  double? focusHours;
 @override@JsonKey() final  int fileCount;
+ final  List<SubjectFileDto> _files;
+@override@JsonKey() List<SubjectFileDto> get files {
+  if (_files is EqualUnmodifiableListView) return _files;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_files);
+}
+
 
 /// Create a copy of SubjectDto
 /// with the given fields replaced by the non-null parameter values.
@@ -531,16 +814,16 @@ Map<String, dynamic> toJson() {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _SubjectDto&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.color, color) || other.color == color)&&(identical(other.semesterId, semesterId) || other.semesterId == semesterId)&&(identical(other.code, code) || other.code == code)&&(identical(other.target, target) || other.target == target)&&(identical(other.targetGrade, targetGrade) || other.targetGrade == targetGrade)&&(identical(other.professor, professor) || other.professor == professor)&&(identical(other.credits, credits) || other.credits == credits)&&(identical(other.mood, mood) || other.mood == mood)&&(identical(other.nextLabel, nextLabel) || other.nextLabel == nextLabel)&&(identical(other.focusHours, focusHours) || other.focusHours == focusHours)&&(identical(other.fileCount, fileCount) || other.fileCount == fileCount));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _SubjectDto&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.color, color) || other.color == color)&&(identical(other.semesterId, semesterId) || other.semesterId == semesterId)&&(identical(other.code, code) || other.code == code)&&(identical(other.target, target) || other.target == target)&&(identical(other.targetGrade, targetGrade) || other.targetGrade == targetGrade)&&(identical(other.professor, professor) || other.professor == professor)&&(identical(other.credits, credits) || other.credits == credits)&&(identical(other.mood, mood) || other.mood == mood)&&(identical(other.nextLabel, nextLabel) || other.nextLabel == nextLabel)&&(identical(other.focusHours, focusHours) || other.focusHours == focusHours)&&(identical(other.fileCount, fileCount) || other.fileCount == fileCount)&&const DeepCollectionEquality().equals(other._files, _files));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,name,color,semesterId,code,target,targetGrade,professor,credits,mood,nextLabel,focusHours,fileCount);
+int get hashCode => Object.hash(runtimeType,id,name,color,semesterId,code,target,targetGrade,professor,credits,mood,nextLabel,focusHours,fileCount,const DeepCollectionEquality().hash(_files));
 
 @override
 String toString() {
-  return 'SubjectDto(id: $id, name: $name, color: $color, semesterId: $semesterId, code: $code, target: $target, targetGrade: $targetGrade, professor: $professor, credits: $credits, mood: $mood, nextLabel: $nextLabel, focusHours: $focusHours, fileCount: $fileCount)';
+  return 'SubjectDto(id: $id, name: $name, color: $color, semesterId: $semesterId, code: $code, target: $target, targetGrade: $targetGrade, professor: $professor, credits: $credits, mood: $mood, nextLabel: $nextLabel, focusHours: $focusHours, fileCount: $fileCount, files: $files)';
 }
 
 
@@ -551,7 +834,7 @@ abstract mixin class _$SubjectDtoCopyWith<$Res> implements $SubjectDtoCopyWith<$
   factory _$SubjectDtoCopyWith(_SubjectDto value, $Res Function(_SubjectDto) _then) = __$SubjectDtoCopyWithImpl;
 @override @useResult
 $Res call({
- String id, String name, String color, String semesterId, String? code, SubjectTargetDto? target, String? targetGrade, String? professor, int? credits, int? mood, String? nextLabel, double? focusHours, int fileCount
+ String id, String name, String color, String semesterId, String? code, SubjectTargetDto? target, String? targetGrade, String? professor, int? credits, int? mood, String? nextLabel, double? focusHours, int fileCount, List<SubjectFileDto> files
 });
 
 
@@ -568,7 +851,7 @@ class __$SubjectDtoCopyWithImpl<$Res>
 
 /// Create a copy of SubjectDto
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? name = null,Object? color = null,Object? semesterId = null,Object? code = freezed,Object? target = freezed,Object? targetGrade = freezed,Object? professor = freezed,Object? credits = freezed,Object? mood = freezed,Object? nextLabel = freezed,Object? focusHours = freezed,Object? fileCount = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? name = null,Object? color = null,Object? semesterId = null,Object? code = freezed,Object? target = freezed,Object? targetGrade = freezed,Object? professor = freezed,Object? credits = freezed,Object? mood = freezed,Object? nextLabel = freezed,Object? focusHours = freezed,Object? fileCount = null,Object? files = null,}) {
   return _then(_SubjectDto(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
@@ -583,7 +866,8 @@ as int?,mood: freezed == mood ? _self.mood : mood // ignore: cast_nullable_to_no
 as int?,nextLabel: freezed == nextLabel ? _self.nextLabel : nextLabel // ignore: cast_nullable_to_non_nullable
 as String?,focusHours: freezed == focusHours ? _self.focusHours : focusHours // ignore: cast_nullable_to_non_nullable
 as double?,fileCount: null == fileCount ? _self.fileCount : fileCount // ignore: cast_nullable_to_non_nullable
-as int,
+as int,files: null == files ? _self._files : files // ignore: cast_nullable_to_non_nullable
+as List<SubjectFileDto>,
   ));
 }
 

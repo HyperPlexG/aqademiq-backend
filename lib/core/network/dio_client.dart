@@ -1,26 +1,31 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/auth/token_store.dart';
 import '../env/env.dart';
+import 'auth_interceptor.dart';
 
 /// The shared Dio instance for the NestJS REST API on Cloud Run.
 ///
-/// Phase A ships only the base configuration; the §8 wiring pass adds the
-/// Identity-Platform ID-token interceptor (Bearer + refresh on 401), retry, and
-/// Cloud Trace headers (README §8.2).
+/// Base URL is supplied at build time via `--dart-define=API_BASE_URL=...`
+/// (empty in mock mode, where this client is never exercised). Requests carry
+/// the Bearer access token and refresh once on 401 via [AuthInterceptor].
+/// Feature data sources call `/v1/...` paths against this client.
 final dioProvider = Provider<Dio>((ref) {
-  final dio = Dio(
-    BaseOptions(
-      // Supplied via --dart-define at build time (empty in mock mode).
-      // ignore: avoid_redundant_argument_values
-      baseUrl: Env.apiBaseUrl,
-      connectTimeout: const Duration(seconds: 15),
-      receiveTimeout: const Duration(seconds: 20),
-      contentType: Headers.jsonContentType,
-    ),
+  final options = BaseOptions(
+    // Empty in mock builds; supplied via --dart-define for live builds.
+    // ignore: avoid_redundant_argument_values
+    baseUrl: Env.apiBaseUrl,
+    connectTimeout: const Duration(seconds: 15),
+    receiveTimeout: const Duration(seconds: 20),
+    contentType: Headers.jsonContentType,
   );
-  // TODO(aqademiq): §8 — dio.interceptors.add(AuthTokenInterceptor(...));
-  // TODO(aqademiq): §8 — dio.interceptors.add(RetryInterceptor(...));
-  // TODO(aqademiq): §8 — dio.interceptors.add(CloudTraceInterceptor());
+
+  final dio = Dio(options);
+  // Bare client (no auth interceptor) dedicated to the refresh call + replays,
+  // so token refresh can never recurse into itself.
+  final refreshDio = Dio(options);
+
+  dio.interceptors.add(AuthInterceptor(ref.watch(tokenStoreProvider), refreshDio));
   return dio;
 });

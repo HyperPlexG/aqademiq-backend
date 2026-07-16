@@ -98,6 +98,27 @@ extension SubjectDtoX on SubjectDto {
         nextLabel: nextLabel,
         focusHours: focusHours,
         fileCount: fileCount,
+        files: files.map((f) => f.toModel()).toList(),
+      );
+}
+
+extension SubjectFileDtoX on SubjectFileDto {
+  SubjectFile toModel() => SubjectFile(
+        id: id,
+        name: name,
+        kind: kind,
+        sizeLabel: sizeLabel,
+        important: important,
+      );
+}
+
+extension SubjectFileX on SubjectFile {
+  SubjectFileDto toDto() => SubjectFileDto(
+        id: id,
+        name: name,
+        kind: kind,
+        sizeLabel: sizeLabel,
+        important: important,
       );
 }
 
@@ -127,6 +148,7 @@ extension SubjectX on Subject {
         nextLabel: nextLabel,
         focusHours: focusHours,
         fileCount: fileCount,
+        files: files.map((f) => f.toDto()).toList(),
       );
 }
 

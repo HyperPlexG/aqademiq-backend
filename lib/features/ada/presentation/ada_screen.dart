@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -39,6 +40,22 @@ class _AdaScreenState extends ConsumerState<AdaScreen> {
     unawaited(ref.read(adaChatProvider.notifier).send(value));
   }
 
+  Future<void> _attach() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final file = await openFile();
+    if (file == null) return;
+    final bytes = await file.readAsBytes();
+    final ok = await ref.read(adaChatProvider.notifier).attach(
+          bytes: bytes,
+          name: file.name,
+          mimeType: file.mimeType,
+        );
+    if (!mounted || ok) return;
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Attaching needs file storage configured on the server.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final chat = ref.watch(adaChatProvider);
@@ -49,7 +66,10 @@ class _AdaScreenState extends ConsumerState<AdaScreen> {
     return DismissKeyboard(
       child: Column(
         children: [
-          _Header(onHistory: () => unawaited(showChatHistory(context))),
+          _Header(
+            onHistory: () => unawaited(showChatHistory(context)),
+            onUpload: () => unawaited(_attach()),
+          ),
           Expanded(
             child: chat.isEmpty
                 ? _EmptyState(onSuggest: _send)
@@ -70,8 +90,9 @@ class _AdaScreenState extends ConsumerState<AdaScreen> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.onHistory});
+  const _Header({required this.onHistory, required this.onUpload});
   final VoidCallback onHistory;
+  final VoidCallback onUpload;
 
   @override
   Widget build(BuildContext context) {
@@ -96,9 +117,7 @@ class _Header extends StatelessWidget {
           const Spacer(),
           GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Document upload is coming soon.')),
-            ),
+            onTap: onUpload,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
               decoration: BoxDecoration(color: colors.bg, borderRadius: BorderRadius.circular(AppRadius.pill)),

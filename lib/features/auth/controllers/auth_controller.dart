@@ -37,6 +37,32 @@ class AuthController extends AsyncNotifier<void> {
   Future<bool> verify(String code) =>
       _run(() => ref.read(authRepositoryProvider).verifyOtp(code));
 
+  Future<bool> changePassword({
+    required String oldPassword,
+    required String newPassword,
+  }) =>
+      _run(() => ref.read(authRepositoryProvider).changePassword(
+            oldPassword: oldPassword,
+            newPassword: newPassword,
+          ));
+
+  Future<bool> forgotPassword(String email) =>
+      _run(() => ref.read(authRepositoryProvider).forgotPassword(email));
+
+  Future<bool> forgotVerify({required String email, required String code}) =>
+      _run(() => ref.read(authRepositoryProvider).forgotVerify(email: email, code: code));
+
+  Future<bool> forgotReset({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) =>
+      _run(() => ref.read(authRepositoryProvider).forgotReset(
+            email: email,
+            code: code,
+            newPassword: newPassword,
+          ));
+
   Future<bool> _run(Future<void> Function() action) async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(action);

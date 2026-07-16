@@ -15,6 +15,20 @@ abstract class SubjectTargetDto with _$SubjectTargetDto {
 }
 
 @freezed
+abstract class SubjectFileDto with _$SubjectFileDto {
+  const factory SubjectFileDto({
+    required String id,
+    required String name,
+    String? kind,
+    String? sizeLabel,
+    @Default(false) bool important,
+  }) = _SubjectFileDto;
+
+  factory SubjectFileDto.fromJson(Map<String, dynamic> json) =>
+      _$SubjectFileDtoFromJson(json);
+}
+
+@freezed
 abstract class SubjectDto with _$SubjectDto {
   const factory SubjectDto({
     required String id,
@@ -30,6 +44,7 @@ abstract class SubjectDto with _$SubjectDto {
     String? nextLabel,
     double? focusHours,
     @Default(0) int fileCount,
+    @Default(<SubjectFileDto>[]) List<SubjectFileDto> files,
   }) = _SubjectDto;
 
   factory SubjectDto.fromJson(Map<String, dynamic> json) =>

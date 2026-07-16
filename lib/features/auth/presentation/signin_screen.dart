@@ -85,9 +85,7 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Password reset arrives with account sync — coming soon.')),
-                  ),
+                  onTap: () => context.push(Routes.forgot),
                   child: Text(
                     'Forgot password?',
                     style: AppText.sans(size: 11.5, weight: FontWeight.w700, color: colors.accent),

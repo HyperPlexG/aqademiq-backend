@@ -38,21 +38,42 @@ class MockTagsSource implements TagsSource {
   }
 }
 
+/// Live impl against `/v1/study-tags`. The backend keys tags by **label** for
+/// delete, so `delete(id)` resolves the id → label via the current list first.
+/// Create/delete return the full refreshed list (the interface contract).
 class ApiTagsSource implements TagsSource {
   ApiTagsSource(this._dio);
-  // Retained for the §8 wiring pass; real requests use this Dio.
-  // ignore: unused_field
   final Dio _dio;
 
   @override
-  Future<List<TagDto>> all() =>
-      throw UnimplementedError('ApiTagsSource is wired in the §8 pass.');
+  Future<List<TagDto>> all() async {
+    final res = await _dio.get<Map<String, dynamic>>('/v1/study-tags');
+    final list = (res.data?['tags'] as List?) ?? const [];
+    return list.map((j) => _fromTag((j as Map).cast<String, dynamic>())).toList(growable: false);
+  }
 
   @override
-  Future<List<TagDto>> create(TagDto tag) =>
-      throw UnimplementedError('ApiTagsSource is wired in the §8 pass.');
+  Future<List<TagDto>> create(TagDto tag) async {
+    await _dio.post<Map<String, dynamic>>(
+      '/v1/study-tags',
+      data: {'label': tag.label, 'color': tag.color},
+    );
+    return all();
+  }
 
   @override
-  Future<List<TagDto>> delete(String id) =>
-      throw UnimplementedError('ApiTagsSource is wired in the §8 pass.');
+  Future<List<TagDto>> delete(String id) async {
+    final current = await all();
+    final match = current.where((t) => t.id == id).toList();
+    if (match.isNotEmpty) {
+      await _dio.delete<dynamic>('/v1/study-tags/${Uri.encodeComponent(match.first.label)}');
+    }
+    return all();
+  }
+
+  TagDto _fromTag(Map<String, dynamic> j) => TagDto(
+        id: j['id'] as String,
+        label: (j['label'] as String?) ?? '',
+        color: (j['color'] as String?) ?? '#8E8E93',
+      );
 }

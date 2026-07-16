@@ -3,7 +3,10 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/env/env.dart';
+import '../../core/network/dio_client.dart';
 import '../models/app_user.dart';
+import 'api_auth_repository.dart';
+import 'token_store.dart';
 
 /// Auth behind an interface (README §7, seam 4). A [MockAuthRepository] backs the
 /// app today; the §8 pass adds an Identity Platform (`firebase_auth`) impl with
@@ -38,6 +41,26 @@ abstract interface class AuthRepository {
   Future<AppUser> linkGuestToAccount({
     required String email,
     required String password,
+  });
+
+  /// Change the account password (requires the current one).
+  Future<void> changePassword({
+    required String oldPassword,
+    required String newPassword,
+  });
+
+  /// Password reset, step 1: email a reset code. Never reveals if the email
+  /// exists (the backend responds the same either way).
+  Future<void> forgotPassword(String email);
+
+  /// Step 2: check the reset code is valid (throws if not).
+  Future<void> forgotVerify({required String email, required String code});
+
+  /// Step 3: set a new password using the verified code.
+  Future<void> forgotReset({
+    required String email,
+    required String code,
+    required String newPassword,
   });
 
   Future<void> signOut();
@@ -122,6 +145,26 @@ class MockAuthRepository implements AuthRepository {
   }
 
   @override
+  Future<void> changePassword({
+    required String oldPassword,
+    required String newPassword,
+  }) => _delayed(null);
+
+  @override
+  Future<void> forgotPassword(String email) => _delayed(null);
+
+  @override
+  Future<void> forgotVerify({required String email, required String code}) =>
+      _delayed(null);
+
+  @override
+  Future<void> forgotReset({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) => _delayed(null);
+
+  @override
   Future<void> signOut() async {
     await _delayed(null);
     _emit(null);
@@ -132,13 +175,14 @@ class MockAuthRepository implements AuthRepository {
 }
 
 final authRepositoryProvider = Provider<AuthRepository>((ref) {
+  final AuthRepository repo;
   if (Env.useMocks) {
-    final repo = MockAuthRepository();
-    ref.onDispose(repo.dispose);
-    return repo;
+    repo = MockAuthRepository();
+  } else {
+    repo = ApiAuthRepository(ref.watch(dioProvider), ref.watch(tokenStoreProvider));
   }
-  // TODO(aqademiq): §8 — return IdentityPlatformAuthRepository(firebaseAuth).
-  throw UnimplementedError('Live auth is wired during the §8 integration pass.');
+  ref.onDispose(repo.dispose);
+  return repo;
 });
 
 /// Current user as an `AsyncValue` (loading / data / error for free).
