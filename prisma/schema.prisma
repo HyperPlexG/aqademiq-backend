@@ -3,6 +3,15 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Deno client for Supabase Edge Functions (supabase/functions/*) — Rust-free
+// engine (query compiler) + driver adapter, since the default binary engine
+// cannot run in the edge sandbox. Output is generated, not committed.
+generator edge {
+  provider = "prisma-client"
+  output   = "../supabase/functions/_shared/prisma"
+  runtime  = "deno"
+}
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")

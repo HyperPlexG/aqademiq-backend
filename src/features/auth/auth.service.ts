@@ -41,6 +41,13 @@ const OTP_RESEND_COOLDOWN_MS = 24 * 1000;
 const SIGNIN_MAX_FAILS       = 5;
 const SIGNIN_LOCKOUT_SECONDS = 15 * 60;
 
+// Per-email budgets, independent of source IP — bound OTP brute force / bombing
+// even when an attacker rotates X-Forwarded-For (§2.1/§4.7 hardening).
+const OTP_ISSUE_MAX_PER_HOUR   = 6;
+const OTP_ISSUE_WINDOW_SECONDS = 60 * 60;
+const OTP_VERIFY_MAX_PER_WINDOW = 10;
+const OTP_VERIFY_WINDOW_SECONDS = 15 * 60;
+
 function tooManyRequests(message: string): HttpException {
   return new HttpException(message, HttpStatus.TOO_MANY_REQUESTS);
 }
@@ -143,6 +150,7 @@ export class AuthService {
   /** Validate the 6-digit OTP → mark identity verified → mint the first token pair. */
   async verifyOtp(dto: VerifyOtpDto, info: SessionInfo = {}) {
     const email = this.normalizeEmail(dto.email);
+    await this.assertEmailBudget('otp_verify_signup', email, OTP_VERIFY_MAX_PER_WINDOW, OTP_VERIFY_WINDOW_SECONDS);
 
     const record = await this.findLatestOtp(email, 'signup');
     this.assertOtpValid(record, dto.code);
@@ -272,6 +280,7 @@ export class AuthService {
 
   async forgotVerify(dto: ForgotVerifyDto) {
     const email  = this.normalizeEmail(dto.email);
+    await this.assertEmailBudget('otp_verify_reset', email, OTP_VERIFY_MAX_PER_WINDOW, OTP_VERIFY_WINDOW_SECONDS);
     const record = await this.findLatestOtp(email, 'password_reset');
     this.assertOtpValid(record, dto.code);
     return { valid: true };
@@ -279,6 +288,7 @@ export class AuthService {
 
   async forgotReset(dto: ForgotResetDto) {
     const email    = this.normalizeEmail(dto.email);
+    await this.assertEmailBudget('otp_verify_reset', email, OTP_VERIFY_MAX_PER_WINDOW, OTP_VERIFY_WINDOW_SECONDS);
     const record   = await this.findLatestOtp(email, 'password_reset');
     this.assertOtpValid(record, dto.code);
 
@@ -522,6 +532,7 @@ export class AuthService {
    *  and the matching email AuthIdentity to it. */
   async changeEmailVerify(userId: string, dto: ChangeEmailVerifyDto) {
     const newEmail = this.normalizeEmail(dto.new_email);
+    await this.assertEmailBudget('otp_verify_change_email', newEmail, OTP_VERIFY_MAX_PER_WINDOW, OTP_VERIFY_WINDOW_SECONDS);
     const record = await this.findLatestOtp(newEmail, 'change_email');
     this.assertOtpValid(record, dto.code);
 
@@ -554,6 +565,9 @@ export class AuthService {
     ipAddress?: string | null,
     userAgent?: string | null,
   ): Promise<string> {
+    // Bound issuance per email (anti-bombing), independent of source IP.
+    await this.assertEmailBudget('otp_issue', email, OTP_ISSUE_MAX_PER_HOUR, OTP_ISSUE_WINDOW_SECONDS);
+
     // Invalidate any previous unconsumed OTPs for this email+purpose.
     await this.prisma.emailOtpCode.updateMany({
       where: { email, purpose, consumed_at: null },
@@ -644,6 +658,22 @@ export class AuthService {
   private async registerFailedSignin(lockKey: string): Promise<void> {
     const n = await this.redis.client.incr(lockKey);
     if (n === 1) await this.redis.client.expire(lockKey, SIGNIN_LOCKOUT_SECONDS);
+  }
+
+  /**
+   * Fixed-window per-email budget in Redis. Throws 429 once `limit` is exceeded
+   * inside `windowSeconds`. Fails open on a Redis hiccup (availability first).
+   */
+  private async assertEmailBudget(kind: string, email: string, limit: number, windowSeconds: number): Promise<void> {
+    const key = `auth:budget:${kind}:${email}`;
+    try {
+      const n = await this.redis.client.incr(key);
+      if (n === 1) await this.redis.client.expire(key, windowSeconds);
+      if (n > limit) throw tooManyRequests('Too many attempts for this email — try again later');
+    } catch (e) {
+      if (e instanceof HttpException) throw e;
+      // Redis unavailable → don't lock the user out.
+    }
   }
 
   private async dummyVerify(password: string): Promise<boolean> {

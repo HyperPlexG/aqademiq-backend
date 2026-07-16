@@ -1,4 +1,10 @@
-# Aqademiq Backend — NestJS on GCP (scaffold)
+# Aqademiq Backend — NestJS scaffold, migrating to Supabase Edge Functions
+
+> **Migration (2026-07-16):** the backend is being rewritten to **Deno + Hono on
+> Supabase Edge Functions** (`supabase/functions/`), replacing the GCP/Cloud Run
+> deployment. Vertex AI is kept for Claude inference. See `CLAUDE.md` and
+> `docs/DEPLOYMENT_RUNBOOK.md` Phase 1. The NestJS app remains the working
+> reference implementation until cutover.
 
 Built from **BACKEND_REQUIREMENTS.md**. Complete breadth scaffold: every feature in the spec has a module, controller, service, real endpoints, and spec-tied `TODO(§x)` markers. **The whole thing compiles** (`npm run build`); business logic bodies are stubs to be filled in.
 
@@ -22,8 +28,8 @@ Built from **BACKEND_REQUIREMENTS.md**. Complete breadth scaffold: every feature
 | §4.6 Offline sync + revision stream | `features/sync`, `features/realtime` |
 | §3 Data model (21 tables, user-scoped) | `prisma/schema.prisma` |
 | §4.1 Tenancy + JWT | `common/` (guard, context, interceptor) + `infra/prisma.service.ts` |
-| §4.4 GCS storage | `infra/storage.service.ts` |
-| §6 Infra (Cloud SQL/Redis/Run/buckets) | `terraform/main.tf` |
+| §4.4 GCS storage | `infra/storage.service.ts` (→ Supabase Storage in the port) |
+| §6 Infra (Cloud SQL/Redis/Run/buckets) | `terraform/main.tf` (legacy — Supabase replaces this at cutover) |
 
 ## Run it
 

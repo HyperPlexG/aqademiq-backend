@@ -94,8 +94,21 @@ export class FilesService {
     return { url, expires_in: 300 };
   }
 
-  thumbnail() {
-    throw new NotImplementedException('Thumbnails require the media pipeline (§4.4 P2)');
+  /**
+   * GET /files/:id/thumbnail — owner-only. There's no server-side resizing
+   * pipeline (§4.4 P2), so for images we hand back a short-TTL signed URL to the
+   * original object for the client to downscale; for non-images there's no
+   * thumbnail and `url` is null (the client falls back to a type icon).
+   */
+  async thumbnail(id: string) {
+    this.assertStorage();
+    const file = await this.ownedFile(id);
+    const isImage = (file.mime_type ?? '').startsWith('image/');
+    if (!isImage || !file.file_url) {
+      return { url: null, kind: 'none' };
+    }
+    const url = await this.storage.presignDownload(file.file_url);
+    return { url, kind: 'image', expires_in: 300 };
   }
 
   // ---- internals ---------------------------------------------------------

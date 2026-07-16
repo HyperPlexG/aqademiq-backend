@@ -12,7 +12,11 @@ const REDIS_OP_TIMEOUT_MS = 150;
  * tight budget; everything else a looser one. Fails open if Redis is briefly
  * unavailable (availability > strictness for a study app).
  *
- * TODO: layer per-account/email windows and Turnstile/App-Attest on auth.
+ * IP trust: `X-Forwarded-For` is only honoured when `TRUST_PROXY=1` (i.e. we're
+ * behind a known LB such as Cloud Run). Otherwise we key off the socket address
+ * so a client can't spoof XFF to reset its window. Per-account/email windows are
+ * layered on top in AuthService (issuance + verification budgets), so credential
+ * and OTP brute force is bounded even if an attacker rotates source IPs.
  */
 @Injectable()
 export class RateLimitMiddleware implements NestMiddleware {
@@ -40,8 +44,13 @@ export class RateLimitMiddleware implements NestMiddleware {
   }
 
   private clientIp(req: Request): string {
-    const fwd = req.headers['x-forwarded-for'];
-    return (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim()) || req.ip || 'unknown';
+    // Only trust the client-supplied XFF when we know a trusted proxy sets it.
+    if (process.env.TRUST_PROXY === '1') {
+      const fwd = req.headers['x-forwarded-for'];
+      const xff = (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim());
+      if (xff) return xff;
+    }
+    return req.socket?.remoteAddress || req.ip || 'unknown';
   }
 
   private async withTimeout<T>(promise: Promise<T>): Promise<T> {

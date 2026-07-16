@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { SyncService } from './sync.service';
+import { SyncMutationsDto } from './dto/sync.dto';
 
 /** §4.6 — base route: /v1/sync */
 @Controller('sync')
@@ -12,8 +13,8 @@ export class SyncController {
   }
 
   @Post('mutations')
-  mutations() {
-    return this.svc.mutations();
+  mutations(@Body() dto: SyncMutationsDto) {
+    return this.svc.mutations(dto);
   }
 
   @Get('cursor')

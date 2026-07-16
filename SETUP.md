@@ -47,6 +47,7 @@ curl localhost:8080/v1/readyz      # {"status":"ready","db":"ok","redis":"ok"}
 - `src/infra/*` — Prisma, Redis, Claude (Vertex/Anthropic), Storage (GCS), Queue (BullMQ), Token, Push
 - `src/common/*` — JWT guard, tenancy context, idempotency + rate-limit middleware, exception filter
 - `prisma/schema.prisma` — data model (migrations checked in under `prisma/migrations/`)
+- `supabase/functions/*` — Deno + Hono port (migration target; `_shared/prisma/` is generated, not committed)
 
 ## Conventions
 - Every feature service is user-scoped via `prisma.tenant.*` (auto-injects `user_id`); raw `prisma.*` only in auth/system paths.
@@ -61,6 +62,10 @@ curl localhost:8080/v1/readyz      # {"status":"ready","db":"ok","redis":"ok"}
 | Push delivery | `FCM_SERVICE_ACCOUNT_PATH` / APNs keys | logged, not sent |
 
 ## Deploy
-GitHub Actions (`.github/workflows/deploy.yml`): CI (build + `prisma validate`) on every push/PR; deploy to Cloud Run on `main` via Workload Identity Federation. Set repo vars `GCP_PROJECT_ID`, `GCP_REGION` and secrets `WIF_PROVIDER`, `DEPLOY_SA`, `DATABASE_URL`. (CD needs a provisioned Cloud SQL/Memorystore + paid GCP.)
+**Target platform: Supabase Edge Functions** — see `docs/DEPLOYMENT_RUNBOOK.md` Phase 1
+(`supabase functions deploy`, secrets via `supabase secrets set`). The Deno + Hono port
+lives in `supabase/functions/`.
+
+Legacy (until cutover): GitHub Actions (`.github/workflows/deploy.yml`): CI (build + `prisma validate`) on every push/PR; deploy to Cloud Run on `main` via Workload Identity Federation. Set repo vars `GCP_PROJECT_ID`, `GCP_REGION` and secrets `WIF_PROVIDER`, `DEPLOY_SA`, `DATABASE_URL`. (CD needs a provisioned Cloud SQL/Memorystore + paid GCP.)
 
 > **Never commit `.env` or `keys/`** — both are gitignored. Each dev generates their own keypair with `npm run keys:gen`.

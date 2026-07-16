@@ -41,7 +41,7 @@ export class FilesController {
   }
 
   @Get('files/:id/thumbnail')
-  thumbnail() {
-    return this.svc.thumbnail();
+  thumbnail(@Param('id') id: string) {
+    return this.svc.thumbnail(id);
   }
 }

@@ -24,8 +24,14 @@ import type { SessionInfo } from '../../infra/token.service';
 type AuthedRequest = Request & { userId: string; sessionId: string; isGuest: boolean };
 
 function sessionInfo(req: Request): SessionInfo {
-  const fwd = req.headers['x-forwarded-for'];
-  const ip  = (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim()) || req.ip || null;
+  // Trust X-Forwarded-For only behind a known proxy (TRUST_PROXY=1); otherwise
+  // use the socket address so a spoofed header can't poison login-attempt logs.
+  let ip: string | null = req.socket?.remoteAddress ?? req.ip ?? null;
+  if (process.env.TRUST_PROXY === '1') {
+    const fwd = req.headers['x-forwarded-for'];
+    const xff = (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim());
+    if (xff) ip = xff;
+  }
   return { userAgent: req.headers['user-agent'] ?? null, ipAddress: ip };
 }
 

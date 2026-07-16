@@ -4,3 +4,8 @@ dist
 keys/
 *.log
 .DS_Store
+supabase/functions/_shared/prisma/
+supabase/.temp/
+.dart_tool/
+.flutter-plugins-dependencies
+cloud-sql-proxy.exe

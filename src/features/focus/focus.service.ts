@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma.service';
 import { RequestContext } from '../../common/request-context';
 import { TasksService } from '../tasks/tasks.service';
+import { PrismService } from '../prism/prism.service';
 import { StartFocusDto, CheckpointFocusDto, CompleteFocusDto } from './dto/focus.dto';
 
 @Injectable()
@@ -10,14 +11,12 @@ export class FocusService {
     private readonly prisma: PrismaService,
     private readonly rc: RequestContext,
     private readonly tasks: TasksService,
+    private readonly prism: PrismService,
   ) {}
 
   async start(dto: StartFocusDto) {
-    let presetId: string | null = null;
-    if (dto.prism_mode) {
-      const preset = await this.prisma.prismPreset.findFirst({ where: { name: dto.prism_mode } });
-      presetId = preset?.id ?? null;
-    }
+    // Accepts either a mode key ('rain') or a preset id; 'none'/unknown → null.
+    const presetId = await this.prism.resolvePresetId(dto.prism_mode);
 
     const session = await this.prisma.focusSession.create({
       data: {

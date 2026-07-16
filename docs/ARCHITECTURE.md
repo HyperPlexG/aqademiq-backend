@@ -2,7 +2,13 @@
 
 > Auto-generated codebase reference. High-level architecture plus low-level
 > module details for onboarding and future work. Grounded in the code under
-> `aqademiq-backend/src` and `aqademiq-backend/prisma`.
+> `src/` and `prisma/`.
+
+> **Migration (2026-07-16):** this document describes the NestJS implementation,
+> which remains the working reference until cutover. The backend is being ported
+> to **Deno + Hono on Supabase Edge Functions** (`supabase/functions/`) — Vertex AI
+> kept, Socket.IO → Supabase Broadcast, BullMQ → pg_cron job queue, ioredis →
+> Upstash REST. See `CLAUDE.md` and `docs/DEPLOYMENT_RUNBOOK.md` Phase 1.
 
 ## 1. Overview
 
@@ -15,7 +21,7 @@
 - **Tech stack:**
   - **Runtime:** Node.js 20, TypeScript 5.5
   - **Framework:** NestJS 10 (`@nestjs/*`) on Express (`@nestjs/platform-express`)
-  - **DB:** PostgreSQL via **Prisma 5** (`@prisma/client`)
+  - **DB:** PostgreSQL via **Prisma 6** (`@prisma/client`; second `edge` generator emits a Deno client for `supabase/functions/`)
   - **Cache/queue/pubsub:** Redis via `ioredis` + **BullMQ**
   - **Auth:** custom RS256 JWT via `jose`, passwords via `argon2`
   - **AI:** Gemini 2.5 Flash (Vertex AI or Google AI Studio), or legacy Claude via Anthropic API / Vertex Model Garden (`@google-cloud/vertexai`, `@google/generative-ai`, `@anthropic-ai/sdk`, `@anthropic-ai/vertex-sdk`)
@@ -24,12 +30,7 @@
   - **Realtime:** Socket.IO (`@nestjs/platform-socket.io`, `@nestjs/websockets`)
   - **Scheduling:** `@nestjs/schedule` cron; recurrence math via custom engine (`luxon`, `rrule` available)
   - **API docs:** Swagger (`@nestjs/swagger`) at `/docs`
-- **Repository layout (top level):**
-  - `aqademiq-backend/` — the NestJS service (all application code)
-  - `reference_docs/` — spec, schema notes, walkthroughs, frontend request maps
-  - `terminals/`, `mcps/`, `agent-transcripts/` — tooling/workspace metadata (not app code)
-
-### Repository layout inside `aqademiq-backend/`
+### Repository layout (backend-relevant paths)
 
 ```
 src/
@@ -40,10 +41,12 @@ src/
   features/          # one module per domain (23 controllers)
 prisma/
   schema.prisma      # ~27-model data model (snake_case via @map)
+supabase/functions/  # Deno + Hono port (migration target: api/, prisma-spike/, _shared/)
 scripts/             # gen-keys.sh (RS256 keypair), gen-modules.js
-terraform/main.tf    # GCP infra (Cloud SQL/Redis/Run/buckets)
+terraform/main.tf    # GCP infra (legacy — replaced by Supabase at cutover)
 docs/                # this file
 ```
+(The repo root also contains the Flutter app: `lib/`, `android/`, `ios/`, etc.)
 
 ## 2. Getting Started
 

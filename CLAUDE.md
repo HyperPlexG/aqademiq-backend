@@ -2,6 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ Migration in progress (since 2026-07-16)
+
+The backend is being **rewritten from NestJS/GCP to Deno + Hono on Supabase Edge
+Functions** — new code lives under `supabase/functions/`. Key decisions:
+- **Vertex AI is kept** for Claude inference, via hand-rolled REST
+  (`supabase/functions/_shared/vertex.ts` — SA-JWT signed with Web Crypto, no Node SDK).
+- Custom RS256 JWT auth is kept (NOT Supabase Auth). `JWT_PUBLIC_KEY` on edge is PEM *content*, not a file path.
+- BullMQ → Postgres `job_queue` + pg_cron worker; Socket.IO → Supabase Realtime Broadcast; ioredis → Upstash REST.
+- Prisma upgraded to **6.x** with a second `edge` generator (`provider = "prisma-client"`,
+  `runtime = "deno"`) emitting a gitignored client into `supabase/functions/_shared/prisma/`.
+- URL shape: function `api` + Hono `basePath('/api/v1')` — clients keep `/v1/<resource>`
+  paths on base URL `https://<ref>.supabase.co/functions/v1/api`.
+- **Gate:** `supabase/functions/prisma-spike/` must pass (Prisma driver adapter inside a
+  real Edge Function) before further feature porting.
+
+The NestJS app below remains the working reference implementation until cutover; port
+module behavior from `src/features/*` into Hono routers rather than reinventing it.
+
 ## Commands
 
 ```bash
@@ -10,7 +28,7 @@ npm run build            # compile TypeScript (must pass before pushing)
 npm run lint             # eslint src/**/*.ts
 npm run test             # jest (--passWithNoTests)
 npm run keys:gen         # generate RS256 keypair into keys/ (once per dev setup)
-npm run prisma:generate  # regenerate Prisma client after schema changes
+npm run prisma:generate  # regenerate Prisma clients (Node + Deno edge) after schema changes
 npm run prisma:migrate   # deploy pending migrations (production)
 npx prisma migrate dev --name <change>  # create and apply a migration in dev
 ```
@@ -59,6 +77,11 @@ src/
   features/          # one module per domain (see table below)
 prisma/
   schema.prisma      # 21-table data model; migrations in prisma/migrations/
+supabase/
+  functions/         # Deno + Hono port (migration target — see banner above)
+    api/             # main API function (Hono, basePath /api/v1)
+    prisma-spike/    # phase-1 gate: Prisma driver adapter on edge
+    _shared/         # context, http errors, vertex client, generated Deno Prisma client
 ```
 
 ### Feature modules
