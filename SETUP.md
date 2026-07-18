@@ -21,13 +21,10 @@ cp .env.example .env
 #    Local defaults already work. Optional: ANTHROPIC_API_KEY or GCP_PROJECT_ID
 #    to enable Ada/AI; GCS_* for file upload; FCM_* for push. All optional in dev.
 
-# 3. Generate the RS256 JWT keypair (keys/ is gitignored — do this once)
-npm run keys:gen
+# 3. Create the database schema + seed data (supabase/migrations/, with local auth shim)
+npm run db:bootstrap -- --local
 
-# 4. Create the database schema
-npx prisma migrate dev
-
-# 5. Run it (watch mode, http://localhost:8080)
+# 4. Run it (watch mode, http://localhost:8080)
 npm run start:dev
 ```
 
@@ -40,7 +37,7 @@ curl localhost:8080/v1/readyz      # {"status":"ready","db":"ok","redis":"ok"}
 ## API reference & testing
 - **Swagger UI:** http://localhost:8080/docs  (click *Authorize*, paste a Bearer token)
 - **OpenAPI spec:** http://localhost:8080/docs-json — import into Postman to get the whole collection.
-- **Quick token:** `POST /v1/auth/guest` (no body) → `access_token`; send it as `Authorization: Bearer <token>` on other routes.
+- **Auth:** Supabase Auth access tokens (`Authorization: Bearer <token>`) — the guard verifies them against `SUPABASE_URL`'s JWKS. There are no `/v1/auth/*` routes; guests use Supabase anonymous sign-in. For purely local testing, run a mock JWKS server and point `SUPABASE_URL` at it.
 
 ## Project layout
 - `src/features/*` — one module per domain (auth, tasks, subjects, mood, …)
@@ -68,4 +65,4 @@ lives in `supabase/functions/`.
 
 Legacy (until cutover): GitHub Actions (`.github/workflows/deploy.yml`): CI (build + `prisma validate`) on every push/PR; deploy to Cloud Run on `main` via Workload Identity Federation. Set repo vars `GCP_PROJECT_ID`, `GCP_REGION` and secrets `WIF_PROVIDER`, `DEPLOY_SA`, `DATABASE_URL`. (CD needs a provisioned Cloud SQL/Memorystore + paid GCP.)
 
-> **Never commit `.env` or `keys/`** — both are gitignored. Each dev generates their own keypair with `npm run keys:gen`.
+> **Never commit `.env`** — it is gitignored. (`keys/` + `npm run keys:gen` are legacy from the custom-JWT era; auth is Supabase Auth now.)

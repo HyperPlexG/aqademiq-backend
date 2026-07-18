@@ -5,8 +5,6 @@ import { StorageService } from '../../infra/storage.service';
 import { RequestContext } from '../../common/request-context';
 import { InitUploadDto, InitStagingUploadDto, PatchFileDto } from './dto/files.dto';
 
-const KINDS = ['syllabus', 'lecture_slides', 'notes', 'past_papers', 'reading_list', 'other'];
-
 @Injectable()
 export class FilesService {
   constructor(

@@ -8,7 +8,10 @@ The backend is being **rewritten from NestJS/GCP to Deno + Hono on Supabase Edge
 Functions** — new code lives under `supabase/functions/`. Key decisions:
 - **Vertex AI is kept** for Claude inference, via hand-rolled REST
   (`supabase/functions/_shared/vertex.ts` — SA-JWT signed with Web Crypto, no Node SDK).
-- Custom RS256 JWT auth is kept (NOT Supabase Auth). `JWT_PUBLIC_KEY` on edge is PEM *content*, not a file path.
+- **Auth is Supabase Auth** (switched 2026-07-18, superseding the earlier keep-custom-JWT decision):
+  the app verifies Supabase ES256 access tokens against the project JWKS (`src/common/supabase-jwt.ts`,
+  requires `SUPABASE_URL`). The custom RS256 `TokenService` + `/v1/auth/*` endpoints were removed;
+  guest = Supabase anonymous sign-in (`is_anonymous` claim).
 - BullMQ → Postgres `job_queue` + pg_cron worker; Socket.IO → Supabase Realtime Broadcast; ioredis → Upstash REST.
 - Prisma upgraded to **6.x** with a second `edge` generator (`provider = "prisma-client"`,
   `runtime = "deno"`) emitting a gitignored client into `supabase/functions/_shared/prisma/`.
@@ -27,7 +30,7 @@ npm run start:dev        # dev server with watch (http://localhost:8080)
 npm run build            # compile TypeScript (must pass before pushing)
 npm run lint             # eslint src/**/*.ts
 npm run test             # jest (--passWithNoTests)
-npm run keys:gen         # generate RS256 keypair into keys/ (once per dev setup)
+npm run db:bootstrap -- --local  # provision a fresh local DB from supabase/migrations/ (+ dev auth shim)
 npm run prisma:generate  # regenerate Prisma clients (Node + Deno edge) after schema changes
 npm run prisma:migrate   # deploy pending migrations (production)
 npx prisma migrate dev --name <change>  # create and apply a migration in dev
@@ -36,11 +39,12 @@ npx prisma migrate dev --name <change>  # create and apply a migration in dev
 First-time setup:
 ```bash
 docker compose up -d          # Postgres + Redis
-cp .env.example .env          # fill DATABASE_URL, REDIS_*; AI/GCS/FCM are optional
-npm run keys:gen
-npx prisma migrate dev
+cp .env.example .env          # set DATABASE_URL/DIRECT_URL (+ SUPABASE_URL for auth); AI/GCS/FCM optional
+npm run db:bootstrap -- --local   # apply supabase/migrations/ to the fresh DB (dev auth shim included)
 npm run start:dev
 ```
+Note: `prisma/migrations/` is legacy (pre-Supabase) — the schema source of truth for
+provisioning is `supabase/migrations/`; `prisma/schema.prisma` mirrors the final state.
 
 Verify: `curl localhost:8080/v1/healthz` → `{"status":"ok"}`
 
@@ -51,7 +55,7 @@ Emit the OpenAPI spec to disk: `EMIT_OPENAPI=1 npm run start:dev`.
 ### Global wiring (`src/app.module.ts`)
 
 Three global providers wrap every request:
-- **`JwtAuthGuard`** (`common/guards/`) — verifies RS256 Bearer token via `TokenService`; checks Redis deny-list for revocation. Sets `req.userId`, `req.isGuest`, `req.sessionId`. Decorate a handler/class with `@Public()` to bypass.
+- **`JwtAuthGuard`** (`common/guards/`) — verifies a Supabase Auth ES256 Bearer token against the project JWKS via `common/supabase-jwt.ts` (requires `SUPABASE_URL`). Sets `req.userId` (= `auth.users.id` = `profiles.id`), `req.isGuest` (`is_anonymous` claim), `req.sessionId`. Decorate a handler/class with `@Public()` to bypass.
 - **`ContextInterceptor`** (`common/interceptors/`) — stores `{ userId, isGuest }` into `RequestContext` (AsyncLocalStorage) for the request lifetime.
 - **`HttpExceptionFilter`** (`common/filters/`) — uniform error response shape.
 
@@ -88,7 +92,7 @@ supabase/
 
 | Module | Spec section |
 |---|---|
-| `auth` | §2.1 — login, register, guest, refresh, revoke |
+| *(auth removed)* | §2.1 — identity is Supabase Auth; no `/v1/auth/*` routes exist |
 | `onboarding` | §2.1 — post-registration setup flow |
 | `tasks` | §2.2 — CRUD + recurring engine (§4.2, `occursOn` logic) |
 | `subjects`, `semesters` | §2.3 |
@@ -107,7 +111,6 @@ supabase/
 ### Infra services
 
 - **`PrismaService`** — tenancy-aware Prisma client (see above).
-- **`TokenService`** — issues/verifies RS256 JWTs (jose); manages Redis deny-list.
 - **`ClaudeService`** (`infra/claude.service.ts`) — calls Claude via Vertex AI or Anthropic SDK. Uses Opus 4.8 for Ada chat, Haiku 4.5 for fast tasks.
 - **`StorageService`** — GCS presigned URLs.
 - **`QueueService`** — BullMQ job dispatch (notifications, digests).
@@ -120,7 +123,7 @@ supabase/
 - All endpoints: `/v1/<resource>`, **snake_case** JSON (no camelCase conversion).
 - DTO property names are written snake_case directly — NestJS does not transform case.
 - `ValidationPipe` is `whitelist: true, forbidNonWhitelisted: true, transform: true`.
-- Auth: `Authorization: Bearer <access_token>`. Get a dev token via `POST /v1/auth/guest`.
+- Auth: `Authorization: Bearer <supabase_access_token>` (Supabase Auth; anonymous sign-in for guests). For local testing without Supabase, serve a mock JWKS and point `SUPABASE_URL` at it.
 - Swagger UI at `/docs`; OpenAPI JSON at `/docs-json`.
 
 ### Implementation state

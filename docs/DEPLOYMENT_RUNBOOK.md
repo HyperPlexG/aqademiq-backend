@@ -27,7 +27,7 @@ Status legend: ✅ done in-repo · 🔧 config you run · 🔒 human-only (accou
 ### 1.2 Secrets (`supabase secrets set NAME=value`) 🔒
 | Secret | Purpose |
 |---|---|
-| `JWT_PRIVATE_KEY` / `JWT_PUBLIC_KEY` | RS256 PEM **content** — edge functions mount no key files |
+| `SUPABASE_URL` | Auth: the API verifies Supabase Auth ES256 tokens against `<SUPABASE_URL>/auth/v1/.well-known/jwks.json` (custom RS256 JWT was removed 2026-07-18) |
 | `DATA_ENCRYPTION_KEY` | as in the legacy table below |
 | `GCP_PROJECT_ID` / `GCP_SA_EMAIL` / `GCP_SA_PRIVATE_KEY` / `VERTEX_REGION` | Vertex AI (service account needs `roles/aiplatform.user`) |
 | `CLAUDE_OPUS_MODEL` / `CLAUDE_HAIKU_MODEL` | Vertex model ids incl. `@version` suffix |

@@ -24,7 +24,7 @@ export class StorageService {
 
   /** User-namespaced object key under the quarantine prefix (§4.4). */
   buildKey(userId: string, subjectId: string, fileId: string, name: string): string {
-    const safe = name.replace(/[^\w.\-]+/g, '_');
+    const safe = name.replace(/[^\w.-]+/g, '_');
     return `quarantine/users/${userId}/subjects/${subjectId}/${fileId}/${safe}`;
   }
 
@@ -32,13 +32,13 @@ export class StorageService {
    *  (e.g. a syllabus attached during the onboarding wizard, before the
    *  subject it belongs to has been created). */
   buildStagingKey(userId: string, uploadId: string, name: string): string {
-    const safe = name.replace(/[^\w.\-]+/g, '_');
+    const safe = name.replace(/[^\w.-]+/g, '_');
     return `quarantine/users/${userId}/staging/${uploadId}/${safe}`;
   }
 
   /** Object key for a file attached to an Ada conversation. */
   buildAdaAttachmentKey(userId: string, conversationId: string, fileId: string, name: string): string {
-    const safe = name.replace(/[^\w.\-]+/g, '_');
+    const safe = name.replace(/[^\w.-]+/g, '_');
     return `quarantine/users/${userId}/ada/${conversationId}/${fileId}/${safe}`;
   }
 

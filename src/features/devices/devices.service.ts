@@ -43,7 +43,7 @@ export class DevicesService {
   }
 
   async update(id: string, dto: UpdateDeviceDto) {
-    const existing = await this.owned(id);
+    await this.owned(id); // ownership assertion — throws if not the caller's device
     let timezone: string = dto.timezone ?? 'UTC';
     if (dto.timezone) {
       this.assertValidTimezone(dto.timezone);

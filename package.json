@@ -10,6 +10,7 @@
     "test": "jest --passWithNoTests",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
+    "db:bootstrap": "node scripts/db-bootstrap.mjs",
     "db:test": "node scripts/test-db-connection.mjs",
     "db:test:feedback": "node scripts/test-feedback-board.mjs",
     "keys:gen": "bash scripts/gen-keys.sh"
@@ -47,9 +48,15 @@
   "devDependencies": {
     "@nestjs/cli": "^10.4.0",
     "@types/express": "^4.17.25",
+    "@types/jest": "^29.5.14",
     "@types/luxon": "^3.4.2",
     "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.1",
+    "jest": "^29.7.0",
     "prisma": "^6.19.3",
+    "ts-jest": "^29.4.11",
     "typescript": "5.5"
   }
 }

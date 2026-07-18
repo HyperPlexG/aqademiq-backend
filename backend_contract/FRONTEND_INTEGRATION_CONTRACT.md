@@ -1,5 +1,17 @@
 # Aqademiq — Frontend Integration Contract
 
+> ## ⚠️ 2026-07-18 update — auth replatformed onto Supabase Auth
+> Everything §auth-related below is **stale**: the custom `/v1/auth/*` endpoints
+> (guest, signup, signin, OTP, refresh, sessions, SSO) were **removed** from the
+> backend. The client now authenticates with the **Supabase Auth SDK** directly
+> (email+password, Google/Apple, and **anonymous sign-in for guest mode**) and
+> sends the Supabase access token as `Authorization: Bearer <token>` — the API
+> verifies it against the project JWKS. `profiles.id = auth.users.id`.
+> Known field-name corrections vs older docs: subjects use `color_hex`
+> (`#RRGGBB`), task create uses `scheduled_at`/`date` (no `due_date`), mood is
+> `POST /v1/mood-entries` `{date, mood_index 0-4}`. Occurrence ids are
+> `<task-id>@<yyyy-MM-dd>` (`@`, not `:`).
+
 > **This document is the authoritative human contract for wiring the Flutter
 > client to the Aqademiq backend.** Where this `.md` and
 > `backend_contract/openapi.json` disagree, **this `.md` wins** — discrepancies
