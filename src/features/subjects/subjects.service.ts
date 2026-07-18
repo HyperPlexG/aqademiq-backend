@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma.service';
 import { RequestContext } from '../../common/request-context';
-import { occursOn, toUtcDate, ymd } from '../tasks/occurs-on';
+import { occursOn, taskRowToSeries, toUtcDate, ymd, type TaskRowLike } from '../tasks/occurs-on';
 import { CreateSubjectDto, UpdateSubjectDto, ReorderSubjectsDto } from './dto/subjects.dto';
 
 const MS_PER_DAY = 86_400_000;
@@ -159,16 +159,21 @@ export class SubjectsService {
     return sem.id;
   }
 
-  private computeLabels(series: Array<{ title: string; anchor_date: Date; repeat_kind: string; repeat_interval: number; until_date: Date | null }>) {
+  /** Accepts raw task rows (due_at + JSON repeat_rule) — adapted via taskRowToSeries. */
+  private computeLabels(rows: Array<TaskRowLike & { title: string; status?: string | null }>) {
+    const entries = rows
+      .filter((r) => r.status !== 'cancelled')
+      .map((r) => ({ title: r.title, series: taskRowToSeries(r) }));
+
     const todayStr = ymd(new Date());
     const todayD = toUtcDate(todayStr);
     let todayCount = 0;
-    for (const s of series) if (occursOn(s, todayStr)) todayCount++;
+    for (const e of entries) if (occursOn(e.series, todayStr)) todayCount++;
 
     let next_label: string | null = null;
     for (let i = 0; i <= LABEL_HORIZON_DAYS && !next_label; i++) {
       const dStr = ymd(new Date(todayD.getTime() + i * MS_PER_DAY));
-      const hit = series.find((s) => occursOn(s, dStr));
+      const hit = entries.find((e) => occursOn(e.series, dStr));
       if (hit) next_label = hit.title;
     }
     return { next_label, focus_label: todayCount > 0 ? `${todayCount} due today` : null };

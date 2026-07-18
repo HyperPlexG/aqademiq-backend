@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma.service';
 import { RequestContext } from '../../common/request-context';
 import { ymd } from '../tasks/occurs-on';
@@ -45,8 +45,12 @@ export class SyncService {
       } else {
         try {
           courseUpserts.push(await this.subjects.get(c.id));
-        } catch {
-          courseTombstones.push(c.id);
+        } catch (e) {
+          // Only a genuine not-found is a tombstone. Any other failure must
+          // fail the sync request — silently tombstoning here tells every
+          // client to DELETE a live subject locally.
+          if (e instanceof NotFoundException) courseTombstones.push(c.id);
+          else throw e;
         }
       }
     }

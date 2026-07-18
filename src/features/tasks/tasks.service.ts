@@ -9,15 +9,16 @@ import { RedisService } from '../../infra/redis.service';
 import { RevisionService } from '../../infra/revision.service';
 import { ClaudeService } from '../../infra/claude.service';
 import { RequestContext } from '../../common/request-context';
-import { occursOn, parseOccurrenceId, toUtcDate, ymd, dayDiff } from './occurs-on';
+import { occursOn, parseOccurrenceId, taskRowToSeries, toUtcDate, ymd, dayDiff } from './occurs-on';
 import { CreateTaskDto, QueryTasksDto, PatchTaskDto, ToggleTaskDto, MoveTasksDto, BreakdownDto } from './dto/tasks.dto';
 
 const MS_PER_DAY = 86_400_000;
 const RANGE_CAP_DAYS = 366;
 const COMPLETIONS_TTL = 300;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface SeriesLike {
-  anchor_date: Date | string;
+  anchor_date: Date | string | null;
   repeat_kind: string;
   repeat_interval: number;
   until_date?: Date | string | null;
@@ -222,7 +223,7 @@ export class TasksService {
         const start = task.scheduled_start_at ? this.parseTimeStr(dto.to, this.formatTime(task.scheduled_start_at)) : null;
         const end = start ? new Date(start.getTime() + mins * 60 * 1000) : null;
 
-        const materialized = await this.prisma.task.create({
+        await this.prisma.task.create({
           data: {
             user_id: this.rc.userId,
             course_id: task.course_id,
@@ -415,7 +416,6 @@ export class TasksService {
 
     for (let i = 0; i <= spanDays; i++) {
       const dStr = ymd(new Date(startD.getTime() + i * MS_PER_DAY));
-      const currentDay = toUtcDate(dStr);
 
       // 1. Process concrete one-off tasks scheduled/due today
       for (const t of concreteTasks) {
@@ -496,6 +496,9 @@ export class TasksService {
   private async resolveOccurrence(occId: string) {
     const parsed = parseOccurrenceId(occId);
     if (parsed) {
+      if (!UUID_RE.test(parsed.seriesId)) {
+        throw new BadRequestException('Invalid occurrence id — expected <task-id> or <task-id>@<yyyy-MM-dd>');
+      }
       const task = await this.prisma.tenant.task.findUnique({
         where: { id: parsed.seriesId },
         include: { steps: true },
@@ -503,6 +506,9 @@ export class TasksService {
       if (!task) throw new NotFoundException('Task template not found');
       return { task, dateStr: parsed.date, isVirtual: true };
     } else {
+      if (!UUID_RE.test(occId)) {
+        throw new BadRequestException('Invalid occurrence id — expected <task-id> or <task-id>@<yyyy-MM-dd>');
+      }
       const task = await this.prisma.tenant.task.findUnique({
         where: { id: occId },
         include: { steps: true },
@@ -522,13 +528,7 @@ export class TasksService {
   }
 
   private getSeriesLike(task: any): SeriesLike {
-    const rule = typeof task.repeat_rule === 'string' ? JSON.parse(task.repeat_rule) : (task.repeat_rule ?? {});
-    return {
-      anchor_date: task.due_at ?? task.scheduled_start_at ?? task.created_at,
-      repeat_kind: rule.repeat_kind ?? 'none',
-      repeat_interval: rule.repeat_interval ?? 1,
-      until_date: rule.until_date ?? null,
-    };
+    return taskRowToSeries(task);
   }
 
   private async adjustActivitySnapshot(date: Date, diff: number) {

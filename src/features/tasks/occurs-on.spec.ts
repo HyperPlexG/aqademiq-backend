@@ -135,3 +135,43 @@ describe('occurrence id helpers', () => {
     expect(dayDiff('2026-06-15', '2026-06-18')).toBe(3);
   });
 });
+
+// ---- 2026-07-18 regression coverage: DB-row adapter + null-anchor guard ----
+import { taskRowToSeries } from './occurs-on';
+
+describe('taskRowToSeries — DB row adapter', () => {
+  it('parses a JSON repeat_rule string', () => {
+    const s = taskRowToSeries({
+      due_at: '2026-06-15',
+      repeat_rule: JSON.stringify({ repeat_kind: 'weekly', repeat_interval: 2, until_date: '2026-08-01' }),
+    });
+    expect(s.repeat_kind).toBe('weekly');
+    expect(s.repeat_interval).toBe(2);
+    expect(s.until_date).toBe('2026-08-01');
+    expect(occursOn(s, '2026-06-15')).toBe(true);
+  });
+
+  it('degrades corrupt repeat_rule JSON to a one-off, never throws', () => {
+    const s = taskRowToSeries({ due_at: '2026-06-15', repeat_rule: '{not json' });
+    expect(s.repeat_kind).toBe('none');
+    expect(occursOn(s, '2026-06-15')).toBe(true);
+    expect(occursOn(s, '2026-06-16')).toBe(false);
+  });
+
+  it('falls back due_at → scheduled_start_at → created_at for the anchor', () => {
+    expect(taskRowToSeries({ scheduled_start_at: '2026-06-20' }).anchor_date).toBe('2026-06-20');
+    expect(taskRowToSeries({ created_at: '2026-06-01' }).anchor_date).toBe('2026-06-01');
+  });
+
+  it('row with no dates at all yields a series that never occurs (the /v1/subjects 500 regression)', () => {
+    const s = taskRowToSeries({ repeat_rule: null });
+    expect(s.anchor_date).toBeNull();
+    expect(occursOn(s, '2026-06-15')).toBe(false); // must not throw
+  });
+});
+
+describe('occursOn — null anchor guard', () => {
+  it('returns false instead of throwing on a null anchor', () => {
+    expect(occursOn({ anchor_date: null, repeat_kind: 'daily', repeat_interval: 1 }, '2026-06-15')).toBe(false);
+  });
+});

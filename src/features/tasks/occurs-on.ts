@@ -19,10 +19,42 @@ export type RepeatKind =
   | 'everyNMonths';
 
 export interface SeriesLike {
-  anchor_date: Date | string;
+  anchor_date: Date | string | null;
   repeat_kind: string;
   repeat_interval: number;
   until_date?: Date | string | null;
+}
+
+/** Minimal shape of a DB task row for series conversion. */
+export interface TaskRowLike {
+  due_at?: Date | string | null;
+  scheduled_start_at?: Date | string | null;
+  created_at?: Date | string | null;
+  repeat_rule?: unknown;
+}
+
+/**
+ * Adapt a DB task row (due_at + JSON `repeat_rule` string) to a SeriesLike.
+ * A missing or corrupt rule degrades to a one-off ('none') series anchored on
+ * the due/scheduled/created date — never throws.
+ */
+export function taskRowToSeries(row: TaskRowLike): SeriesLike {
+  let rule: Record<string, unknown> = {};
+  if (row.repeat_rule && typeof row.repeat_rule === 'object') {
+    rule = row.repeat_rule as Record<string, unknown>;
+  } else if (typeof row.repeat_rule === 'string') {
+    try {
+      rule = JSON.parse(row.repeat_rule) as Record<string, unknown>;
+    } catch {
+      rule = {};
+    }
+  }
+  return {
+    anchor_date: row.due_at ?? row.scheduled_start_at ?? row.created_at ?? null,
+    repeat_kind: typeof rule.repeat_kind === 'string' ? rule.repeat_kind : 'none',
+    repeat_interval: typeof rule.repeat_interval === 'number' ? rule.repeat_interval : 1,
+    until_date: (rule.until_date as string | null | undefined) ?? null,
+  };
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -75,6 +107,7 @@ function matchesClampedDom(anchor: Date, day: Date): boolean {
  * - `everyNMonths`: monthDiff % N == 0 AND same (clamped) day-of-month
  */
 export function occursOn(series: SeriesLike, date: Date | string): boolean {
+  if (series.anchor_date == null) return false; // undated tasks never occur
   const anchor = toUtcDate(series.anchor_date);
   const day = toUtcDate(date);
 
