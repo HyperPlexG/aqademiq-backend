@@ -13,6 +13,7 @@ import { RateLimitMiddleware } from "./common/middleware/rate-limit.middleware";
 import { AdaModule } from "./features/ada/ada.module";
 import { DevicesModule } from "./features/devices/devices.module";
 import { FeedbackModule } from "./features/feedback/feedback.module";
+import { FeedbackBoardModule } from "./features/feedback-board/feedback-board.module";
 import { FilesModule } from "./features/files/files.module";
 import { FocusModule } from "./features/focus/focus.module";
 import { HealthModule } from "./features/health/health.module";
@@ -40,6 +41,7 @@ import { TasksModule } from "./features/tasks/tasks.module";
     AdaModule,
     DevicesModule,
     FeedbackModule,
+    FeedbackBoardModule,
     FilesModule,
     FocusModule,
     HealthModule,

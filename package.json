@@ -11,6 +11,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "db:test": "node scripts/test-db-connection.mjs",
+    "db:test:feedback": "node scripts/test-feedback-board.mjs",
     "keys:gen": "bash scripts/gen-keys.sh"
   },
   "dependencies": {

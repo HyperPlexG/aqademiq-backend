@@ -594,3 +594,152 @@ model AppFeedback {
 
   @@map("app_feedback")
 }
+
+// ============================================================
+// PART K — Feedback & Roadmap board (nolt parity, phase 1)
+// ------------------------------------------------------------
+// A SHARED, public feature-request board — NOT per-user tenant-scoped, so these
+// models are NOT in TENANT_MODELS and services use raw prisma.* (system path).
+// PKs are bigint identity; `ref` is the short public number shown as #ref.
+// author_id / user_id / actor_id -> auth.users.id (plain uuid, no Prisma relation).
+// ============================================================
+
+model FeedbackStatus {
+  key        String  @id
+  label      String
+  color      String
+  sort_order Int     @default(0)
+  on_roadmap Boolean @default(true)
+
+  posts FeedbackPost[]
+
+  @@map("feedback_statuses")
+}
+
+model FeedbackCategory {
+  key   String @id
+  label String
+
+  posts FeedbackPost[]
+
+  @@map("feedback_categories")
+}
+
+model FeedbackPost {
+  id            BigInt            @id @default(autoincrement())
+  ref           Int               @unique @default(dbgenerated("nextval('feedback_ref_seq'::regclass)"))
+  author_id     String?           @db.Uuid // -> auth.users.id
+  title         String
+  body          String            @default("")
+  status_key    String?           @default("under_review")
+  status        FeedbackStatus?   @relation(fields: [status_key], references: [key], onDelete: NoAction, onUpdate: NoAction)
+  category_key  String?
+  category      FeedbackCategory? @relation(fields: [category_key], references: [key], onDelete: NoAction, onUpdate: NoAction)
+  upvotes       Int               @default(0)
+  comment_count Int               @default(0)
+  pinned        Boolean           @default(false)
+  locked        Boolean           @default(false)
+  approved      Boolean           @default(true)
+  merged_into   BigInt?
+  merged_target FeedbackPost?     @relation("FeedbackMerge", fields: [merged_into], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  merged_from   FeedbackPost[]    @relation("FeedbackMerge")
+  created_at    DateTime          @default(now()) @db.Timestamptz
+  updated_at    DateTime          @default(now()) @db.Timestamptz
+
+  votes          FeedbackVote[]
+  comments       FeedbackComment[]
+  status_changes FeedbackStatusChange[]
+  subscriptions  FeedbackSubscription[]
+  admin_notes    FeedbackAdminNote[]
+  changelog      ChangelogEntry[]
+
+  @@index([status_key])
+  @@index([category_key])
+  @@index([upvotes(sort: Desc)])
+  @@map("feedback_posts")
+}
+
+model FeedbackVote {
+  post_id    BigInt
+  post       FeedbackPost @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  user_id    String       @db.Uuid // -> auth.users.id
+  created_at DateTime     @default(now()) @db.Timestamptz
+
+  @@id([post_id, user_id])
+  @@map("feedback_votes")
+}
+
+model FeedbackComment {
+  id         BigInt           @id @default(autoincrement())
+  post_id    BigInt
+  post       FeedbackPost     @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  author_id  String?          @db.Uuid // -> auth.users.id
+  parent_id  BigInt?
+  parent     FeedbackComment? @relation("FeedbackCommentThread", fields: [parent_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  replies    FeedbackComment[] @relation("FeedbackCommentThread")
+  body       String
+  is_team    Boolean          @default(false)
+  deleted_at DateTime?        @db.Timestamptz
+  created_at DateTime         @default(now()) @db.Timestamptz
+
+  reactions FeedbackCommentReaction[]
+
+  @@index([post_id])
+  @@map("feedback_comments")
+}
+
+model FeedbackCommentReaction {
+  comment_id BigInt
+  comment    FeedbackComment @relation(fields: [comment_id], references: [id], onDelete: Cascade)
+  user_id    String          @db.Uuid // -> auth.users.id
+  emoji      String
+
+  @@id([comment_id, user_id, emoji])
+  @@map("feedback_comment_reactions")
+}
+
+model FeedbackStatusChange {
+  id          BigInt       @id @default(autoincrement())
+  post_id     BigInt
+  post        FeedbackPost @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  from_status String?
+  to_status   String
+  actor_id    String?      @db.Uuid // -> auth.users.id
+  note        String?
+  created_at  DateTime     @default(now()) @db.Timestamptz
+
+  @@index([post_id])
+  @@map("feedback_status_changes")
+}
+
+model FeedbackSubscription {
+  post_id    BigInt
+  post       FeedbackPost @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  user_id    String       @db.Uuid // -> auth.users.id
+  created_at DateTime     @default(now()) @db.Timestamptz
+
+  @@id([post_id, user_id])
+  @@map("feedback_subscriptions")
+}
+
+model FeedbackAdminNote {
+  id         BigInt       @id @default(autoincrement())
+  post_id    BigInt
+  post       FeedbackPost @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  author_id  String?      @db.Uuid // -> auth.users.id
+  body       String
+  created_at DateTime     @default(now()) @db.Timestamptz
+
+  @@map("feedback_admin_notes")
+}
+
+model ChangelogEntry {
+  id           BigInt        @id @default(autoincrement())
+  title        String
+  body         String
+  source_post  BigInt?
+  source       FeedbackPost? @relation(fields: [source_post], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  published_at DateTime?     @db.Timestamptz
+
+  @@map("changelog_entries")
+}
