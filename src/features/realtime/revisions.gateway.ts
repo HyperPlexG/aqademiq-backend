@@ -3,7 +3,7 @@ import { OnGatewayConnection, WebSocketGateway, WebSocketServer } from '@nestjs/
 import { Server, Socket } from 'socket.io';
 import type Redis from 'ioredis';
 import { RedisService } from '../../infra/redis.service';
-import { TokenService } from '../../infra/token.service';
+import { verifySupabaseToken } from '../../common/supabase-jwt';
 
 /**
  * §4.6 realtime invalidation: per-user WS revision stream replacing the app's
@@ -19,7 +19,6 @@ export class RevisionsGateway implements OnGatewayConnection, OnModuleInit {
 
   constructor(
     private readonly redis: RedisService,
-    private readonly tokens: TokenService,
   ) {}
 
   onModuleInit() {
@@ -39,9 +38,9 @@ export class RevisionsGateway implements OnGatewayConnection, OnModuleInit {
       socket.handshake.headers.authorization?.split(' ')[1];
     if (!token) return socket.disconnect(true);
     try {
-      const claims = await this.tokens.verifyAccess(token);
-      socket.join(`user:${claims.sub}`);
-      socket.emit('connected', { user_id: claims.sub });
+      const claims = await verifySupabaseToken(token);
+      socket.join(`user:${claims.userId}`);
+      socket.emit('connected', { user_id: claims.userId });
     } catch {
       socket.disconnect(true);
     }

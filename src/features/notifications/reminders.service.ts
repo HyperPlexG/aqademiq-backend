@@ -31,7 +31,7 @@ export class RemindersService {
 
     let enqueued = 0;
     for (const d of devices) {
-      const u = await this.prisma.user.findUnique({ where: { id: d.user_id } });
+      const u = await this.prisma.profile.findUnique({ where: { id: d.user_id } });
       const tz = u?.timezone ?? 'UTC';
       const { localDate, localHHMM } = this.localNow(tz);
       const settings = await this.prisma.notificationPreferences.findUnique({ where: { user_id: d.user_id } });

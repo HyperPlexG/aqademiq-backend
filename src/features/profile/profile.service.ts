@@ -34,7 +34,7 @@ export class ProfileService {
 
   async get() {
     const [user, profile] = await Promise.all([
-      this.prisma.user.findUnique({
+      this.prisma.profile.findUnique({
         where: { id: this.rc.userId },
         select: { email: true, is_guest: true, full_name: true, display_name: true, gender: true, date_of_birth: true, avatar_url: true },
       }),
@@ -58,7 +58,7 @@ export class ProfileService {
     }
 
     if (Object.keys(userData).length > 0) {
-      await this.prisma.user.update({
+      await this.prisma.profile.update({
         where: { id: this.rc.userId },
         data: userData,
       });
@@ -79,7 +79,7 @@ export class ProfileService {
       profile = await this.prisma.userProfile.findUnique({ where: { user_id: this.rc.userId } });
     }
 
-    const user = await this.prisma.user.findUnique({
+    const user = await this.prisma.profile.findUnique({
       where: { id: this.rc.userId },
       select: { email: true, is_guest: true, full_name: true, display_name: true, gender: true, date_of_birth: true, avatar_url: true },
     });
