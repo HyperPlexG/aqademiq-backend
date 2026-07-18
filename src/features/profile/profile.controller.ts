@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Patch } from '@nestjs/common';
 import { ProfileService } from './profile.service';
 import { UpdateProfileDto } from './dto/profile.dto';
 
@@ -15,5 +15,11 @@ export class ProfileController {
   @Patch()
   update(@Body() dto: UpdateProfileDto) {
     return this.svc.update(dto);
+  }
+
+  /** Full account deletion (store-policy requirement): auth identity + all data. */
+  @Delete('account')
+  deleteAccount() {
+    return this.svc.deleteAccount();
   }
 }

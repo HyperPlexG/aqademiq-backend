@@ -11,6 +11,9 @@
 > (`#RRGGBB`), task create uses `scheduled_at`/`date` (no `due_date`), mood is
 > `POST /v1/mood-entries` `{date, mood_index 0-4}`. Occurrence ids are
 > `<task-id>@<yyyy-MM-dd>` (`@`, not `:`).
+> Account deletion (store requirement) is **`DELETE /v1/profile/account`** —
+> deletes the Supabase Auth identity + all app data; the client must sign out
+> locally after a 200 (the old token stays valid until expiry).
 
 > **This document is the authoritative human contract for wiring the Flutter
 > client to the Aqademiq backend.** Where this `.md` and

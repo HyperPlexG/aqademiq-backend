@@ -25,6 +25,8 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npx prisma validate
+      - run: npm run lint
+      - run: npm test
       - run: npm run build
       # Export the OpenAPI contract as a build artifact (handoff to the app team).
       - name: Generate OpenAPI spec
@@ -35,8 +37,6 @@ jobs:
           name: openapi
           path: openapi.json
           if-no-files-found: ignore
-      # TODO: add `npm test` (jest) and `npm run lint` (eslint) once those
-      # devDependencies are added — currently not installed.
 
   # ---- CD: deploy to Cloud Run on main (needs the paid GCP project) ----
   # Paused until ready: set repo variable DEPLOY_ENABLED=true (Settings →

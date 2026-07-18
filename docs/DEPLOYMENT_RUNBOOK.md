@@ -173,7 +173,7 @@ up automatically; without it, release falls back to debug signing.
 ### 3.2 Play Console 🔒
 - Create the app, complete **Data safety** (declare: account/email, user content,
   device identifiers if push; encryption in transit; deletion via in-app
-  `DELETE /auth/account`), **Content rating**, target audience, privacy-policy URL.
+  `DELETE /v1/profile/account`), **Content rating**, target audience, privacy-policy URL.
 - Upload the `.aab`, roll out to internal testing first, then production.
 
 ---
@@ -202,5 +202,5 @@ up automatically; without it, release falls back to debug signing.
 - [ ] `USE_MOCKS=false` + correct `API_BASE_URL`/`SOCKET_URL` baked into the release build.
 - [ ] Real app icons; display name capitalized.
 - [ ] Privacy policy URL published; data-safety / app-privacy declarations filled.
-- [ ] Account deletion path works in-app (store policy requirement) — backed by `DELETE /auth/account`.
+- [ ] Account deletion path works in-app (store policy requirement) — backed by `DELETE /v1/profile/account`.
 - [ ] Build number bumped; internal-testing track validated before production.
