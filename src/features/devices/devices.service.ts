@@ -17,7 +17,7 @@ export class DevicesService {
     this.assertValidTimezone(dto.timezone);
     
     // Update user's timezone
-    await this.prisma.user.update({
+    await this.prisma.profile.update({
       where: { id: this.rc.userId },
       data: { timezone: dto.timezone },
     });
@@ -47,12 +47,12 @@ export class DevicesService {
     let timezone: string = dto.timezone ?? 'UTC';
     if (dto.timezone) {
       this.assertValidTimezone(dto.timezone);
-      await this.prisma.user.update({
+      await this.prisma.profile.update({
         where: { id: this.rc.userId },
         data: { timezone: dto.timezone },
       });
     } else {
-      const u = await this.prisma.user.findUnique({ where: { id: this.rc.userId } });
+      const u = await this.prisma.profile.findUnique({ where: { id: this.rc.userId } });
       timezone = u?.timezone ?? 'UTC';
     }
     const updated = await this.prisma.deviceProfile.update({
@@ -76,7 +76,7 @@ export class DevicesService {
     await this.owned(id);
     if (dto.timezone) {
       this.assertValidTimezone(dto.timezone);
-      await this.prisma.user.update({
+      await this.prisma.profile.update({
         where: { id: this.rc.userId },
         data: { timezone: dto.timezone },
       });

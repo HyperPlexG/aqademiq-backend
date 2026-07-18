@@ -26,12 +26,12 @@ export class OnboardingService {
 
     await this.prisma.$transaction(async (tx) => {
       if (dto.name !== undefined) {
-        await tx.user.update({
+        await tx.profile.update({
           where: { id: userId },
           data: { full_name: dto.name, display_name: dto.name, onboarding_complete: true },
         });
       } else {
-        await tx.user.update({
+        await tx.profile.update({
           where: { id: userId },
           data: { onboarding_complete: true },
         });

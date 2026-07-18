@@ -1,21 +1,19 @@
 import { CanActivate, ExecutionContext, Injectable, SetMetadata, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { TokenService } from '../../infra/token.service';
+import { verifySupabaseToken } from '../supabase-jwt';
 
 export const IS_PUBLIC = 'isPublic';
 export const Public = () => SetMetadata(IS_PUBLIC, true);
 
 /**
- * §4.1 token model: short-lived RS256 access JWT verified with the public key
- * (jose), then checked against the Redis deny-list for instant revocation.
- * Attaches { userId, isGuest, sessionId } to the request for downstream tenancy.
+ * Supabase Auth token model: access tokens are asymmetric (ES256) JWTs signed
+ * by the project's Auth signing key. We verify the signature against the
+ * project JWKS, then attach { userId, isGuest, sessionId } to the request for
+ * downstream tenancy (RequestContext + PrismaService.tenant).
  */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  constructor(
-    private reflector: Reflector,
-    private tokens: TokenService,
-  ) {}
+  constructor(private reflector: Reflector) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [ctx.getHandler(), ctx.getClass()]);
@@ -26,11 +24,14 @@ export class JwtAuthGuard implements CanActivate {
     const [scheme, token] = header?.split(' ') ?? [];
     if (scheme !== 'Bearer' || !token) throw new UnauthorizedException('Missing bearer token');
 
-    // RS256 signature verification + deny-list check (throws on failure).
-    const claims = await this.tokens.verifyAccess(token);
-    req.userId = claims.sub;
-    req.isGuest = claims.is_guest;
-    req.sessionId = claims.sid;
+    try {
+      const claims = await verifySupabaseToken(token);
+      req.userId = claims.userId;
+      req.isGuest = claims.isGuest;
+      req.sessionId = claims.sessionId;
+    } catch {
+      throw new UnauthorizedException('Invalid token');
+    }
     return true;
   }
 }

@@ -1,4 +1,8 @@
-// Aqademiq data model — Updated to final SQL schema
+// Aqademiq data model — reconciled to the deployed Supabase Postgres schema
+// (project xqnjquozcnwmogipowpf, schema public, 30 tables). Identity is provided
+// by Supabase Auth: profiles.id = auth.users.id and every other user_id FKs to
+// auth.users.id. auth.users lives in the `auth` schema and is NOT modeled here,
+// so those references are plain uuid columns with no Prisma relation.
 generator client {
   provider = "prisma-client-js"
 }
@@ -13,108 +17,43 @@ generator edge {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ============================================================
-// PART A — Auth, Identity & Access
+// PART A — Identity & Access
 // ============================================================
 
-model User {
-  id                  String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email               String?    @unique
-  full_name           String?
-  display_name        String?    @db.VarChar(100)
-  gender              String?    @db.VarChar(50)
-  date_of_birth       DateTime?  @db.Date
+model Profile {
+  id                  String    @id @db.Uuid // = auth.users.id
+  email               String?   @db.VarChar(255)
+  full_name           String?   @db.VarChar(255)
+  display_name        String?   @db.VarChar(100)
+  gender              String?   @db.VarChar(50)
+  date_of_birth       DateTime? @db.Date
   avatar_url          String?
-  auth_provider       String     @default("email") @db.VarChar(50)
-  timezone            String     @default("UTC") @db.VarChar(100)
-  account_status      String     @default("active") @db.VarChar(20)
-  is_guest            Boolean    @default(false)
-  guest_token_hash    String?
-  onboarding_complete Boolean    @default(false)
-  onboarding_step     Int        @default(0) @db.SmallInt
-  referral_code       String?    @unique @db.VarChar(50)
-  referred_by         String?    @db.Uuid
-  streak_days         Int        @default(0)
-  last_active_date    DateTime?  @db.Date
-  last_login_at       DateTime?  @db.Timestamptz
-  deleted_at          DateTime?  @db.Timestamptz
-  created_at          DateTime   @default(now()) @db.Timestamptz
-  updated_at          DateTime   @default(now()) @db.Timestamptz
+  timezone            String    @default("UTC") @db.VarChar(100)
+  account_status      String    @default("active") @db.VarChar(20)
+  is_guest            Boolean   @default(false)
+  onboarding_complete Boolean   @default(false)
+  onboarding_step     Int       @default(0) @db.SmallInt
+  referral_code       String?   @unique @db.VarChar(50)
+  referred_by         String?   @db.Uuid // -> auth.users.id
+  streak_days         Int       @default(0)
+  last_active_date    DateTime? @db.Date
+  last_login_at       DateTime? @db.Timestamptz
+  deleted_at          DateTime? @db.Timestamptz
+  created_at          DateTime  @default(now()) @db.Timestamptz
+  updated_at          DateTime  @default(now()) @db.Timestamptz
 
-  referrer            User?      @relation("UserReferrals", fields: [referred_by], references: [id], onDelete: SetNull)
-  referrals           User[]     @relation("UserReferrals")
-
-  auth_identities         AuthIdentity[]
-  user_profile            UserProfile?
-  app_settings            UserAppSettings?
-  notification_preferences NotificationPreferences?
-  study_tags              StudyTag[]
-  task_tags               TaskTag[]
-  calendar_connections     CalendarConnection[]
-  device_profiles         DeviceProfile[]
-  sessions                UserSession[]
-  login_attempts          LoginAttempt[]
-  academic_terms          AcademicTerm[]
-  courses                 Course[]
-  subject_materials       SubjectMaterial[]
-  tasks                   Task[]
-  focus_sessions          FocusSession[]
-  mood_checkins           MoodCheckin[]
-  analytics_snapshots     AnalyticsSnapshot[]
-  daily_activity_snapshots DailyActivitySnapshot[]
-  ada_sessions            AdaSession[]
-  calendar_events         CalendarEvent[]
-  referral_code_record    ReferralCode?
-  referral_redemptions    ReferralRedemption[]
-  share_events            ShareEvent[]
-  app_ratings             AppRating[]
-  app_feedback            AppFeedback[]
-  prism_audio_profiles    PrismAudioProfile?
-
-  @@map("users")
-}
-
-model AuthIdentity {
-  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id          String   @db.Uuid
-  user             User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  provider         String   @db.VarChar(50)
-  provider_subject String?  @db.VarChar(255)
-  email            String?  @db.VarChar(255)
-  email_verified   Boolean  @default(false)
-  password_hash    String?
-  created_at       DateTime @default(now()) @db.Timestamptz
-  updated_at       DateTime @default(now()) @db.Timestamptz
-
-  @@unique([provider, provider_subject])
-  @@unique([user_id, provider])
-  @@map("auth_identities")
-}
-
-model EmailOtpCode {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email          String    @db.VarChar(255)
-  purpose        String    @default("signup") @db.VarChar(50)
-  otp_hash       String
-  attempts_count Int       @default(0)
-  max_attempts   Int       @default(5)
-  expires_at     DateTime  @db.Timestamptz
-  consumed_at    DateTime? @db.Timestamptz
-  ip_address     String?   @db.VarChar(45)
-  user_agent     String?
-  created_at     DateTime  @default(now()) @db.Timestamptz
-
-  @@map("email_otp_codes")
+  @@map("profiles")
 }
 
 model UserProfile {
   id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id                 String    @unique @db.Uuid
-  user                    User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id                 String    @unique @db.Uuid // FK -> auth.users.id
   university              String?   @db.VarChar(255)
   program                 String?   @db.VarChar(255)
   study_level             String?   @db.VarChar(100)
@@ -133,8 +72,7 @@ model UserProfile {
 
 model UserAppSettings {
   id                             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id                        String   @unique @db.Uuid
-  user                           User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id                        String   @unique @db.Uuid // FK -> auth.users.id
   appearance                     String   @default("system") @db.VarChar(20)
   accent_color                   String   @default("#6b5cf0") @db.VarChar(7)
   subjects_layout                String   @default("list") @db.VarChar(20)
@@ -142,10 +80,10 @@ model UserAppSettings {
   haptics_enabled                Boolean  @default(true)
   play_prism_in_focus            Boolean  @default(true)
   in_app_sounds_enabled          Boolean  @default(true)
-  sound_create_task_enabled       Boolean  @default(true)
-  sound_complete_task_enabled     Boolean  @default(true)
-  sound_task_countdown_enabled    Boolean  @default(true)
-  sound_subtask_complete_enabled  Boolean  @default(true)
+  sound_create_task_enabled      Boolean  @default(true)
+  sound_complete_task_enabled    Boolean  @default(true)
+  sound_task_countdown_enabled   Boolean  @default(true)
+  sound_subtask_complete_enabled Boolean  @default(true)
   created_at                     DateTime @default(now()) @db.Timestamptz
   updated_at                     DateTime @default(now()) @db.Timestamptz
 
@@ -154,8 +92,7 @@ model UserAppSettings {
 
 model NotificationPreferences {
   id                         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id                    String   @unique @db.Uuid
-  user                       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id                    String   @unique @db.Uuid // FK -> auth.users.id
   push_enabled               Boolean  @default(true)
   email_enabled              Boolean  @default(true)
   before_task_enabled        Boolean  @default(true)
@@ -163,12 +100,12 @@ model NotificationPreferences {
   halfway_through_enabled    Boolean  @default(false)
   when_task_finished_enabled Boolean  @default(false)
   morning_checkin_enabled    Boolean  @default(true)
-  morning_checkin_time       DateTime @db.Time
+  morning_checkin_time       DateTime @default(dbgenerated("'08:00:00'::time without time zone")) @db.Time
   evening_review_enabled     Boolean  @default(true)
-  evening_review_time        DateTime @db.Time
+  evening_review_time        DateTime @default(dbgenerated("'20:00:00'::time without time zone")) @db.Time
   weekly_review_enabled      Boolean  @default(true)
   weekly_review_day          Int      @default(0) @db.SmallInt
-  weekly_review_time         DateTime @db.Time
+  weekly_review_time         DateTime @default(dbgenerated("'15:00:00'::time without time zone")) @db.Time
   state_of_mind_reminder     Boolean  @default(true)
   motivational_enabled       Boolean  @default(true)
   product_updates_enabled    Boolean  @default(false)
@@ -181,8 +118,7 @@ model NotificationPreferences {
 
 model StudyTag {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id    String?  @db.Uuid
-  user       User?    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id    String?  @db.Uuid // FK -> auth.users.id
   name       String   @db.VarChar(100)
   color      String?  @db.VarChar(7)
   is_system  Boolean  @default(false)
@@ -192,17 +128,16 @@ model StudyTag {
 }
 
 model CalendarConnection {
-  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id           String   @db.Uuid
-  user              User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  provider          String   @db.VarChar(50)
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String    @db.Uuid // FK -> auth.users.id
+  provider          String    @db.VarChar(50)
   access_token_enc  String
   refresh_token_enc String?
   token_expires_at  DateTime? @db.Timestamptz
-  calendar_email    String?  @db.VarChar(255)
-  is_active         Boolean  @default(true)
-  created_at        DateTime @default(now()) @db.Timestamptz
-  updated_at        DateTime @default(now()) @db.Timestamptz
+  calendar_email    String?   @db.VarChar(255)
+  is_active         Boolean   @default(true)
+  created_at        DateTime  @default(now()) @db.Timestamptz
+  updated_at        DateTime  @default(now()) @db.Timestamptz
 
   calendar_events   CalendarEvent[]
 
@@ -211,8 +146,7 @@ model CalendarConnection {
 
 model DeviceProfile {
   id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id        String   @db.Uuid
-  user           User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id        String   @db.Uuid // FK -> auth.users.id
   device_name    String?  @db.VarChar(255)
   device_type    String?  @db.VarChar(100)
   push_token     String?
@@ -220,46 +154,7 @@ model DeviceProfile {
   registered_at  DateTime @default(now()) @db.Timestamptz
   updated_at     DateTime @default(now()) @db.Timestamptz
 
-  sessions       UserSession[]
-
   @@map("device_profiles")
-}
-
-model UserSession {
-  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id            String    @db.Uuid
-  user               User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  device_profile_id  String?   @db.Uuid
-  device_profile     DeviceProfile? @relation(fields: [device_profile_id], references: [id], onDelete: SetNull)
-  session_token_hash String
-  refresh_token_hash String?
-  ip_address         String    @db.VarChar(45)
-  user_agent         String?
-  status             String    @default("active") @db.VarChar(20)
-  login_at           DateTime  @default(now()) @db.Timestamptz
-  last_active_at     DateTime  @default(now()) @db.Timestamptz
-  expires_at         DateTime  @db.Timestamptz
-  logged_out_at      DateTime? @db.Timestamptz
-
-  login_attempts     LoginAttempt[]
-
-  @@map("user_sessions")
-}
-
-model LoginAttempt {
-  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id            String?      @db.Uuid
-  user               User?        @relation(fields: [user_id], references: [id], onDelete: SetNull)
-  email_entered      String       @db.VarChar(255)
-  status             String       @db.VarChar(20)
-  failure_reason     String?
-  ip_address         String       @db.VarChar(45)
-  user_agent         String?
-  created_session_id String?      @db.Uuid
-  created_session    UserSession? @relation(fields: [created_session_id], references: [id], onDelete: SetNull)
-  attempted_at       DateTime     @default(now()) @db.Timestamptz
-
-  @@map("login_attempts")
 }
 
 // ============================================================
@@ -268,8 +163,7 @@ model LoginAttempt {
 
 model AcademicTerm {
   id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id    String    @db.Uuid
-  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id    String    @db.Uuid // FK -> auth.users.id
   name       String    @db.VarChar(100)
   start_date DateTime? @db.Date
   end_date   DateTime? @db.Date
@@ -284,29 +178,28 @@ model AcademicTerm {
 }
 
 model Course {
-  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id            String    @db.Uuid
-  user               User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  term_id            String?   @db.Uuid
+  id                 String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String        @db.Uuid // FK -> auth.users.id
+  term_id            String?       @db.Uuid
   term               AcademicTerm? @relation(fields: [term_id], references: [id], onDelete: SetNull)
-  name               String    @db.VarChar(255)
-  code               String?   @db.VarChar(50)
-  professor          String?   @db.VarChar(255)
-  color              String?   @db.VarChar(7)
-  credits            Decimal?  @db.Decimal(4, 1)
-  grade_system       String    @default("letter") @db.VarChar(20)
-  target_grade_text  String?   @db.VarChar(20)
-  target_gpa         Decimal?  @db.Decimal(3, 2)
-  target_percentage  Decimal?  @db.Decimal(5, 2)
-  current_gpa        Decimal?  @db.Decimal(3, 2)
-  current_percentage Decimal?  @db.Decimal(5, 2)
-  subject_feeling    Int?      @db.SmallInt
-  syllabus_status    String    @default("missing") @db.VarChar(30)
-  sort_order         Int       @default(0)
-  is_archived        Boolean   @default(false)
-  archived_at        DateTime? @db.Timestamptz
-  created_at         DateTime  @default(now()) @db.Timestamptz
-  updated_at         DateTime  @default(now()) @db.Timestamptz
+  name               String        @db.VarChar(255)
+  code               String?       @db.VarChar(50)
+  professor          String?       @db.VarChar(255)
+  color              String?       @db.VarChar(7)
+  credits            Decimal?      @db.Decimal(4, 1)
+  grade_system       String        @default("letter") @db.VarChar(20)
+  target_grade_text  String?       @db.VarChar(20)
+  target_gpa         Decimal?      @db.Decimal(3, 2)
+  target_percentage  Decimal?      @db.Decimal(5, 2)
+  current_gpa        Decimal?      @db.Decimal(3, 2)
+  current_percentage Decimal?      @db.Decimal(5, 2)
+  subject_feeling    Int?          @db.SmallInt
+  syllabus_status    String        @default("missing") @db.VarChar(30)
+  sort_order         Int           @default(0)
+  is_archived        Boolean       @default(false)
+  archived_at        DateTime?     @db.Timestamptz
+  created_at         DateTime      @default(now()) @db.Timestamptz
+  updated_at         DateTime      @default(now()) @db.Timestamptz
 
   subject_materials  SubjectMaterial[]
   tasks              Task[]
@@ -318,8 +211,7 @@ model Course {
 
 model SubjectMaterial {
   id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id           String   @db.Uuid
-  user              User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id           String   @db.Uuid // FK -> auth.users.id
   course_id         String   @db.Uuid
   course            Course   @relation(fields: [course_id], references: [id], onDelete: Cascade)
   material_type     String   @db.VarChar(50)
@@ -329,7 +221,7 @@ model SubjectMaterial {
   file_size_bytes   BigInt?
   processing_status String   @default("uploaded") @db.VarChar(30)
   extracted_text    String?
-  metadata          Json     @default("{}")
+  metadata          Json     @default("{}") @db.JsonB
   uploaded_at       DateTime @default(now()) @db.Timestamptz
   updated_at        DateTime @default(now()) @db.Timestamptz
 
@@ -337,17 +229,17 @@ model SubjectMaterial {
 }
 
 // ============================================================
-// PART C — Tasks, Microtasks & Tags
+// PART C — Tasks, Steps & Tags
 // ============================================================
 
 model TaskTag {
-  id         String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id    String?           @db.Uuid
-  user       User?             @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  label      String            @db.VarChar(100)
-  color      String?           @db.VarChar(7)
-  is_system  Boolean           @default(false)
-  created_at DateTime          @default(now()) @db.Timestamptz
+  id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String?       @db.Uuid // FK -> auth.users.id
+  label      String        @db.VarChar(100)
+  color      String?       @db.VarChar(7)
+  is_system  Boolean       @default(false)
+  created_at DateTime      @default(now()) @db.Timestamptz
+
   links      TaskTagLink[]
 
   @@map("task_tags")
@@ -355,8 +247,7 @@ model TaskTag {
 
 model Task {
   id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id                 String    @db.Uuid
-  user                    User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id                 String    @db.Uuid // FK -> auth.users.id
   course_id               String?   @db.Uuid
   course                  Course?   @relation(fields: [course_id], references: [id], onDelete: SetNull)
   parent_task_id          String?   @db.Uuid
@@ -378,7 +269,7 @@ model Task {
   is_micro_task           Boolean   @default(false)
   order_index             Int       @default(0)
   source                  String    @default("manual") @db.VarChar(30)
-  metadata                Json      @default("{}")
+  metadata                Json      @default("{}") @db.JsonB
   completed_at            DateTime? @db.Timestamptz
   created_at              DateTime  @default(now()) @db.Timestamptz
   updated_at              DateTime  @default(now()) @db.Timestamptz
@@ -388,8 +279,9 @@ model Task {
   reschedule_history      TaskRescheduleHistory[]
   focus_sessions          FocusSession[]
   ada_plan_items          AdaGeneratedPlanItem[]
-  calendar_events         CalendarEvent[]
   ada_sessions            AdaSession[]
+  calendar_events         CalendarEvent[]
+  share_events            ShareEvent[]
 
   @@map("tasks")
 }
@@ -440,21 +332,21 @@ model TaskRescheduleHistory {
 // ============================================================
 
 model PrismPreset {
-  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name                  String              @unique @db.VarChar(100)
-  description           String?
-  is_system             Boolean             @default(true)
-  created_at            DateTime            @default(now()) @db.Timestamptz
-  audio_profiles        PrismAudioProfile[]
-  focus_sessions        FocusSession[]
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String              @unique @db.VarChar(100)
+  description    String?
+  is_system      Boolean             @default(true)
+  created_at     DateTime            @default(now()) @db.Timestamptz
+
+  audio_profiles PrismAudioProfile[]
+  focus_sessions FocusSession[]
 
   @@map("prism_presets")
 }
 
 model PrismAudioProfile {
   id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id           String       @unique @db.Uuid
-  user              User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id           String       @unique @db.Uuid // FK -> auth.users.id
   default_preset_id String?      @db.Uuid
   default_preset    PrismPreset? @relation(fields: [default_preset_id], references: [id], onDelete: SetNull)
   volume_level      Int          @default(50) @db.SmallInt
@@ -467,29 +359,28 @@ model PrismAudioProfile {
 }
 
 model FocusSession {
-  id                    String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id               String       @db.Uuid
-  user                  User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  task_id               String?      @db.Uuid
-  task                  Task?        @relation(fields: [task_id], references: [id], onDelete: SetNull)
-  course_id             String?      @db.Uuid
-  course                Course?      @relation(fields: [course_id], references: [id], onDelete: SetNull)
-  prism_preset_id       String?      @db.Uuid
-  prism_preset          PrismPreset? @relation(fields: [prism_preset_id], references: [id], onDelete: SetNull)
-  started_at            DateTime     @default(now()) @db.Timestamptz
-  ended_at              DateTime?    @db.Timestamptz
+  id                    String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id               String        @db.Uuid // FK -> auth.users.id
+  task_id               String?       @db.Uuid
+  task                  Task?         @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  course_id             String?       @db.Uuid
+  course                Course?       @relation(fields: [course_id], references: [id], onDelete: SetNull)
+  prism_preset_id       String?       @db.Uuid
+  prism_preset          PrismPreset?  @relation(fields: [prism_preset_id], references: [id], onDelete: SetNull)
+  started_at            DateTime      @default(now()) @db.Timestamptz
+  ended_at              DateTime?     @db.Timestamptz
   planned_duration_mins Int?
   actual_duration_mins  Int?
-  paused_duration_mins  Int          @default(0)
-  interruption_count    Int          @default(0)
-  status                String       @default("completed") @db.VarChar(20)
-  was_completed         Boolean      @default(false)
-  mood_before           Int?         @db.SmallInt
-  mood_after            Int?         @db.SmallInt
-  session_rating        Int?         @db.SmallInt
+  paused_duration_mins  Int           @default(0)
+  interruption_count    Int           @default(0)
+  status                String        @default("completed") @db.VarChar(20)
+  was_completed         Boolean       @default(false)
+  mood_before           Int?          @db.SmallInt
+  mood_after            Int?          @db.SmallInt
+  session_rating        Int?          @db.SmallInt
   notes                 String?
-  metadata              Json         @default("{}")
-  created_at            DateTime     @default(now()) @db.Timestamptz
+  metadata              Json          @default("{}") @db.JsonB
+  created_at            DateTime      @default(now()) @db.Timestamptz
 
   mood_checkins         MoodCheckin[]
 
@@ -502,15 +393,14 @@ model FocusSession {
 
 model MoodCheckin {
   id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id          String        @db.Uuid
-  user             User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id          String        @db.Uuid // FK -> auth.users.id
   focus_session_id String?       @db.Uuid
   focus_session    FocusSession? @relation(fields: [focus_session_id], references: [id], onDelete: SetNull)
   checkin_type     String        @db.VarChar(30)
   mood_score       Int           @db.SmallInt
   mood_label       String?       @db.VarChar(50)
   note             String?
-  checkin_date     DateTime      @default(now()) @db.Date
+  checkin_date     DateTime      @default(dbgenerated("CURRENT_DATE")) @db.Date
   created_at       DateTime      @default(now()) @db.Timestamptz
 
   @@map("mood_checkins")
@@ -522,8 +412,7 @@ model MoodCheckin {
 
 model AnalyticsSnapshot {
   id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id             String   @db.Uuid
-  user                User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id             String   @db.Uuid // FK -> auth.users.id
   week_start          DateTime @db.Date
   focus_minutes_total Int      @default(0)
   tasks_completed     Int      @default(0)
@@ -540,8 +429,7 @@ model AnalyticsSnapshot {
 
 model DailyActivitySnapshot {
   id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id             String   @db.Uuid
-  user                User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id             String   @db.Uuid // FK -> auth.users.id
   activity_date       DateTime @db.Date
   focus_minutes_total Int      @default(0)
   tasks_completed     Int      @default(0)
@@ -562,8 +450,7 @@ model DailyActivitySnapshot {
 
 model AdaSession {
   id           String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id      String                 @db.Uuid
-  user         User                   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id      String                 @db.Uuid // FK -> auth.users.id
   course_id    String?                @db.Uuid
   course       Course?                @relation(fields: [course_id], references: [id], onDelete: SetNull)
   task_id      String?                @db.Uuid
@@ -571,11 +458,12 @@ model AdaSession {
   session_type String                 @default("general") @db.VarChar(50)
   title        String?                @db.VarChar(255)
   is_active    Boolean                @default(true)
-  context      Json                   @default("{}")
+  context      Json                   @default("{}") @db.JsonB
   started_at   DateTime               @default(now()) @db.Timestamptz
   ended_at     DateTime?              @db.Timestamptz
   created_at   DateTime               @default(now()) @db.Timestamptz
   updated_at   DateTime               @default(now()) @db.Timestamptz
+
   messages     AdaMessage[]
   plan_items   AdaGeneratedPlanItem[]
 
@@ -588,8 +476,8 @@ model AdaMessage {
   ada_session       AdaSession @relation(fields: [ada_session_id], references: [id], onDelete: Cascade)
   role              String     @db.VarChar(20)
   content           String
-  attachments       Json       @default("[]")
-  metadata          Json       @default("{}")
+  attachments       Json       @default("[]") @db.JsonB
+  metadata          Json       @default("{}") @db.JsonB
   model             String?    @db.VarChar(100)
   prompt_tokens     Int?
   completion_tokens Int?
@@ -621,8 +509,7 @@ model CalendarEvent {
   id                     String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   calendar_connection_id String             @db.Uuid
   calendar_connection    CalendarConnection @relation(fields: [calendar_connection_id], references: [id], onDelete: Cascade)
-  user_id                String?            @db.Uuid
-  user                   User?              @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id                String?            @db.Uuid // FK -> auth.users.id
   task_id                String?            @db.Uuid
   task                   Task?              @relation(fields: [task_id], references: [id], onDelete: SetNull)
   external_event_id      String?            @db.VarChar(500)
@@ -633,12 +520,11 @@ model CalendarEvent {
   is_all_day             Boolean            @default(false)
   event_source           String             @default("external") @db.VarChar(30)
   sync_status            String             @default("synced") @db.VarChar(30)
-  metadata               Json               @default("{}")
+  metadata               Json               @default("{}") @db.JsonB
   synced_at              DateTime           @default(now()) @db.Timestamptz
   created_at             DateTime           @default(now()) @db.Timestamptz
   updated_at             DateTime           @default(now()) @db.Timestamptz
 
-  @@unique([calendar_connection_id, external_event_id])
   @@map("calendar_events")
 }
 
@@ -647,12 +533,12 @@ model CalendarEvent {
 // ============================================================
 
 model ReferralCode {
-  id         String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id    String               @unique @db.Uuid
-  user       User                 @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  code       String               @unique @db.VarChar(50)
-  is_active  Boolean              @default(true)
-  created_at DateTime             @default(now()) @db.Timestamptz
+  id          String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String               @unique @db.Uuid // FK -> auth.users.id
+  code        String               @unique @db.VarChar(50)
+  is_active   Boolean              @default(true)
+  created_at  DateTime             @default(now()) @db.Timestamptz
+
   redemptions ReferralRedemption[]
 
   @@map("referral_codes")
@@ -662,8 +548,7 @@ model ReferralRedemption {
   id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   referral_code_id String       @db.Uuid
   referral_code    ReferralCode @relation(fields: [referral_code_id], references: [id], onDelete: Cascade)
-  referred_user_id String       @unique @db.Uuid
-  referred_user    User         @relation(fields: [referred_user_id], references: [id], onDelete: Cascade)
+  referred_user_id String       @unique @db.Uuid // FK -> auth.users.id
   redeemed_at      DateTime     @default(now()) @db.Timestamptz
 
   @@map("referral_redemptions")
@@ -671,10 +556,10 @@ model ReferralRedemption {
 
 model ShareEvent {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id    String?  @db.Uuid
-  user       User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  user_id    String?  @db.Uuid // FK -> auth.users.id
   share_type String   @db.VarChar(50)
   task_id    String?  @db.Uuid
+  task       Task?    @relation(fields: [task_id], references: [id], onDelete: SetNull)
   channel    String?  @db.VarChar(100)
   created_at DateTime @default(now()) @db.Timestamptz
 
@@ -687,8 +572,7 @@ model ShareEvent {
 
 model AppRating {
   id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id     String?  @db.Uuid
-  user        User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  user_id     String?  @db.Uuid // FK -> auth.users.id
   rating      Int      @db.SmallInt
   platform    String?  @db.VarChar(20)
   app_version String?  @db.VarChar(50)
@@ -700,13 +584,12 @@ model AppRating {
 
 model AppFeedback {
   id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id       String?  @db.Uuid
-  user          User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  user_id       String?  @db.Uuid // FK -> auth.users.id
   feedback_type String   @default("general") @db.VarChar(50)
   text          String
   platform      String?  @db.VarChar(20)
   app_version   String?  @db.VarChar(50)
-  metadata      Json     @default("{}")
+  metadata      Json     @default("{}") @db.JsonB
   created_at    DateTime @default(now()) @db.Timestamptz
 
   @@map("app_feedback")

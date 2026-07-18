@@ -128,38 +128,44 @@ export class IntegrationsService {
     let count = 0;
     for (const ev of events) {
       if (!ev.uid) continue;
-      await this.prisma.calendarEvent.upsert({
-        where: {
-          calendar_connection_id_external_event_id: {
-            calendar_connection_id: connectionId,
-            external_event_id: ev.uid,
-          },
-        },
-        create: {
-          calendar_connection_id: connectionId,
-          user_id: this.rc.userId,
-          external_event_id: ev.uid,
-          title: ev.title,
-          description: ev.description,
-          starts_at: ev.start,
-          ends_at: ev.end,
-          is_all_day: ev.allDay,
-          event_source: 'external',
-          sync_status: 'synced',
-          metadata: ev.location ? { location: ev.location } : {},
-          synced_at: new Date(),
-        },
-        update: {
-          title: ev.title,
-          description: ev.description,
-          starts_at: ev.start,
-          ends_at: ev.end,
-          is_all_day: ev.allDay,
-          sync_status: 'synced',
-          synced_at: new Date(),
-          updated_at: new Date(),
-        },
+      // The deployed schema has no unique on (calendar_connection_id,
+      // external_event_id), so emulate an upsert with find-then-write.
+      const existing = await this.prisma.calendarEvent.findFirst({
+        where: { calendar_connection_id: connectionId, external_event_id: ev.uid },
+        select: { id: true },
       });
+      if (existing) {
+        await this.prisma.calendarEvent.update({
+          where: { id: existing.id },
+          data: {
+            title: ev.title,
+            description: ev.description,
+            starts_at: ev.start,
+            ends_at: ev.end,
+            is_all_day: ev.allDay,
+            sync_status: 'synced',
+            synced_at: new Date(),
+            updated_at: new Date(),
+          },
+        });
+      } else {
+        await this.prisma.calendarEvent.create({
+          data: {
+            calendar_connection_id: connectionId,
+            user_id: this.rc.userId,
+            external_event_id: ev.uid,
+            title: ev.title,
+            description: ev.description,
+            starts_at: ev.start,
+            ends_at: ev.end,
+            is_all_day: ev.allDay,
+            event_source: 'external',
+            sync_status: 'synced',
+            metadata: ev.location ? { location: ev.location } : {},
+            synced_at: new Date(),
+          },
+        });
+      }
       count += 1;
     }
     return count;

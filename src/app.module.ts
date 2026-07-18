@@ -11,7 +11,6 @@ import { IdempotencyMiddleware } from "./common/middleware/idempotency.middlewar
 import { RateLimitMiddleware } from "./common/middleware/rate-limit.middleware";
 
 import { AdaModule } from "./features/ada/ada.module";
-import { AuthModule } from "./features/auth/auth.module";
 import { DevicesModule } from "./features/devices/devices.module";
 import { FeedbackModule } from "./features/feedback/feedback.module";
 import { FilesModule } from "./features/files/files.module";
@@ -39,7 +38,6 @@ import { TasksModule } from "./features/tasks/tasks.module";
     ScheduleModule.forRoot(),   // §4.5 per-tz reminder cron sweep
     InfraModule,
     AdaModule,
-    AuthModule,
     DevicesModule,
     FeedbackModule,
     FilesModule,

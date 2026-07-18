@@ -2,9 +2,12 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { RequestContext } from '../common/request-context';
 
+// Models that carry a `user_id` column and are auto-scoped to the request user.
+// Derived from the deployed Supabase schema (22 tables with a user_id column).
+// `Profile` is scoped by its `id` (= auth.users.id), not user_id, so it is NOT here.
 const TENANT_MODELS = new Set([
-  'AuthIdentity', 'UserProfile', 'UserAppSettings', 'NotificationPreferences',
-  'StudyTag', 'CalendarConnection', 'DeviceProfile', 'UserSession', 'LoginAttempt',
+  'UserProfile', 'UserAppSettings', 'NotificationPreferences',
+  'StudyTag', 'CalendarConnection', 'DeviceProfile',
   'AcademicTerm', 'Course', 'SubjectMaterial', 'TaskTag', 'Task',
   'PrismAudioProfile', 'FocusSession', 'MoodCheckin', 'AnalyticsSnapshot',
   'DailyActivitySnapshot', 'AdaSession', 'CalendarEvent', 'ReferralCode',
