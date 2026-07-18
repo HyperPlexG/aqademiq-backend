@@ -1,4 +1,4 @@
-import { IsArray, IsInt, IsOptional, IsString, Length, Matches, Max, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Max, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 /** §2.1 onboarding completion payload (7-step wizard → profile/semester/subjects/settings). */
@@ -50,6 +50,25 @@ export class OnboardingSemesterDto {
 }
 
 export class CompleteOnboardingDto {
+  // Data-use consent. Required and must be `true` — the service rejects the
+  // write (and does not complete onboarding) when consent is not granted.
+  // consent_timestamp is stamped server-side; any client value is ignored.
+  @IsBoolean()
+  consent_given!: boolean;
+
+  // Which Privacy Policy / Terms version was accepted (PDPL audit trail).
+  @IsOptional()
+  @IsString()
+  @Length(1, 100)
+  consent_version?: string;
+
+  // Age captured at onboarding. Sane bounds here (1..120); the legal minimum-age
+  // gate (18) is enforced in the service so it returns a clear policy message.
+  @IsInt()
+  @Min(1)
+  @Max(120)
+  age!: number;
+
   @IsOptional()
   @IsString()
   referral_code?: string;

@@ -1,10 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma.service';
 import { RequestContext } from '../../common/request-context';
 import { RevisionService } from '../../infra/revision.service';
 import { CompleteOnboardingDto } from './dto/onboarding.dto';
 
 const DEFAULT_PALETTE = ['#4F8DFD', '#7C5CFC', '#FF5C7C', '#FFA53C', '#34C759', '#00B8D9', '#8E8E93', '#FF6633'];
+
+// Legal minimum age to complete onboarding (data-use consent gate).
+const MIN_AGE = 18;
 
 @Injectable()
 export class OnboardingService {
@@ -17,6 +20,16 @@ export class OnboardingService {
   async complete(dto: CompleteOnboardingDto) {
     const userId = this.rc.userId;
 
+    // Consent gate — reject before ANY write so onboarding cannot complete
+    // without data-use consent. consent_timestamp is stamped server-side below.
+    if (dto.consent_given !== true) {
+      throw new ForbiddenException('Consent is required to complete onboarding');
+    }
+    // Legal minimum-age gate (age itself is bounds-checked 1..120 by the DTO).
+    if (dto.age < MIN_AGE) {
+      throw new ForbiddenException(`You must be at least ${MIN_AGE} years old to complete onboarding`);
+    }
+
     const existingCourse = await this.prisma.course.findFirst({ where: { user_id: userId } });
     if (existingCourse) {
       return { ...(await this.summary(userId)), status: 'already_completed' };
@@ -25,17 +38,19 @@ export class OnboardingService {
     const sem = dto.semester ?? { name: 'My Semester', start: this.todayYmd(), end: this.plusMonthsYmd(6) };
 
     await this.prisma.$transaction(async (tx) => {
+      const profileData: Record<string, unknown> = {
+        onboarding_complete: true,
+        // Consent recorded here; timestamp is server-side (client value ignored).
+        consent_given: true,
+        consent_timestamp: new Date(),
+        consent_version: dto.consent_version ?? null,
+        age: dto.age,
+      };
       if (dto.name !== undefined) {
-        await tx.profile.update({
-          where: { id: userId },
-          data: { full_name: dto.name, display_name: dto.name, onboarding_complete: true },
-        });
-      } else {
-        await tx.profile.update({
-          where: { id: userId },
-          data: { onboarding_complete: true },
-        });
+        profileData.full_name = dto.name;
+        profileData.display_name = dto.name;
       }
+      await tx.profile.update({ where: { id: userId }, data: profileData });
 
       await tx.userProfile.upsert({
         where: { user_id: userId },

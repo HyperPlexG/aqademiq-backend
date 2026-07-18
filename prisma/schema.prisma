@@ -33,12 +33,16 @@ model Profile {
   display_name        String?   @db.VarChar(100)
   gender              String?   @db.VarChar(50)
   date_of_birth       DateTime? @db.Date
+  age                 Int? // captured at onboarding; CHECK (age is null or 1..120)
   avatar_url          String?
   timezone            String    @default("UTC") @db.VarChar(100)
   account_status      String    @default("active") @db.VarChar(20)
   is_guest            Boolean   @default(false)
   onboarding_complete Boolean   @default(false)
   onboarding_step     Int       @default(0) @db.SmallInt
+  consent_given       Boolean   @default(false) // data-use consent (recorded at onboarding)
+  consent_timestamp   DateTime? @db.Timestamptz // server time consent was recorded; null until consented
+  consent_version     String? // Privacy Policy / Terms version accepted (PDPL audit trail)
   referral_code       String?   @unique @db.VarChar(50)
   referred_by         String?   @db.Uuid // -> auth.users.id
   streak_days         Int       @default(0)
