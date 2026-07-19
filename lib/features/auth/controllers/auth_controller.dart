@@ -34,6 +34,12 @@ class AuthController extends AsyncNotifier<void> {
             password: password,
           ));
 
+  Future<bool> signInWithGoogle() =>
+      _run(() => ref.read(authRepositoryProvider).signInWithGoogle());
+
+  Future<bool> signInWithApple() =>
+      _run(() => ref.read(authRepositoryProvider).signInWithApple());
+
   Future<bool> verify(String code) =>
       _run(() => ref.read(authRepositoryProvider).verifyOtp(code));
 

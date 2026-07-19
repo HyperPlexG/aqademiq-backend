@@ -11,9 +11,11 @@ generator client {
 // engine (query compiler) + driver adapter, since the default binary engine
 // cannot run in the edge sandbox. Output is generated, not committed.
 generator edge {
-  provider = "prisma-client"
-  output   = "../supabase/functions/_shared/prisma"
-  runtime  = "deno"
+  provider     = "prisma-client"
+  output       = "../supabase/functions/_shared/prisma"
+  runtime      = "deno"
+  moduleFormat = "esm"
+  engineType   = "client"
 }
 
 datasource db {
