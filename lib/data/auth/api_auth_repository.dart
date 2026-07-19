@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:dio/dio.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
@@ -104,7 +104,9 @@ class ApiAuthRepository implements AuthRepository {
     if (!_googleInitialized) {
       await gsi.initialize(
         serverClientId: Env.googleServerClientId.isNotEmpty ? Env.googleServerClientId : null,
-        clientId: (Platform.isIOS && Env.googleIosClientId.isNotEmpty) ? Env.googleIosClientId : null,
+        clientId: (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS && Env.googleIosClientId.isNotEmpty)
+            ? Env.googleIosClientId
+            : null,
       );
       _googleInitialized = true;
     }
