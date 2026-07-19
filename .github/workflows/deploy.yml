@@ -1,4 +1,4 @@
-name: ci-cd
+name: ci
 
 on:
   push:
@@ -7,15 +7,17 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write   # Workload Identity Federation (keyless GCP auth)
   contents: read
 
 jobs:
-  # ---- CI: runs on every push + PR, no GCP needed (free) ----
-  ci:
+  # ---- NestJS reference backend: Prisma + lint + tests + build + OpenAPI ----
+  backend:
     runs-on: ubuntu-latest
     env:
+      # Dummy values so `prisma generate`/`validate` resolve the datasource env
+      # (no DB is contacted). The real URLs live in Supabase secrets, not CI.
       DATABASE_URL: postgresql://user:pass@localhost:5432/db
+      DIRECT_URL: postgresql://user:pass@localhost:5432/db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -38,124 +40,28 @@ jobs:
           path: openapi.json
           if-no-files-found: ignore
 
-  # ---- CD: deploy to Cloud Run on main (needs the paid GCP project) ----
-  # Paused until ready: set repo variable DEPLOY_ENABLED=true (Settings →
-  # Secrets and variables → Actions → Variables) once GCP/Cloud Run is set up.
-  # Until then this job is SKIPPED (not failed), so CI stays green.
-  deploy:
-    needs: ci
-    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+  # ---- Supabase Edge Functions (the deployed target): type-check under Deno ----
+  edge:
     runs-on: ubuntu-latest
     env:
-      GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
-      GCP_REGION: ${{ vars.GCP_REGION }}
-      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
-      CLOUD_SQL_CONNECTION: ${{ vars.CLOUD_SQL_CONNECTION }}
-      REDIS_HOST: ${{ vars.REDIS_HOST }}
-      REDIS_PORT: ${{ vars.REDIS_PORT }}
-      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/aqademiq-backend:${{ github.sha }}
+      DATABASE_URL: postgresql://user:pass@localhost:5432/db
+      DIRECT_URL: postgresql://user:pass@localhost:5432/db
     steps:
       - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.DEPLOY_SA }}
-      - uses: google-github-actions/setup-gcloud@v2
-      - name: Validate deploy configuration
-        env:
-          DATABASE_URL_MIGRATE: ${{ secrets.DATABASE_URL_MIGRATE }}
-        run: |
-          test -n "$GCP_PROJECT" || (echo "Missing vars.GCP_PROJECT_ID" && exit 1)
-          test -n "$GCP_REGION" || (echo "Missing vars.GCP_REGION" && exit 1)
-          test -n "$CLOUD_RUN_SERVICE" || (echo "Missing vars.CLOUD_RUN_SERVICE" && exit 1)
-          test -n "$CLOUD_SQL_CONNECTION" || (echo "Missing vars.CLOUD_SQL_CONNECTION" && exit 1)
-          test -n "$REDIS_HOST" || (echo "Missing vars.REDIS_HOST" && exit 1)
-          test -n "$REDIS_PORT" || (echo "Missing vars.REDIS_PORT" && exit 1)
-          test -n "$DATABASE_URL_MIGRATE" || (echo "Missing secrets.DATABASE_URL_MIGRATE" && exit 1)
-          [ "$CLOUD_SQL_CONNECTION" != "project:region:instance" ] || (echo "Replace placeholder CLOUD_SQL_CONNECTION value" && exit 1)
-
-      # Migrations run once before rollout (single owner).
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
+        with:
+          node-version: 20
+          cache: npm
       - run: npm ci
-      - name: Run Prisma migrations through Cloud SQL Auth Proxy
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL_MIGRATE }}
-        run: |
-          curl -fsSL -o cloud-sql-proxy "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.15.2/cloud-sql-proxy.linux.amd64"
-          chmod +x cloud-sql-proxy
-          ./cloud-sql-proxy --address 127.0.0.1 --port 5432 "$CLOUD_SQL_CONNECTION" &
-          PROXY_PID=$!
-          trap "kill $PROXY_PID" EXIT
-          sleep 5
-          set +e
-          MIGRATE_OUTPUT="$(npx prisma migrate deploy 2>&1)"
-          MIGRATE_STATUS=$?
-          set -e
-          echo "$MIGRATE_OUTPUT"
-          if [ "$MIGRATE_STATUS" -ne 0 ]; then
-            if echo "$MIGRATE_OUTPUT" | python -c "import sys; sys.exit(0 if 'P3005' in sys.stdin.read() else 1)"; then
-              echo "Detected existing schema (P3005). Baselining Prisma migrations."
-              for migration_path in prisma/migrations/*; do
-                migration_name="$(basename "$migration_path")"
-                if [ "$migration_name" = "migration_lock.toml" ]; then
-                  continue
-                fi
-                npx prisma migrate resolve --applied "$migration_name"
-              done
-              npx prisma migrate deploy
-            else
-              exit "$MIGRATE_STATUS"
-            fi
-          fi
+      # Emits the Deno edge client into supabase/functions/_shared/prisma.
+      - run: npx prisma generate
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Type-check edge functions
+        working-directory: supabase/functions
+        run: deno check api/index.ts prisma-spike/index.ts
 
-      - name: Configure Docker auth
-        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
-
-      - name: Build & push image
-        run: |
-          SUBMIT_OUTPUT="$(gcloud builds submit --tag "$IMAGE" --region "$GCP_REGION" --async 2>&1)"
-          echo "$SUBMIT_OUTPUT"
-          BUILD_ID="$(echo "$SUBMIT_OUTPUT" | python -c "import re,sys; m=re.search(r'/builds/([0-9a-f-]+)\\]', sys.stdin.read()); print(m.group(1) if m else '')")"
-          if [ -z "$BUILD_ID" ]; then
-            echo "Failed to parse Cloud Build ID from submit output."
-            exit 1
-          fi
-          echo "Cloud Build ID: $BUILD_ID"
-          for _ in $(seq 1 120); do
-            STATUS="$(gcloud builds describe "$BUILD_ID" --region "$GCP_REGION" --format='value(status)')"
-            echo "Cloud Build status: $STATUS"
-            case "$STATUS" in
-              SUCCESS)
-                exit 0
-                ;;
-              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
-                gcloud builds describe "$BUILD_ID" --region "$GCP_REGION"
-                exit 1
-                ;;
-            esac
-            sleep 5
-          done
-          echo "Timed out waiting for Cloud Build $BUILD_ID"
-          exit 1
-
-      - name: Deploy to Cloud Run
-        id: deploy
-        run: |
-          gcloud run deploy "$CLOUD_RUN_SERVICE" \
-            --image "$IMAGE" \
-            --region "$GCP_REGION" \
-            --platform managed \
-            --allow-unauthenticated \
-            --port 8080 \
-            --service-account "aqademiq-runner@$GCP_PROJECT.iam.gserviceaccount.com" \
-            --add-cloudsql-instances "$CLOUD_SQL_CONNECTION" \
-            --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=$GCP_PROJECT,GCP_REGION=$GCP_REGION,REDIS_HOST=$REDIS_HOST,REDIS_PORT=$REDIS_PORT,JWT_PRIVATE_KEY_PATH=/secrets/private/jwt_private.pem,JWT_PUBLIC_KEY_PATH=/secrets/public/jwt_public.pem,AI_PROVIDER=gemini_vertex,GEMINI_MODEL=gemini-2.5-flash,GEMINI_MODEL_FAST=gemini-2.5-flash,VERTEX_REGION=us-east5" \
-            --set-secrets "DATABASE_URL=DATABASE_URL:latest,/secrets/private/jwt_private.pem=JWT_PRIVATE_PEM:latest,/secrets/public/jwt_public.pem=JWT_PUBLIC_PEM:latest"
-          SERVICE_URL="$(gcloud run services describe "$CLOUD_RUN_SERVICE" --region "$GCP_REGION" --format='value(status.url)')"
-          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
-
-      - name: Verify health endpoint
-        run: |
-          curl -fsSL "${{ steps.deploy.outputs.service_url }}/v1/healthz" > healthz.json
-          python -c "import json; d=json.load(open('healthz.json')); assert d.get('status') == 'ok', d"
+# Deployment is by the Supabase CLI (`supabase functions deploy api prisma-spike
+# --project-ref qwvuoooentacjslzpbqy`), not GitHub Actions — see
+# docs/DEPLOY_EDGE_INDIA.md. The legacy Cloud Run CD was removed at the edge cutover.
