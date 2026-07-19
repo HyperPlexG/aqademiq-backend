@@ -10,6 +10,7 @@
 //   uniform snake_case error filter.
 
 import { Hono } from 'hono';
+import { cors } from 'npm:hono@4/cors';
 import { HttpError, errorBody } from '../_shared/http.ts';
 import { supabaseAuth } from '../_shared/auth.ts';
 import { rateLimit, idempotency } from '../_shared/redis.ts';
@@ -41,6 +42,15 @@ const app = new Hono().basePath('/api/v1');
 
 // Public paths (relative to basePath) — mirror @Public() in the Nest app.
 const PUBLIC_PATHS = new Set(['/healthz', '/readyz']);
+
+// CORS first — browsers (Flutter web) send an unauthenticated OPTIONS preflight,
+// which must be answered before the auth guard runs.
+app.use('*', cors({
+  origin: '*',
+  allowHeaders: ['authorization', 'content-type', 'apikey', 'x-client-info', 'idempotency-key', 'x-requested-with'],
+  allowMethods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  maxAge: 86400,
+}));
 
 app.use('*', rateLimit());
 app.use('*', idempotency());
