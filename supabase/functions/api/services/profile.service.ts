@@ -25,12 +25,13 @@ function toDto(user: any, profile: any) {
     university: profile?.university ?? null,
     program: profile?.program ?? null,
     avatar_index: user?.avatar_url ? parseInt(user.avatar_url, 10) || 0 : 0,
+    onboarding_complete: user?.onboarding_complete ?? false,
   };
 }
 
 const USER_SELECT = {
   email: true, is_guest: true, full_name: true, display_name: true,
-  gender: true, date_of_birth: true, avatar_url: true,
+  gender: true, date_of_birth: true, avatar_url: true, onboarding_complete: true,
 } as const;
 
 export const profileService = {
