@@ -1,26 +1,27 @@
 import 'package:dio/dio.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../../data/auth/token_store.dart';
-
-/// Attaches the Bearer access token to every request and transparently refreshes
-/// it once on a 401 (rotating refresh token), then retries the original request.
+/// Attaches the Supabase access token to every request and transparently refreshes
+/// it once on a 401, then retries the original request.
 ///
-/// Uses [QueuedInterceptor] so concurrent requests that all 401 trigger a single
-/// refresh rather than a stampede. [_refreshDio] is a bare Dio (no interceptor)
-/// so the refresh call itself can't recurse. Matches the backend contract:
-/// `POST /v1/auth/refresh {refresh_token}` → `{access_token, refresh_token}`.
+/// The `supabase_flutter` SDK owns the token lifecycle (persistence + rotation),
+/// so this interceptor just reads `currentSession` and calls `refreshSession()`.
+/// Uses [QueuedInterceptor] so concurrent 401s trigger a single refresh rather
+/// than a stampede. [_replayDio] is a bare Dio (no interceptor) so the replay
+/// can't recurse.
 class AuthInterceptor extends QueuedInterceptor {
-  AuthInterceptor(this._tokens, this._refreshDio);
+  AuthInterceptor(this._replayDio);
 
-  final TokenStore _tokens;
-  final Dio _refreshDio;
+  final Dio _replayDio;
+
+  GoTrueClient get _auth => Supabase.instance.client.auth;
 
   @override
   Future<void> onRequest(
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    final access = await _tokens.readAccess();
+    final access = _auth.currentSession?.accessToken;
     if (access != null && access.isNotEmpty) {
       options.headers['Authorization'] = 'Bearer $access';
     }
@@ -32,46 +33,31 @@ class AuthInterceptor extends QueuedInterceptor {
     DioException err,
     ErrorInterceptorHandler handler,
   ) async {
-    final isUnauthorized = err.response?.statusCode == 401;
-    final isRefreshCall = err.requestOptions.path.contains('/auth/refresh');
-    if (!isUnauthorized || isRefreshCall) {
+    if (err.response?.statusCode != 401) {
       return handler.next(err);
     }
 
-    final refreshed = await _tryRefresh();
-    if (!refreshed) {
+    String? access;
+    try {
+      final res = await _auth.refreshSession();
+      access = res.session?.accessToken;
+    } on Object catch (_) {
+      // Refresh failed (expired/revoked) → drop the session; app falls back to
+      // signed-out via onAuthStateChange.
+      await _auth.signOut();
+      return handler.next(err);
+    }
+    if (access == null || access.isEmpty) {
       return handler.next(err);
     }
 
     // Replay the original request with the new access token.
-    final access = await _tokens.readAccess();
     final req = err.requestOptions..headers['Authorization'] = 'Bearer $access';
     try {
-      final response = await _refreshDio.fetch<dynamic>(req);
+      final response = await _replayDio.fetch<dynamic>(req);
       return handler.resolve(response);
     } on Object catch (_) {
       return handler.next(err);
-    }
-  }
-
-  Future<bool> _tryRefresh() async {
-    final refresh = await _tokens.readRefresh();
-    if (refresh == null || refresh.isEmpty) return false;
-    try {
-      final res = await _refreshDio.post<Map<String, dynamic>>(
-        '/v1/auth/refresh',
-        data: {'refresh_token': refresh},
-      );
-      final data = res.data;
-      final access = data?['access_token'] as String?;
-      if (access == null || access.isEmpty) return false;
-      final newRefresh = data?['refresh_token'] as String? ?? refresh;
-      await _tokens.save(access: access, refresh: newRefresh);
-      return true;
-    } on Object catch (_) {
-      // Refresh reuse/expiry → drop the session; the app falls back to signed-out.
-      await _tokens.clear();
-      return false;
     }
   }
 }

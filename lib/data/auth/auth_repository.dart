@@ -6,7 +6,6 @@ import '../../core/env/env.dart';
 import '../../core/network/dio_client.dart';
 import '../models/app_user.dart';
 import 'api_auth_repository.dart';
-import 'token_store.dart';
 
 /// Auth behind an interface (README §7, seam 4). A [MockAuthRepository] backs the
 /// app today; the §8 pass adds an Identity Platform (`firebase_auth`) impl with
@@ -26,6 +25,12 @@ abstract interface class AuthRepository {
     required String email,
     required String password,
   });
+
+  /// Native Google sign-in → Supabase `signInWithIdToken`.
+  Future<AppUser> signInWithGoogle();
+
+  /// Native Sign in with Apple → Supabase `signInWithIdToken`.
+  Future<AppUser> signInWithApple();
 
   Future<AppUser> signUp({
     required String name,
@@ -129,6 +134,24 @@ class MockAuthRepository implements AuthRepository {
   }
 
   @override
+  Future<AppUser> signInWithGoogle() async {
+    final user = await _delayed(
+      const AppUser(id: 'google-mock', name: 'Google User', email: 'you@gmail.com', isGuest: false),
+    );
+    _emit(user);
+    return user;
+  }
+
+  @override
+  Future<AppUser> signInWithApple() async {
+    final user = await _delayed(
+      const AppUser(id: 'apple-mock', name: 'Apple User', isGuest: false),
+    );
+    _emit(user);
+    return user;
+  }
+
+  @override
   Future<void> verifyOtp(String code) => _delayed(null);
 
   @override
@@ -179,7 +202,7 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
   if (Env.useMocks) {
     repo = MockAuthRepository();
   } else {
-    repo = ApiAuthRepository(ref.watch(dioProvider), ref.watch(tokenStoreProvider));
+    repo = ApiAuthRepository(ref.watch(dioProvider));
   }
   ref.onDispose(repo.dispose);
   return repo;

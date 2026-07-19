@@ -16,6 +16,8 @@
 //   curl https://<ref>.supabase.co/functions/v1/prisma-spike \
 //     -H "Authorization: Bearer <anon key>"
 
+import '../_shared/node-shims.ts'; // polyfill process.pid etc. before Prisma loads
+
 Deno.serve(async () => {
   const url = Deno.env.get('SPIKE_DB_URL') ?? Deno.env.get('SUPABASE_DB_URL');
   if (!url) {
@@ -38,14 +40,14 @@ Deno.serve(async () => {
   }
 
   try {
-    const { PrismaPg } = await import('npm:@prisma/adapter-pg@6');
+    const { PrismaPg } = await import('npm:@prisma/adapter-pg@6.19.3');
     const { PrismaClient } = await import('../_shared/prisma/client.ts');
     const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
-    const userCount = await prisma.user.count();
+    const profileCount = await prisma.profile.count();
     await prisma.$disconnect();
-    report.phase_b_prisma = { ok: true, user_count: userCount };
+    report.phase_b_prisma = { ok: true, profile_count: profileCount };
   } catch (e) {
-    report.phase_b_prisma = { ok: false, error: String(e) };
+    report.phase_b_prisma = { ok: false, error: String(e), stack: e instanceof Error ? e.stack : undefined };
   }
 
   return Response.json(report);

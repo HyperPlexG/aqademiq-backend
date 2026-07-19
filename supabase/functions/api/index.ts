@@ -3,62 +3,90 @@
 // URL shape: https://<ref>.supabase.co/functions/v1/api/v1/<resource>
 // The Flutter client keeps its `/v1/<resource>` wire contract unchanged; only
 // its base URL moves, to  https://<ref>.supabase.co/functions/v1/api
+//
+// Global wiring mirrors src/app.module.ts:
+//   rate-limit + idempotency middleware (Upstash, fail-open) → Supabase-JWKS
+//   auth guard (runs the request under RequestContext) → feature routers →
+//   uniform snake_case error filter.
 
-import { Hono } from 'npm:hono@4';
-import { importSPKI, jwtVerify } from 'npm:jose@5';
-import { RequestContext, type RequestIdentity } from '../_shared/context.ts';
+import { Hono } from 'hono';
 import { HttpError, errorBody } from '../_shared/http.ts';
+import { supabaseAuth } from '../_shared/auth.ts';
+import { rateLimit, idempotency } from '../_shared/redis.ts';
+import { prismaBase } from '../_shared/prisma.ts';
+
+// ---- feature routers ----
+import { profileRouter, meRouter } from './routers/profile.ts';
+import { streaksRouter, activityRouter } from './routers/streaks.ts';
+import { moodRouter } from './routers/mood.ts';
+import { tagsRouter } from './routers/tags.ts';
+import { prismRouter } from './routers/prism.ts';
+import { devicesRouter } from './routers/devices.ts';
+import { notificationsRouter } from './routers/notifications.ts';
+import { subjectsRouter } from './routers/subjects.ts';
+import { semestersRouter } from './routers/semesters.ts';
+import { adaRouter } from './routers/ada.ts';
+import { onboardingRouter } from './routers/onboarding.ts';
+import { referralsRouter } from './routers/referrals.ts';
+import { integrationsRouter } from './routers/integrations.ts';
+import { syncRouter } from './routers/sync.ts';
+import { focusRouter } from './routers/focus.ts';
+import { settingsRouter } from './routers/settings.ts';
+import { feedbackRouter } from './routers/feedback.ts';
+import { feedbackBoardRouter, feedbackBoardAdminRouter, changelogRouter } from './routers/feedback-board.ts';
+import { tasksRouter } from './routers/tasks.ts';
 
 const app = new Hono().basePath('/api/v1');
 
-// ---- auth guard — port of common/guards/jwt-auth.guard.ts ----
-// Paths listed here mirror @Public() decorations in the Nest app; the
-// /auth/* public routes join this set as the auth module is ported.
+// Public paths (relative to basePath) — mirror @Public() in the Nest app.
 const PUBLIC_PATHS = new Set(['/healthz', '/readyz']);
 
-// PEM content, not a file path — Edge Functions have no key files to mount.
-const publicKeyPem = Deno.env.get('JWT_PUBLIC_KEY');
-const publicKey = publicKeyPem ? await importSPKI(publicKeyPem, 'RS256') : null;
+app.use('*', rateLimit());
+app.use('*', idempotency());
+app.use('*', supabaseAuth(PUBLIC_PATHS));
 
-app.use('*', async (c, next) => {
-  const path = c.req.path.replace(/^\/api\/v1/, '');
-  if (PUBLIC_PATHS.has(path)) return next();
-  if (!publicKey) throw new HttpError(500, 'JWT_PUBLIC_KEY is not configured');
-
-  const header = c.req.header('authorization') ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token) throw new HttpError(401, 'Missing bearer token');
-
-  let claims: Record<string, unknown>;
+// ---- health ----
+app.get('/healthz', (c) => c.json({ status: 'ok' }));
+app.get('/readyz', async (c) => {
+  let db = 'ok';
   try {
-    ({ payload: claims } = await jwtVerify(token, publicKey, {
-      issuer: 'aqademiq',
-      audience: 'aqademiq-app',
-    }));
+    await prismaBase().$queryRawUnsafe('select 1');
   } catch {
-    throw new HttpError(401, 'Invalid or expired token');
+    db = 'error';
   }
-
-  // TODO(migration): deny-list check (auth:deny:{sid}) via Upstash REST —
-  // ports the Redis revocation half of token.service.ts verifyAccess().
-
-  const identity: RequestIdentity = {
-    userId: String(claims.sub),
-    isGuest: claims.is_guest === true,
-    sessionId: String(claims.sid ?? ''),
-  };
-  return RequestContext.run(identity, () => next());
+  return c.json({ status: db === 'ok' ? 'ready' : 'degraded', db }, db === 'ok' ? 200 : 503);
 });
 
-// ---- routes ----
-app.get('/healthz', (c) => c.json({ status: 'ok' }));
+// ---- feature routers (mounted under basePath /api/v1) ----
+// More specific /me subpaths first so they aren't shadowed by the /me mounts.
+app.route('/me/notifications', notificationsRouter);
+app.route('/me', meRouter);
+app.route('/me', settingsRouter);
 
-// TODO(migration): ping Postgres and Upstash once wired (port of health.controller.ts readyz).
-app.get('/readyz', (c) => c.json({ status: 'ok' }));
+app.route('/profile', profileRouter);
+app.route('/streaks', streaksRouter);
+app.route('/tasks', tasksRouter);
+app.route('/subjects', subjectsRouter);
+app.route('/semesters', semestersRouter);
+app.route('/mood-entries', moodRouter);
+app.route('/study-tags', tagsRouter);
+app.route('/prism-modes', prismRouter);
+app.route('/focus-sessions', focusRouter);
+app.route('/ada', adaRouter);
+app.route('/devices', devicesRouter);
+app.route('/onboarding', onboardingRouter);
+app.route('/referrals', referralsRouter);
+app.route('/integrations', integrationsRouter);
+app.route('/sync', syncRouter);
 
-// TODO(migration): mount feature routers here as modules are ported, e.g.
-//   app.route('/auth', authRouter);
-//   app.route('/tasks', tasksRouter);
+// Feedback: board (/feedback/*) before the root feedbackRouter (exact POST /feedback).
+app.route('/feedback', feedbackBoardRouter);
+app.route('/admin', feedbackBoardAdminRouter);
+app.route('/changelog', changelogRouter);
+app.route('/', feedbackRouter);
+
+// Root-level activity endpoints (activity-dates, week-count, today-has-activity).
+app.route('/', activityRouter);
 
 // ---- uniform error shape — port of common/filters/http-exception.filter.ts ----
 app.notFound((c) => c.json(errorBody(404, 'Not found', c.req.path), 404));
@@ -68,8 +96,16 @@ app.onError((err, c) => {
   const message = err instanceof HttpError ? err.message : 'Internal server error';
   const errors = err instanceof HttpError ? err.errors : undefined;
   if (status >= 500) console.error(`${c.req.method} ${c.req.path} -> ${status}`, err);
+  const body = errorBody(status, message, c.req.path, errors);
+  // Opt-in error detail for debugging on the live stack (never on by default).
+  if (status >= 500 && Deno.env.get('DEBUG_ERRORS') === '1') {
+    // deno-lint-ignore no-explicit-any
+    (body as any).detail = err instanceof Error ? err.message : String(err);
+    // deno-lint-ignore no-explicit-any
+    (body as any).stack = err instanceof Error ? err.stack : undefined;
+  }
   // deno-lint-ignore no-explicit-any
-  return c.json(errorBody(status, message, c.req.path, errors), status as any);
+  return c.json(body, status as any);
 });
 
 Deno.serve(app.fetch);

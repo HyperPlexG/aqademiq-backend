@@ -1,7 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/auth/token_store.dart';
 import '../env/env.dart';
 import 'auth_interceptor.dart';
 
@@ -22,10 +21,10 @@ final dioProvider = Provider<Dio>((ref) {
   );
 
   final dio = Dio(options);
-  // Bare client (no auth interceptor) dedicated to the refresh call + replays,
-  // so token refresh can never recurse into itself.
-  final refreshDio = Dio(options);
+  // Bare client (no auth interceptor) dedicated to replaying a request after a
+  // token refresh, so the retry can never recurse into itself.
+  final replayDio = Dio(options);
 
-  dio.interceptors.add(AuthInterceptor(ref.watch(tokenStoreProvider), refreshDio));
+  dio.interceptors.add(AuthInterceptor(replayDio));
   return dio;
 });

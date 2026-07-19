@@ -1,0 +1,10 @@
+{
+  "imports": {
+    "@prisma/client": "npm:@prisma/client@6.19.3",
+    "@prisma/client/": "npm:/@prisma/client@6.19.3/",
+    "@prisma/adapter-pg": "npm:@prisma/adapter-pg@6.19.3",
+    "hono": "npm:hono@4",
+    "jose": "npm:jose@5",
+    "postgres": "npm:postgres@3.4"
+  }
+}

@@ -37,6 +37,16 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
     if (ok && mounted) context.go(Routes.plan);
   }
 
+  Future<void> _google() async {
+    final ok = await ref.read(authControllerProvider.notifier).signInWithGoogle();
+    if (ok && mounted) context.go(Routes.plan);
+  }
+
+  Future<void> _apple() async {
+    final ok = await ref.read(authControllerProvider.notifier).signInWithApple();
+    if (ok && mounted) context.go(Routes.plan);
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
@@ -57,13 +67,13 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
               SsoButton(
                 provider: SsoProvider.apple,
                 label: 'Sign in with Apple',
-                onTap: busy ? null : _signIn,
+                onTap: busy ? null : _apple,
               ),
               const SizedBox(height: 10),
               SsoButton(
                 provider: SsoProvider.google,
                 label: 'Sign in with Google',
-                onTap: busy ? null : _signIn,
+                onTap: busy ? null : _google,
               ),
               const SizedBox(height: 18),
               const _OrDivider(),
