@@ -94,7 +94,7 @@ class SubjectDetailScreen extends ConsumerWidget {
                   Text('MATERIALS (${subject.fileCount})', style: AppText.sans(size: 9, weight: FontWeight.w800, letterSpacing: AppText.em(0.12, 9), color: colors.textDim)),
                   const Spacer(),
                   GestureDetector(
-                    onTap: () => showAddFileSheet(context, subjectName: subject.name, subjectColor: color),
+                    onTap: () => showAddFileSheet(context, subjectId: subject.id, subjectName: subject.name, subjectColor: color),
                     child: Row(
                       children: [
                         Icon(Icons.add, size: 13, color: colors.accent),

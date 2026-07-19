@@ -161,12 +161,15 @@ class _InputPill extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
+          // Voice capture is not implemented yet (needs a speech-to-text package
+          // + native mic permissions). Render the mic dimmed so it doesn't read
+          // as an active control, and surface a "coming soon" note on tap.
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () => ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Voice capture is coming soon.')),
             ),
-            child: Icon(Icons.mic, size: 19, color: colors.accent),
+            child: Icon(Icons.mic_none, size: 19, color: colors.textDim),
           ),
         ],
       ),

@@ -1,6 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../data/fixtures/fixtures.dart';
+import '../../../core/utils/date_format.dart';
 import '../../../data/models/enums.dart';
 import '../../../data/models/task.dart';
 import '../../../data/repositories/tasks_repository.dart';
@@ -11,11 +11,11 @@ final selectedDateProvider =
 
 class SelectedDateController extends Notifier<DateTime> {
   @override
-  DateTime build() => Fixtures.today;
+  DateTime build() => AppDate.today();
 
   void select(DateTime date) => state = DateTime(date.year, date.month, date.day);
 
-  void goToToday() => state = Fixtures.today;
+  void goToToday() => state = AppDate.today();
 }
 
 /// Coarse bucket a task belongs to — derived from its [Task.startTime] when set,

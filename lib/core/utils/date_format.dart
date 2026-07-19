@@ -1,5 +1,18 @@
+import '../../data/fixtures/fixtures.dart';
+import '../env/env.dart';
+
 /// Tiny date/time formatting helpers (no `intl` dependency for Phase A).
 abstract final class AppDate {
+  /// Current calendar day (date-normalized). Uses the demo fixture date in mock
+  /// mode (so fixtures line up), and the real device date when running live —
+  /// otherwise date-anchored features (Plan timeline, mood, streaks) would all
+  /// sit on the hardcoded fixture date and show nothing on the live backend.
+  static DateTime today() {
+    if (Env.useMocks) return Fixtures.today;
+    final n = DateTime.now();
+    return DateTime(n.year, n.month, n.day);
+  }
+
   static const _weekdaysFull = [
     'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
   ];

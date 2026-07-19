@@ -9,8 +9,22 @@ abstract interface class SubjectsSource {
   Future<List<SemesterDto>> semesters();
   Future<SubjectDto> upsert(SubjectDto subject);
   Future<void> delete(String id);
-  Future<SemesterDto> upsertSemester(SemesterDto semester);
+  Future<SemesterDto> upsertSemester(
+    SemesterDto semester, {
+    DateTime? start,
+    DateTime? end,
+  });
   Future<void> deleteSemester(String id);
+
+  /// Uploads a material for [subjectId] and returns the created file. Live impl
+  /// runs the presign → PUT → commit handshake; mock impl fakes it locally.
+  Future<SubjectFileDto> uploadFile({
+    required String subjectId,
+    required String name,
+    required String kind,
+    String? mimeType,
+    required List<int> bytes,
+  });
 
   /// A short-TTL signed URL to view/download a material, or null if the file
   /// isn't backed by real storage (mock mode).
@@ -50,7 +64,13 @@ class MockSubjectsSource implements SubjectsSource {
   }
 
   @override
-  Future<SemesterDto> upsertSemester(SemesterDto semester) async {
+  Future<SemesterDto> upsertSemester(
+    SemesterDto semester, {
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    // The Semester model only carries id + name, so start/end aren't stored in
+    // mock mode — they exist to drive the live API's date range.
     final created = semester.id.isEmpty
         ? semester.copyWith(id: 'sem-${DateTime.now().microsecondsSinceEpoch}')
         : semester;
@@ -67,6 +87,39 @@ class MockSubjectsSource implements SubjectsSource {
   Future<void> deleteSemester(String id) async {
     _semesters.removeWhere((s) => s.id == id);
     return mockDelayVoid();
+  }
+
+  @override
+  Future<SubjectFileDto> uploadFile({
+    required String subjectId,
+    required String name,
+    required String kind,
+    String? mimeType,
+    required List<int> bytes,
+  }) async {
+    // No real storage in mock mode: fabricate a file and attach it to the
+    // subject so the materials list updates end-to-end.
+    final file = SubjectFileDto(
+      id: 'file-${DateTime.now().microsecondsSinceEpoch}',
+      name: name,
+      kind: kind,
+      sizeLabel: _sizeLabel(bytes.length),
+    );
+    final i = _subjects.indexWhere((s) => s.id == subjectId);
+    if (i >= 0) {
+      final subject = _subjects[i];
+      _subjects[i] = subject.copyWith(
+        files: [...subject.files, file],
+        fileCount: subject.fileCount + 1,
+      );
+    }
+    return mockDelay(file);
+  }
+
+  static String _sizeLabel(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   @override
@@ -128,13 +181,19 @@ class ApiSubjectsSource implements SubjectsSource {
   }
 
   @override
-  Future<SemesterDto> upsertSemester(SemesterDto semester) async {
+  Future<SemesterDto> upsertSemester(
+    SemesterDto semester, {
+    DateTime? start,
+    DateTime? end,
+  }) async {
     if (semester.id.isEmpty) {
       final now = DateTime.now();
+      final startDate = start ?? DateTime(now.year, now.month, now.day);
+      final endDate = end ?? DateTime(now.year, now.month + 6, now.day);
       final res = await _dio.post<Map<String, dynamic>>('/v1/semesters', data: {
         'name': semester.name,
-        'start': _ymd(DateTime(now.year, now.month, now.day)),
-        'end': _ymd(DateTime(now.year, now.month + 6, now.day)),
+        'start': _ymd(startDate),
+        'end': _ymd(endDate),
       });
       return SemesterDto(id: res.data!['id'] as String, name: res.data!['name'] as String);
     }
@@ -149,6 +208,72 @@ class ApiSubjectsSource implements SubjectsSource {
   Future<void> deleteSemester(String id) async {
     await _dio.delete<dynamic>('/v1/semesters/$id');
   }
+
+  @override
+  Future<SubjectFileDto> uploadFile({
+    required String subjectId,
+    required String name,
+    required String kind,
+    String? mimeType,
+    required List<int> bytes,
+  }) async {
+    final contentType = mimeType ?? 'application/octet-stream';
+
+    // Preferred path: presign → PUT bytes → commit. Only the legacy storage
+    // backend exposes `/v1/uploads/*`; the current Supabase Edge port does not
+    // (no storage/presign ported yet), so this 404s there and we fall back to
+    // metadata registration below.
+    try {
+      final init =
+          await _dio.post<Map<String, dynamic>>('/v1/uploads/init', data: {
+        'subject_id': subjectId,
+        'name': name,
+        'kind': kind,
+        'mime_type': contentType,
+        'size_bytes': bytes.length,
+      });
+      final fileId = init.data!['file_id'] as String;
+      final uploadUrl = init.data!['upload_url'] as String;
+
+      // PUT straight to storage with a bare Dio so the signed URL isn't sent
+      // the API client's base URL or Authorization header.
+      await Dio().put<void>(
+        uploadUrl,
+        data: Stream<List<int>>.fromIterable([bytes]),
+        options: Options(
+          headers: <String, dynamic>{
+            Headers.contentTypeHeader: contentType,
+            Headers.contentLengthHeader: bytes.length,
+          },
+        ),
+      );
+
+      final commit =
+          await _dio.post<Map<String, dynamic>>('/v1/uploads/$fileId/commit');
+      return _fromFile(commit.data!, name: name, kind: kind);
+    } on DioException catch (e) {
+      // Endpoint absent on this backend — register file metadata instead.
+      final status = e.response?.statusCode;
+      if (status != 404 && status != 501) rethrow;
+      final res = await _dio.post<Map<String, dynamic>>(
+        '/v1/subjects/$subjectId/files',
+        data: {'name': name, 'kind': kind},
+      );
+      return _fromFile(res.data!, name: name, kind: kind);
+    }
+  }
+
+  SubjectFileDto _fromFile(
+    Map<String, dynamic> j, {
+    required String name,
+    required String kind,
+  }) =>
+      SubjectFileDto(
+        id: j['id'] as String,
+        name: (j['name'] as String?) ?? name,
+        kind: (j['kind'] as String?) ?? kind,
+        important: (j['important'] as bool?) ?? false,
+      );
 
   @override
   Future<String?> fileDownloadUrl(String fileId) async {

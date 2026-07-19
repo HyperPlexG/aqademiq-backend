@@ -35,6 +35,7 @@ import { settingsRouter } from './routers/settings.ts';
 import { feedbackRouter } from './routers/feedback.ts';
 import { feedbackBoardRouter, feedbackBoardAdminRouter, changelogRouter } from './routers/feedback-board.ts';
 import { tasksRouter } from './routers/tasks.ts';
+import { filesRouter } from './routers/files.ts';
 
 const app = new Hono().basePath('/api/v1');
 
@@ -78,6 +79,9 @@ app.route('/onboarding', onboardingRouter);
 app.route('/referrals', referralsRouter);
 app.route('/integrations', integrationsRouter);
 app.route('/sync', syncRouter);
+
+// Files: /uploads/* + /files/* (root-level paths under basePath).
+app.route('/', filesRouter);
 
 // Feedback: board (/feedback/*) before the root feedbackRouter (exact POST /feedback).
 app.route('/feedback', feedbackBoardRouter);

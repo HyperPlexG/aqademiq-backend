@@ -135,9 +135,15 @@ class SettingsHomeScreen extends ConsumerWidget {
 }
 
 void _comingSoon(BuildContext context, String feature) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text('$feature is coming soon.')),
-  );
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        content: Text("$feature isn't available yet — we'll let you know the moment it lands."),
+      ),
+    );
 }
 
 class _Avatar extends StatelessWidget {

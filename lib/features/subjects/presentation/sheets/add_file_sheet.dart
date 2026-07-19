@@ -1,8 +1,11 @@
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_radius.dart';
 import '../../../../core/theme/app_text.dart';
+import '../../../../data/repositories/subjects_repository.dart';
 
 /// One source row in the add-file sheet (`subj-file`).
 class _FileSource {
@@ -11,12 +14,16 @@ class _FileSource {
     required this.label,
     required this.sub,
     required this.color,
+    required this.kind,
   });
 
   final IconData icon;
   final String label;
   final String sub;
   final Color color;
+
+  /// Backend material kind (`syllabus | slides | notes | paper`).
+  final String kind;
 }
 
 const List<_FileSource> _sources = [
@@ -25,35 +32,40 @@ const List<_FileSource> _sources = [
     label: 'Syllabus',
     sub: 'PDF or doc — Ada builds your plan from it',
     color: Color(0xFF6B5CF0),
+    kind: 'syllabus',
   ),
   _FileSource(
     icon: Icons.slideshow,
     label: 'Lecture slides',
     sub: 'Decks and handouts',
     color: Color(0xFFE8A430),
+    kind: 'slides',
   ),
   _FileSource(
     icon: Icons.edit_note,
     label: 'Notes',
     sub: 'Your own notes & summaries',
     color: Color(0xFF5CBBFF),
+    kind: 'notes',
   ),
   _FileSource(
     icon: Icons.quiz,
     label: 'Past papers',
     sub: 'Previous exams to practice',
     color: Color(0xFF2A9D6B),
+    kind: 'paper',
   ),
 ];
 
 /// subj-file — "Add to [subjectName]" bottom sheet (GCS upload).
 ///
 /// Presents a source picker over the dimmed subject context: four upload
-/// sources (Syllabus, Lecture slides, Notes, Past papers) plus Browse / Scan
-/// outline pills. Tapping any source dismisses the sheet. Returns `null` on
-/// dismiss.
+/// sources (Syllabus, Lecture slides, Notes, Past papers) plus a Browse pill.
+/// Tapping a source opens the native file picker, uploads the chosen file to
+/// the subject, then dismisses the sheet. Returns `null` on dismiss.
 Future<void> showAddFileSheet(
   BuildContext context, {
+  required String subjectId,
   required String subjectName,
   required Color subjectColor,
 }) {
@@ -62,14 +74,66 @@ Future<void> showAddFileSheet(
     backgroundColor: Colors.transparent,
     barrierColor: const Color(0x4C140F1C),
     isScrollControlled: true,
-    builder: (_) => _AddFileSheet(subjectName: subjectName),
+    builder: (_) => _AddFileSheet(
+      subjectId: subjectId,
+      subjectName: subjectName,
+    ),
   );
 }
 
-class _AddFileSheet extends StatelessWidget {
-  const _AddFileSheet({required this.subjectName});
+class _AddFileSheet extends ConsumerStatefulWidget {
+  const _AddFileSheet({required this.subjectId, required this.subjectName});
 
+  final String subjectId;
   final String subjectName;
+
+  @override
+  ConsumerState<_AddFileSheet> createState() => _AddFileSheetState();
+}
+
+class _AddFileSheetState extends ConsumerState<_AddFileSheet> {
+  bool _busy = false;
+
+  Future<void> _pickAndUpload(String kind) async {
+    if (_busy) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+
+    const typeGroup = XTypeGroup(
+      label: 'Documents',
+      extensions: <String>['pdf', 'doc', 'docx', 'ppt', 'pptx', 'txt', 'md'],
+      mimeTypes: <String>['application/pdf', 'text/plain'],
+    );
+    final file = await openFile(acceptedTypeGroups: const [typeGroup]);
+    if (file == null) return;
+
+    setState(() => _busy = true);
+    try {
+      final bytes = await file.readAsBytes();
+      await ref.read(subjectsRepositoryProvider).uploadFile(
+            subjectId: widget.subjectId,
+            name: file.name,
+            kind: kind,
+            mimeType: file.mimeType,
+            bytes: bytes,
+          );
+      // Refresh subjects so the materials list picks up the new file.
+      ref.invalidate(subjectsProvider);
+      if (!mounted) return;
+      navigator.pop();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Added "${file.name}".')),
+      );
+    } on Object {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Upload needs file storage configured on the server.'),
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -102,7 +166,7 @@ class _AddFileSheet extends StatelessWidget {
                 ),
               ),
               Text(
-                'Add to $subjectName',
+                'Add to ${widget.subjectName}',
                 style: AppText.sans(
                   size: 19,
                   weight: FontWeight.w800,
@@ -111,7 +175,7 @@ class _AddFileSheet extends StatelessWidget {
               ),
               const SizedBox(height: 2),
               Text(
-                'Ada can read these to plan smarter',
+                _busy ? 'Uploading…' : 'Ada can read these to plan smarter',
                 style: AppText.sans(size: 11.5, color: colors.textMed),
               ),
               const SizedBox(height: 16),
@@ -122,26 +186,16 @@ class _AddFileSheet extends StatelessWidget {
                   ),
                   child: _SourceRow(
                     source: _sources[i],
-                    onTap: () => Navigator.of(context).pop(),
+                    onTap: _busy
+                        ? null
+                        : () => _pickAndUpload(_sources[i].kind),
                   ),
                 ),
               const SizedBox(height: 14),
-              const Row(
-                children: [
-                  Expanded(
-                    child: _OutlinePill(
-                      icon: Icons.folder_open,
-                      label: 'Browse',
-                    ),
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: _OutlinePill(
-                      icon: Icons.document_scanner,
-                      label: 'Scan',
-                    ),
-                  ),
-                ],
+              _OutlinePill(
+                icon: Icons.folder_open,
+                label: 'Browse',
+                onTap: _busy ? null : () => _pickAndUpload('notes'),
               ),
             ],
           ),
@@ -156,7 +210,7 @@ class _SourceRow extends StatelessWidget {
   const _SourceRow({required this.source, required this.onTap});
 
   final _FileSource source;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -212,38 +266,43 @@ class _SourceRow extends StatelessWidget {
   }
 }
 
-/// An outline action pill (Browse / Scan): 1.5px border, full radius, icon
-/// + label centered.
+/// An outline action pill (Browse): 1.5px border, full radius, icon + label
+/// centered.
 class _OutlinePill extends StatelessWidget {
-  const _OutlinePill({required this.icon, required this.label});
+  const _OutlinePill({required this.icon, required this.label, this.onTap});
 
   final IconData icon;
   final String label;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 11),
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: colors.border, width: 1.5),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: colors.text),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: AppText.sans(
-              size: 12,
-              weight: FontWeight.w800,
-              color: colors.text,
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 11),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(color: colors.border, width: 1.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: colors.text),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: AppText.sans(
+                size: 12,
+                weight: FontWeight.w800,
+                color: colors.text,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

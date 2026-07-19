@@ -29,12 +29,37 @@ class SubjectsRepository {
 
   Future<void> delete(String id) => _source.delete(id);
 
-  Future<Semester> upsertSemester(Semester semester) async {
-    final dto = await _source.upsertSemester(semester.toDto());
+  Future<Semester> upsertSemester(
+    Semester semester, {
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    final dto = await _source.upsertSemester(
+      semester.toDto(),
+      start: start,
+      end: end,
+    );
     return dto.toModel();
   }
 
   Future<void> deleteSemester(String id) => _source.deleteSemester(id);
+
+  Future<SubjectFile> uploadFile({
+    required String subjectId,
+    required String name,
+    required String kind,
+    String? mimeType,
+    required List<int> bytes,
+  }) async {
+    final dto = await _source.uploadFile(
+      subjectId: subjectId,
+      name: name,
+      kind: kind,
+      mimeType: mimeType,
+      bytes: bytes,
+    );
+    return dto.toModel();
+  }
 
   Future<String?> fileDownloadUrl(String fileId) =>
       _source.fileDownloadUrl(fileId);
@@ -81,9 +106,14 @@ class SemestersController extends AsyncNotifier<List<Semester>> {
   Future<List<Semester>> build() =>
       ref.watch(subjectsRepositoryProvider).semesters();
 
-  Future<Semester> save(Semester semester) async {
-    final saved =
-        await ref.read(subjectsRepositoryProvider).upsertSemester(semester);
+  Future<Semester> save(
+    Semester semester, {
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    final saved = await ref
+        .read(subjectsRepositoryProvider)
+        .upsertSemester(semester, start: start, end: end);
     ref.invalidateSelf();
     return saved;
   }

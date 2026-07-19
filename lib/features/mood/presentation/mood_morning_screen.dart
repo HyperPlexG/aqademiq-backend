@@ -8,7 +8,7 @@ import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_radius.dart';
 import '../../../core/theme/app_text.dart';
-import '../../../data/fixtures/fixtures.dart';
+import '../../../core/utils/date_format.dart';
 import '../../../data/models/enums.dart';
 import '../../../data/repositories/mood_repository.dart';
 import '../../../shared/mascot/ada_mascot.dart';
@@ -41,7 +41,7 @@ class _MoodMorningScreenState extends ConsumerState<MoodMorningScreen> {
 
   Future<void> _setIntention() async {
     await ref.read(moodRepositoryProvider).log(
-          date: Fixtures.today,
+          date: AppDate.today(),
           phase: MoodPhase.morning,
           mood: _selectedMood,
         );

@@ -11,7 +11,6 @@ import '../../../core/theme/app_text.dart';
 import '../../../core/utils/date_format.dart';
 import '../../../core/utils/hex_color.dart';
 import '../../../data/auth/auth_repository.dart';
-import '../../../data/fixtures/fixtures.dart';
 import '../../../data/models/enums.dart';
 import '../../../data/models/tag.dart';
 import '../../../data/models/task.dart';
@@ -131,7 +130,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         children: [
           PlanHeader(
             date: selected,
-            isToday: AppDate.sameDay(selected, Fixtures.today),
+            isToday: AppDate.sameDay(selected, AppDate.today()),
             guest: guest,
             onMonthTap: _pickMonth,
             onToday: dateCtrl.goToToday,
@@ -140,7 +139,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           ),
           PlanDateStrip(
             selected: selected,
-            today: Fixtures.today,
+            today: AppDate.today(),
             onSelect: dateCtrl.select,
           ),
           if (guest) ...[
