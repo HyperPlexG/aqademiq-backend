@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -54,12 +56,20 @@ class _AddTaskScreenState extends ConsumerState<AddTaskScreen> {
   void initState() {
     super.initState();
     // Consume a Quick-add draft so the typed title / time / repeat carry over.
-    final draft = ref.read(taskDraftProvider.notifier).take();
+    // Read the value here (no mutation), then clear the one-shot draft *after*
+    // this build lifecycle — mutating a provider inside initState throws
+    // Riverpod's "modify a provider while the widget tree was building" error
+    // (which was crashing this screen when opened from Quick-add "More" or the
+    // list-view group "+").
+    final draft = ref.read(taskDraftProvider);
     if (draft != null) {
       _title.text = draft.title;
       if (draft.dayPart != null) _timeOfDay = _dayPartLabel(draft.dayPart!);
       _repeat = draft.repeat;
     }
+    unawaited(Future(() {
+      if (mounted) ref.read(taskDraftProvider.notifier).take();
+    }));
   }
 
   @override

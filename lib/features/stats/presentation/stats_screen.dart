@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/env/env.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_radius.dart';
@@ -194,6 +195,16 @@ class _MoodCard extends StatelessWidget {
   final VoidCallback onAddToday;
 
   static const _days = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  static const _dayNames = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+
+  /// The reference "today" for the week strip. On mocks this is the demo day the
+  /// fixtures are dated around; on the live API it must be the real calendar day
+  /// or backend-dated entries fall outside the shown week and nothing renders.
+  static DateTime get _today {
+    if (Env.useMocks) return Fixtures.today;
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+  }
 
   int? _moodFor(DateTime monday, int i) {
     final day = monday.add(Duration(days: i));
@@ -206,11 +217,29 @@ class _MoodCard extends StatelessWidget {
     return mood;
   }
 
+  /// Latest note-bearing log for each day of the shown week, oldest first — the
+  /// "daily reflections" list under the mood strip.
+  List<MoodLog> _weekReflections(DateTime monday) {
+    final start = DateTime(monday.year, monday.month, monday.day);
+    final byDay = <int, MoodLog>{};
+    for (final l in moods) {
+      final note = l.note?.trim();
+      if (note == null || note.isEmpty) continue;
+      final diff = DateTime(l.date.year, l.date.month, l.date.day).difference(start).inDays;
+      if (diff < 0 || diff > 6) continue;
+      byDay[diff] = l; // later entries win (matches _moodFor's last-wins)
+    }
+    final days = byDay.keys.toList()..sort();
+    return [for (final d in days) byDay[d]!];
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final monday = Fixtures.today.subtract(Duration(days: Fixtures.today.weekday - 1));
-    final todayIndex = Fixtures.today.weekday - 1;
+    final today = _today;
+    final monday = today.subtract(Duration(days: today.weekday - 1));
+    final todayIndex = today.weekday - 1;
+    final reflections = _weekReflections(monday);
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -234,6 +263,16 @@ class _MoodCard extends StatelessWidget {
                 ),
             ],
           ),
+          if (reflections.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Container(height: 1, color: colors.border),
+            const SizedBox(height: 12),
+            for (var i = 0; i < reflections.length; i++)
+              Padding(
+                padding: EdgeInsets.only(bottom: i == reflections.length - 1 ? 0 : 10),
+                child: _ReflectionRow(colors: colors, log: reflections[i], dayName: _dayNames[reflections[i].date.weekday - 1]),
+              ),
+          ],
         ],
       ),
     );
@@ -258,6 +297,39 @@ class _MoodCard extends StatelessWidget {
         ),
         child: isToday ? Text('+', style: TextStyle(fontSize: 12, color: colors.accent, fontWeight: FontWeight.w700, height: 1)) : null,
       ),
+    );
+  }
+}
+
+/// One "daily reflection" line: the day's mood face, the weekday, and the note.
+class _ReflectionRow extends StatelessWidget {
+  const _ReflectionRow({required this.colors, required this.log, required this.dayName});
+
+  final AppColors colors;
+  final MoodLog log;
+  final String dayName;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: AdaMascot(size: 18, toneIndex: log.mood, melt: (4 - log.mood) / 4, bubbles: 0),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(dayName, style: AppText.sans(size: 9, weight: FontWeight.w800, letterSpacing: AppText.em(0.06, 9), color: colors.textDim)),
+              const SizedBox(height: 2),
+              Text(log.note!.trim(), style: AppText.sans(size: 12, height: 1.4, color: colors.text)),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

@@ -51,7 +51,7 @@ class _SubjectMenuPopover extends ConsumerWidget {
             clipBehavior: Clip.antiAlias,
             padding: const EdgeInsets.symmetric(vertical: 10),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: colors.surface,
               borderRadius: BorderRadius.circular(20),
               boxShadow: const [
                 BoxShadow(

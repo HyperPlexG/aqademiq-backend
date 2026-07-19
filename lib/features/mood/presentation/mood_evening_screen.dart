@@ -8,7 +8,7 @@ import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_radius.dart';
 import '../../../core/theme/app_text.dart';
-import '../../../data/fixtures/fixtures.dart';
+import '../../../core/utils/date_format.dart';
 import '../../../data/models/enums.dart';
 import '../../../data/models/mood_log.dart';
 import '../../../data/repositories/mood_repository.dart';
@@ -52,7 +52,7 @@ class _MoodEveningScreenState extends ConsumerState<MoodEveningScreen> {
 
   Future<void> _save() async {
     await ref.read(moodRepositoryProvider).log(
-          date: Fixtures.today,
+          date: AppDate.today(),
           phase: MoodPhase.evening,
           mood: _sel,
           note: _note.text.isEmpty ? null : _note.text,
@@ -77,7 +77,8 @@ class _MoodEveningScreenState extends ConsumerState<MoodEveningScreen> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final logs = ref.watch(moodWeekProvider).value ?? const <MoodLog>[];
-    final monday = Fixtures.today.subtract(Duration(days: Fixtures.today.weekday - 1));
+    final today = AppDate.today();
+    final monday = today.subtract(Duration(days: today.weekday - 1));
     return Scaffold(
       backgroundColor: colors.surface,
       body: DismissKeyboard(

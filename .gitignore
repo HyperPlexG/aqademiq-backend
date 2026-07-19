@@ -9,3 +9,4 @@ supabase/.temp/
 .dart_tool/
 .flutter-plugins-dependencies
 cloud-sql-proxy.exe
+/build/

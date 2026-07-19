@@ -9,7 +9,9 @@ import { env } from './env.ts';
 
 const UPLOAD_TTL_S = 300;
 const DOWNLOAD_TTL_S = 300;
-const BUCKET = env('SUPABASE_USER_BUCKET') ?? 'user-assets';
+// Subject materials bucket (private). India/Tokyo buckets: attachments, avatars,
+// exports, materials, notes. Override with SUPABASE_USER_BUCKET if needed.
+const BUCKET = env('SUPABASE_USER_BUCKET') ?? 'materials';
 
 function base(): string {
   return (env('SUPABASE_URL') ?? '').replace(/\/+$/, '');

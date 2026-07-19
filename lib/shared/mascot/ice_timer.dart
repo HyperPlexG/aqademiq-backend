@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -8,7 +9,7 @@ import 'ada_mascot.dart';
 /// The Focus "Ice melt" timer (prototype `IceTimer`): a progress ring around the
 /// Ada cube, which melts as [progress] (0..1) advances. [frost] re-freezes the
 /// look (paused state) with a cyan arc.
-class IceTimer extends StatelessWidget {
+class IceTimer extends StatefulWidget {
   const IceTimer({
     super.key,
     this.progress = 0,
@@ -23,9 +24,44 @@ class IceTimer extends StatelessWidget {
   final bool frost;
 
   @override
+  State<IceTimer> createState() => _IceTimerState();
+}
+
+class _IceTimerState extends State<IceTimer> with SingleTickerProviderStateMixin {
+  // A slow "breathing" loop so the cube is visibly alive while the timer runs
+  // (the melt itself advances over the whole session, too subtle second-to-
+  // second). It holds still while frosted/paused (FOC-4).
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 2200),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.frost) unawaited(_pulse.repeat(reverse: true));
+  }
+
+  @override
+  void didUpdateWidget(covariant IceTimer old) {
+    super.didUpdateWidget(old);
+    if (widget.frost && _pulse.isAnimating) {
+      _pulse.stop();
+    } else if (!widget.frost && !_pulse.isAnimating) {
+      unawaited(_pulse.repeat(reverse: true));
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final p = progress.clamp(0.0, 1.0);
+    final p = widget.progress.clamp(0.0, 1.0);
     // Smoothly interpolate the arc + melt between per-second ticks (the
     // prototype's `transition: stroke-dashoffset 0.9s linear`) so the cube
     // visibly melts while running rather than snapping each second (FOC-4).
@@ -33,19 +69,33 @@ class IceTimer extends StatelessWidget {
       tween: Tween<double>(begin: 0, end: p),
       duration: const Duration(milliseconds: 900),
       builder: (context, value, _) => SizedBox.square(
-        dimension: size,
+        dimension: widget.size,
         child: Stack(
           alignment: Alignment.center,
           children: [
             CustomPaint(
-              size: Size.square(size),
+              size: Size.square(widget.size),
               painter: _RingPainter(
                 progress: value,
                 track: colors.hilite,
-                arc: frost ? const Color(0xFF9FD6EF) : colors.accent,
+                arc: widget.frost ? const Color(0xFF9FD6EF) : colors.accent,
               ),
             ),
-            AdaMascot(size: size * 0.6, melt: frost ? 0.4 : value, expr: expr),
+            AnimatedBuilder(
+              animation: _pulse,
+              builder: (context, child) {
+                final t = widget.frost ? 0.0 : Curves.easeInOut.transform(_pulse.value);
+                return Transform.scale(
+                  scale: 1.0 + 0.035 * t,
+                  child: Opacity(opacity: 0.9 + 0.1 * t, child: child),
+                );
+              },
+              child: AdaMascot(
+                size: widget.size * 0.6,
+                melt: widget.frost ? 0.4 : value,
+                expr: widget.expr,
+              ),
+            ),
           ],
         ),
       ),
