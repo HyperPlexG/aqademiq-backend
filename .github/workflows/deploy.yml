@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: 'Deploy the api edge function to Supabase after CI passes'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -62,6 +67,38 @@ jobs:
         working-directory: supabase/functions
         run: deno check api/index.ts prisma-spike/index.ts
 
-# Deployment is by the Supabase CLI (`supabase functions deploy api prisma-spike
-# --project-ref qwvuoooentacjslzpbqy`), not GitHub Actions — see
-# docs/DEPLOY_EDGE_INDIA.md. The legacy Cloud Run CD was removed at the edge cutover.
+  # ---- Deploy the api edge function (manual trigger only) ----
+  # Deliberately NOT automatic on push: this targets production. Run it from the
+  # Actions tab → "ci" → "Run workflow" → tick `deploy`. To make it deploy on every
+  # green push to main instead, replace the `if:` below with:
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  # Requires repo secret SUPABASE_ACCESS_TOKEN (Supabase → Account → Access Tokens).
+  deploy:
+    needs: [backend, edge]
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://user:pass@localhost:5432/db
+      DIRECT_URL: postgresql://user:pass@localhost:5432/db
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_REF: qwvuoooentacjslzpbqy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Emits the Deno edge client into supabase/functions/_shared/prisma — the
+      # function will not boot without it, and it is not committed to the repo.
+      - run: npx prisma generate
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      # --no-verify-jwt: the FUNCTION owns auth (Supabase JWKS guard) and keeps
+      # /healthz + /readyz public. Mirrors docs/DEPLOY_EDGE_INDIA.md.
+      - name: Deploy api
+        run: supabase functions deploy api --project-ref "$PROJECT_REF" --no-verify-jwt
+
+# prisma-spike is unchanged and intentionally not deployed here; deploy it with the
+# CLI if it ever needs updating — see docs/DEPLOY_EDGE_INDIA.md.
