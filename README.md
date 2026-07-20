@@ -31,7 +31,7 @@ Built from **BACKEND_REQUIREMENTS.md**. Complete breadth scaffold: every feature
 | §4.4 GCS storage | `infra/storage.service.ts` (→ Supabase Storage in the port) |
 | §6 Infra (Cloud SQL/Redis/Run/buckets) | `terraform/main.tf` (legacy — Supabase replaces this at cutover) |
 
-## Run it
+## Run it.
 
 ```bash
 npm install
