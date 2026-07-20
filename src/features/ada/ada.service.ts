@@ -85,11 +85,14 @@ export class AdaService {
 
   /** Grounded Opus tool loop. */
   private async generateReply(conversationId: string, _latest: string) {
-    const history = await this.prisma.adaMessage.findMany({
+    // Newest N, then back into chronological order. Ordering ascending with `take`
+    // would pin the window to the OLDEST 20 messages, so past turn 20 Ada would stop
+    // seeing anything recent and answer as if frozen at the start of the chat.
+    const history = (await this.prisma.adaMessage.findMany({
       where: { ada_session_id: conversationId },
-      orderBy: { sent_at: 'asc' },
+      orderBy: { sent_at: 'desc' },
       take: HISTORY_LIMIT,
-    });
+    })).reverse();
     const messages: any[] = history
       .filter((m) => m.content)
       .map((m) => {

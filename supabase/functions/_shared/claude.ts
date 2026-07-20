@@ -25,7 +25,19 @@ type Provider = 'rotating' | 'anthropic' | 'vertex' | 'none';
 function resolveProvider(): Provider {
   const explicit = env('AI_PROVIDER')?.trim();
   if (explicit) {
-    if (explicit === 'anthropic' || explicit === 'vertex') return explicit;
+    // Never trust an explicit provider without its credential: doing so makes
+    // isConfigured() true while every call throws, which surfaces to the user as
+    // Ada's generic "couldn't reach my planning brain" instead of a clear config error.
+    if (explicit === 'anthropic') {
+      if (env('ANTHROPIC_API_KEY')) return 'anthropic';
+      console.warn('AI_PROVIDER="anthropic" but ANTHROPIC_API_KEY is not set; AI will use fallbacks.');
+      return 'none';
+    }
+    if (explicit === 'vertex') {
+      if (isVertexConfigured()) return 'vertex';
+      console.warn('AI_PROVIDER="vertex" but the Vertex GCP_* secrets are incomplete; AI will use fallbacks.');
+      return 'none';
+    }
     if (explicit === 'gemini' || explicit === 'cerebras' || explicit === 'rotating') {
       if (rotationConfigured()) return 'rotating';
       console.warn(`AI_PROVIDER="${explicit}" but no GEMINI_API_KEYS/CEREBRAS_API_KEYS set; AI will use fallbacks.`);

@@ -2,7 +2,7 @@
 -- project (xqnjquozcnwmogipowpf), generated from prisma/schema.prisma minus the
 -- objects added by the two later migrations (feedback board, consent+age).
 -- ALREADY APPLIED on the live project — for fresh environments only.
--- Locally: apply scripts/dev-auth-shim.sql first (npm run db:bootstrap -- --local).
+calendar_events-- Locally: apply scripts/dev-auth-shim.sql first (npm run db:bootstrap -- --local).
 
 -- CreateTable
 CREATE TABLE "profiles" (

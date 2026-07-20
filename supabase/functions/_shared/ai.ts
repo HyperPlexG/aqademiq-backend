@@ -8,7 +8,7 @@
 //   GEMINI_API_KEYS      = key1,key2,...   (Google AI Studio)
 //   CEREBRAS_API_KEYS    = key1,key2,...   (Cerebras, OpenAI-compatible)
 //   GEMINI_MODEL         = gemini-2.5-flash        (default)
-//   CEREBRAS_MODEL       = llama-3.3-70b           (default)
+//   CEREBRAS_MODEL       = gpt-oss-120b            (default)
 import { env } from './env.ts';
 import { cacheGet, cacheSet } from './redis.ts';
 
@@ -75,6 +75,21 @@ function rotate<T>(arr: T[]): T[] {
 }
 
 class QuotaError extends Error {}
+
+/**
+ * Gemini rejects an OBJECT-typed `parameters` whose `properties` map is empty
+ * ("should be non-empty for OBJECT type"), which 400s the whole request — so a
+ * parameterless tool such as `list_subjects` must omit `parameters` entirely
+ * rather than send `{ type: 'object', properties: {} }`. Cerebras/OpenAI accepts
+ * the empty form, so this shaping is Gemini-only.
+ */
+function geminiFunctionDeclaration(t: ToolDef) {
+  const props = (t.input_schema as { properties?: Record<string, unknown> } | undefined)?.properties;
+  const base = { name: t.name, description: t.description };
+  return props && Object.keys(props).length > 0
+    ? { ...base, parameters: t.input_schema }
+    : base;
+}
 
 /** One chat turn across the rotating pool. Throws if no key succeeds. */
 export async function rotatingChat(params: AiParams): Promise<AiResult> {
@@ -193,7 +208,7 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
     generationConfig: { maxOutputTokens: p.maxTokens ?? 2048 },
   };
   if (p.tools?.length) {
-    body.tools = [{ functionDeclarations: p.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.input_schema })) }];
+    body.tools = [{ functionDeclarations: p.tools.map(geminiFunctionDeclaration) }];
     body.toolConfig = { functionCallingConfig: p.toolChoice ? { mode: 'ANY', allowedFunctionNames: [p.toolChoice.name] } : { mode: 'AUTO' } };
   }
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;

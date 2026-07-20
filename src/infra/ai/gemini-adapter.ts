@@ -93,12 +93,20 @@ export function toGeminiContents(messages: any[]): Content[] {
   return contents;
 }
 
+/**
+ * Gemini rejects an OBJECT-typed `parameters` whose `properties` map is empty
+ * ("should be non-empty for OBJECT type"), which 400s the whole request — so a
+ * parameterless tool such as `list_subjects` must omit `parameters` entirely
+ * rather than send `{ type: 'object', properties: {} }`.
+ */
 function toFunctionDeclarations(tools: GeminiToolDef[]) {
-  return tools.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    parameters: tool.input_schema,
-  }));
+  return tools.map((tool) => {
+    const props = (tool.input_schema as { properties?: Record<string, unknown> } | undefined)?.properties;
+    const base = { name: tool.name, description: tool.description };
+    return props && Object.keys(props).length > 0
+      ? { ...base, parameters: tool.input_schema }
+      : base;
+  });
 }
 
 function toToolConfig(toolChoice?: { type: 'tool'; name: string }, tools?: GeminiToolDef[]) {

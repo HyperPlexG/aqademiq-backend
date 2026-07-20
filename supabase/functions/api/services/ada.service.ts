@@ -232,11 +232,14 @@ export const adaService = {
 // ---- Grounded Opus tool loop --------------------------------------------
 
 async function generateReply(conversationId: string, _latest: string) {
-  const history = await prismaBase().adaMessage.findMany({
+  // Newest N, then back into chronological order. Ordering ascending with `take`
+  // would pin the window to the OLDEST 20 messages, so past turn 20 Ada would stop
+  // seeing anything recent and answer as if frozen at the start of the chat.
+  const history = (await prismaBase().adaMessage.findMany({
     where: { ada_session_id: conversationId },
-    orderBy: { sent_at: 'asc' },
+    orderBy: { sent_at: 'desc' },
     take: HISTORY_LIMIT,
-  });
+  })).reverse();
   // deno-lint-ignore no-explicit-any
   const messages: any[] = history
     // deno-lint-ignore no-explicit-any
@@ -281,7 +284,13 @@ async function generateReply(conversationId: string, _latest: string) {
       messages.push({ role: 'user', content: results });
     }
   } catch (e) {
-    console.warn('[ada] LLM call failed, returning fallback:', e instanceof Error ? e.message : e);
+    // Log enough to diagnose from the dashboard: which provider was selected and the
+    // provider's own error text. `console.warn` with a bare message made every failure
+    // mode — bad key, wrong model, quota, network — look identical.
+    console.error('[ada] LLM call failed, returning fallback', JSON.stringify({
+      provider: claude.provider,
+      error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    }));
     return {
       text: "I couldn't reach my planning brain just now — please try again in a moment.",
       plan: null,
