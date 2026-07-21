@@ -216,8 +216,26 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
       // deno-lint-ignore no-explicit-any
       const parts: any[] = [];
       for (const b of blocks) {
-        if (b.type === 'text') parts.push({ text: b.text });
-        else if (b.type === 'tool_use') parts.push({ functionCall: { name: b.name, args: b.input ?? {} } });
+        // Gemini rejects a continuation whose functionCall parts have lost their
+        // `thoughtSignature` ("Function call is missing a thought_signature…",
+        // 400 INVALID_ARGUMENT). We drive the tool loop ourselves and resend the
+        // whole history each turn — stateless mode — so every thought block and
+        // signature has to go back exactly as it arrived.
+        if (b.type === 'gemini_thought') {
+          if (!b.text && !b.thoughtSignature) continue;
+          parts.push({
+            text: b.text ?? '',
+            thought: true,
+            ...(b.thoughtSignature ? { thoughtSignature: b.thoughtSignature } : {}),
+          });
+        } else if (b.type === 'text') {
+          parts.push({ text: b.text });
+        } else if (b.type === 'tool_use') {
+          parts.push({
+            functionCall: { name: b.name, args: b.input ?? {} },
+            ...(b.thoughtSignature ? { thoughtSignature: b.thoughtSignature } : {}),
+          });
+        }
       }
       contents.push({ role: 'model', parts });
     } else {
@@ -259,8 +277,26 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
   // deno-lint-ignore no-explicit-any
   const content: any[] = [];
   for (const part of parts) {
+    // Thinking models emit their reasoning as `thought` parts. These must never
+    // reach the user, but they carry signatures Gemini needs replayed verbatim,
+    // so they are kept as an opaque block instead of being dropped. Every other
+    // layer ignores an unknown block type, so this rides along harmlessly.
+    if (part.thought) {
+      content.push({ type: 'gemini_thought', text: part.text ?? '', thoughtSignature: part.thoughtSignature });
+      continue;
+    }
     if (part.text) content.push({ type: 'text', text: part.text });
-    else if (part.functionCall) content.push({ type: 'tool_use', id: `call_${crypto.randomUUID().slice(0, 8)}`, name: part.functionCall.name, input: part.functionCall.args ?? {} });
+    else if (part.functionCall) {
+      content.push({
+        type: 'tool_use',
+        id: `call_${crypto.randomUUID().slice(0, 8)}`,
+        name: part.functionCall.name,
+        input: part.functionCall.args ?? {},
+        // Kept so the next turn can hand it straight back — see the assistant
+        // branch above. Undefined on non-thinking models, which is fine.
+        thoughtSignature: part.thoughtSignature,
+      });
+    }
   }
   const stop_reason = content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn';
   return { content, stop_reason };
