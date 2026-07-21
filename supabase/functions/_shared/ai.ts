@@ -8,7 +8,7 @@
 // Config (Supabase secrets, comma-separated pools):
 //   GEMINI_API_KEYS      = key1,key2,...   (Google AI Studio)
 //   CEREBRAS_API_KEYS    = key1,key2,...   (Cerebras, OpenAI-compatible)
-//   GEMINI_MODEL         = gemini-2.5-flash        (default)
+//   GEMINI_MODEL         = gemini-flash-latest     (default)
 //   CEREBRAS_MODEL       = gpt-oss-120b            (default)
 import { env } from './env.ts';
 import { cacheGet, cacheSet } from './redis.ts';
@@ -47,7 +47,12 @@ export function rotationConfigured(): boolean {
   return pool().length > 0;
 }
 
-const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-2.5-flash';
+// `gemini-2.5-flash` is closed to new API keys — every key 404s with "no longer
+// available to new users" — so the default is the floating `-latest` alias, which
+// Google's own quickstart hands out and which keeps working as models roll over.
+// Pin a dated model id via the GEMINI_MODEL secret if reproducibility ever matters
+// more than availability (the alias can change behaviour under you).
+const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-flash-latest';
 const cerebrasModel = () => env('CEREBRAS_MODEL') ?? 'gpt-oss-120b';
 
 // ---- exhaustion tracking (per-key, resets at UTC midnight) ----
@@ -238,8 +243,14 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
     body.tools = [{ functionDeclarations: p.tools.map(geminiFunctionDeclaration) }];
     body.toolConfig = { functionCallingConfig: p.toolChoice ? { mode: 'ANY', allowedFunctionNames: [p.toolChoice.name] } : { mode: 'AUTO' } };
   }
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  // The key goes in the `x-goog-api-key` header rather than a `?key=` query
+  // param (both are supported) so it can't leak into URL logging along the way.
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+    body: JSON.stringify(body),
+  });
   if (res.status === 429) throw new QuotaError('gemini 429');
   if (res.status === 403) { const t = await res.text(); if (/quota|RESOURCE_EXHAUSTED/i.test(t)) throw new QuotaError('gemini quota'); throw new Error(`gemini 403: ${t}`); }
   if (!res.ok) throw new Error(`gemini ${res.status}: ${await res.text()}`);
