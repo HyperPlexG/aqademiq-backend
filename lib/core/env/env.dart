@@ -16,8 +16,27 @@ abstract final class Env {
   static const bool useMocks =
       bool.fromEnvironment('USE_MOCKS', defaultValue: true);
 
-  /// Base URL of the NestJS REST API on Cloud Run. Unused while [useMocks].
-  static const String apiBaseUrl = String.fromEnvironment('API_BASE_URL');
+  static const String _rawApiBaseUrl = String.fromEnvironment('API_BASE_URL');
+
+  /// Base URL of the REST API. Unused while [useMocks].
+  ///
+  /// Every data source calls `/v1/<resource>` paths, so the base must NOT end in
+  /// `/v1` — e.g. `https://<ref>.supabase.co/functions/v1/api`. A trailing `/v1`
+  /// (or `/`) is stripped here because passing one is an easy mistake that
+  /// otherwise produces `/api/v1/v1/...` and a 404 on every single request.
+  static String get apiBaseUrl {
+    var v = _rawApiBaseUrl.trim();
+    while (v.endsWith('/')) {
+      v = v.substring(0, v.length - 1);
+    }
+    if (v.endsWith('/v1')) {
+      v = v.substring(0, v.length - 3);
+    }
+    while (v.endsWith('/')) {
+      v = v.substring(0, v.length - 1);
+    }
+    return v;
+  }
 
   /// Socket.IO endpoint (focus ticks / presence). Unused while [useMocks].
   static const String socketUrl = String.fromEnvironment('SOCKET_URL');

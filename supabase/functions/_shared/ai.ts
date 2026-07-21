@@ -1,5 +1,6 @@
 // Rotating free-tier AI layer — round-robins across a pool of Gemini + Cerebras
-// API keys, failing over to the next key when one hits its daily quota (429),
+// API keys, trying Gemini before Cerebras and failing over to the next key when
+// one hits its quota (429, or Cerebras' 402 "payment required"),
 // and marking that key exhausted until UTC midnight. Both providers are adapted
 // to the Anthropic Messages shape ({ content: [text|tool_use], stop_reason }) so
 // Ada's tool-use agent loop and task breakdown work unchanged.
@@ -66,12 +67,29 @@ async function markExhausted(id: string): Promise<void> {
   await cacheSet(`ai:ex:${id}:${utcDay()}`, '1', secondsToUtcMidnight());
 }
 
-// Rotate the pool by a random start so load spreads across stateless invocations
-// (Upstash isn't required); 429-failover guarantees correctness regardless.
+// Rotate by a random start so load spreads across stateless invocations
+// (Upstash isn't required); quota-failover guarantees correctness regardless.
 function rotate<T>(arr: T[]): T[] {
   if (arr.length <= 1) return arr;
   const start = Math.floor(Math.random() * arr.length);
   return [...arr.slice(start), ...arr.slice(0, start)];
+}
+
+// Providers are tried in this order. Gemini first: its free tier is a daily
+// request quota that resets, whereas Cerebras returns a hard 402 once the
+// account needs billing — so Cerebras is the fallback, not the coin-flip peer a
+// flat random rotation made it.
+const PROVIDER_PRIORITY: readonly Provider[] = ['gemini', 'cerebras'];
+
+/// Every key in provider-priority order, rotated *within* each provider so load
+/// still spreads across that provider's own keys.
+function orderedCandidates(): KeyEntry[] {
+  const all = pool();
+  const out: KeyEntry[] = [];
+  for (const provider of PROVIDER_PRIORITY) {
+    out.push(...rotate(all.filter((k) => k.provider === provider)));
+  }
+  return out;
 }
 
 class QuotaError extends Error {}
@@ -93,26 +111,29 @@ function geminiFunctionDeclaration(t: ToolDef) {
 
 /** One chat turn across the rotating pool. Throws if no key succeeds. */
 export async function rotatingChat(params: AiParams): Promise<AiResult> {
-  const candidates = rotate(pool());
+  const candidates = orderedCandidates();
   if (candidates.length === 0) throw new Error('No AI keys configured (GEMINI_API_KEYS / CEREBRAS_API_KEYS)');
 
-  let lastErr: unknown;
   const fresh: KeyEntry[] = [];
   for (const c of candidates) { if (!(await isExhausted(c.id))) fresh.push(c); }
   // If everything is marked exhausted, still try them (limits may have reset).
   const order = fresh.length ? fresh : candidates;
 
+  // Collect every failure, not just the last one: reporting only `lastErr` meant
+  // a working-but-broken Gemini key was masked by whatever the final key said.
+  const errors: string[] = [];
   for (const c of order) {
     try {
       return c.provider === 'gemini'
         ? await geminiChat(c.key, geminiModel(), params)
         : await cerebrasChat(c.key, cerebrasModel(), params);
     } catch (e) {
-      if (e instanceof QuotaError) { await markExhausted(c.id); lastErr = e; continue; }
-      lastErr = e; // network/5xx — try the next key too
+      errors.push(`${c.id} → ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof QuotaError) await markExhausted(c.id);
+      // Any failure (quota, network, 5xx) falls through to the next key.
     }
   }
-  throw lastErr ?? new Error('All AI keys failed');
+  throw new Error(`All AI keys failed: ${errors.join(' | ')}`);
 }
 
 // ================= Cerebras (OpenAI-compatible) =================
@@ -146,7 +167,13 @@ async function cerebrasChat(key: string, model: string, p: AiParams): Promise<Ai
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (res.status === 429) throw new QuotaError('cerebras 429');
+  // 402 = "Payment required … visit your billing tab": the account is out of
+  // credit, so this key is dead for the rest of the day exactly like a 429. It
+  // is treated as a QuotaError so the key gets benched instead of being retried
+  // (and burning a round-trip) on every single request.
+  if (res.status === 429 || res.status === 402) {
+    throw new QuotaError(`cerebras ${res.status}: ${await res.text()}`);
+  }
   if (!res.ok) throw new Error(`cerebras ${res.status}: ${await res.text()}`);
   const json = await res.json();
   const msg = json.choices?.[0]?.message ?? {};

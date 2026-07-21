@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../env/env.dart';
 import 'auth_interceptor.dart';
+import 'logging_interceptor.dart';
 
 /// The shared Dio instance for the NestJS REST API on Cloud Run.
 ///
@@ -13,7 +14,7 @@ import 'auth_interceptor.dart';
 final dioProvider = Provider<Dio>((ref) {
   final options = BaseOptions(
     // Empty in mock builds; supplied via --dart-define for live builds.
-    // ignore: avoid_redundant_argument_values
+    // Never ends in `/v1` — Env normalizes it; paths supply their own `/v1`.
     baseUrl: Env.apiBaseUrl,
     connectTimeout: const Duration(seconds: 15),
     receiveTimeout: const Duration(seconds: 20),
@@ -26,5 +27,8 @@ final dioProvider = Provider<Dio>((ref) {
   final replayDio = Dio(options);
 
   dio.interceptors.add(AuthInterceptor(replayDio));
+  // Added last so request logs show the final auth header, and response logs
+  // run first on the way back. Silent in release builds.
+  dio.interceptors.add(LoggingInterceptor());
   return dio;
 });

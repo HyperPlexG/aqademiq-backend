@@ -55,8 +55,19 @@ class ApiAuthRepository implements AuthRepository {
   @override
   AppUser? get currentUser => _user;
 
+  /// Current user, then every subsequent change.
+  ///
+  /// `_controller` is a broadcast controller, so anything emitted before a
+  /// listener attaches is dropped. `onAuthStateChange` fires `initialSession`
+  /// (and `signedIn`) as soon as this repository is constructed, which is often
+  /// before the first widget watches `authStateProvider` — the signed-in user
+  /// was lost and `isGuestProvider` fell back to its `?? true` default, showing
+  /// GUEST for an authenticated account. Replaying `_user` on subscribe fixes it.
   @override
-  Stream<AppUser?> authState() => _controller.stream;
+  Stream<AppUser?> authState() async* {
+    yield _user;
+    yield* _controller.stream;
+  }
 
   void _emit(AppUser? user) {
     _user = user;
