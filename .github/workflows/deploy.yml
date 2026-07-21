@@ -67,15 +67,19 @@ jobs:
         working-directory: supabase/functions
         run: deno check api/index.ts prisma-spike/index.ts
 
-  # ---- Deploy the api edge function (manual trigger only) ----
-  # Deliberately NOT automatic on push: this targets production. Run it from the
-  # Actions tab → "ci" → "Run workflow" → tick `deploy`. To make it deploy on every
-  # green push to main instead, replace the `if:` below with:
-  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  # ---- Deploy the api edge function ----
+  # Runs on every push to main once `backend` + `edge` are green (a `needs` job
+  # that fails or is skipped stops this one), and on demand from the Actions tab
+  # → "ci" → "Run workflow" → tick `deploy`. Pull requests never deploy.
+  #
+  # NOTE: main is deployed straight to production — there is no staging project.
+  # Anything merged to main is live as soon as CI passes.
   # Requires repo secret SUPABASE_ACCESS_TOKEN (Supabase → Account → Access Tokens).
   deploy:
     needs: [backend, edge]
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy)
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql://user:pass@localhost:5432/db
