@@ -42,6 +42,7 @@ tasksRouter.post('/', async (c) => {
     duration_seconds: num(b, 'duration_seconds', false, { int: true, min: 0 }),
     scheduled_at: str(b, 'scheduled_at', false),
     category: str(b, 'category', false),
+    note: str(b, 'note', false),
     date: str(b, 'date', false, { pattern: YMD }),
     repeat: parseRepeat(b),
     until_date: str(b, 'until_date', false, { pattern: YMD }),
@@ -79,6 +80,10 @@ tasksRouter.patch('/:occ', async (c) => {
   const dto: PatchTaskDto = {
     scheduled_at: str(b, 'scheduled_at', false),
     status: str(b, 'status', false, { enum: ['PENDING', 'COMPLETE'] }),
+    title: str(b, 'title', false),
+    category: str(b, 'category', false),
+    note: str(b, 'note', false),
+    duration_seconds: num(b, 'duration_seconds', false, { int: true, min: 0 }),
   };
   return c.json(await tasksService.patch(c.req.param('occ'), dto));
 });

@@ -20,6 +20,9 @@ function toDto(user: any, profile: any) {
     name: user?.full_name ?? user?.display_name ?? null,
     email: user?.email ?? null,
     is_guest: user?.is_guest ?? true,
+    // Drives the post-auth "skip onboarding?" gate — without it the client
+    // re-runs onboarding on every launch.
+    onboarding_complete: user?.onboarding_complete ?? false,
     gender: user?.gender ?? null,
     date_of_birth: user?.date_of_birth ? new Date(user.date_of_birth).toISOString().slice(0, 10) : null,
     university: profile?.university ?? null,
@@ -30,6 +33,7 @@ function toDto(user: any, profile: any) {
 
 const USER_SELECT = {
   email: true, is_guest: true, full_name: true, display_name: true,
+  onboarding_complete: true,
   gender: true, date_of_birth: true, avatar_url: true,
 } as const;
 

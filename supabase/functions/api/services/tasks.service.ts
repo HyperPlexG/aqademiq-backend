@@ -18,13 +18,14 @@ import {
   ymd,
 } from '../../_shared/occurs-on.ts';
 
-// DB CHECK constraint `tasks_task_type_check` allows only these values. The wire
-// `category` maps to task_type; anything outside the set is stored as 'other',
-// and an absent category defaults to the column default 'assignment'.
-const TASK_TYPES = new Set(['assignment', 'exam', 'project', 'revision', 'other']);
+// The wire `category` carries the client's study-tag id and rides in the
+// free-form `task_type` column so tag colouring round-trips. (The old CHECK
+// constraint `tasks_task_type_check` is dropped in the accompanying migration —
+// coercing arbitrary tag ids to 'other' was what made every custom tag render
+// as "Other" on the plan.) An absent category keeps the column default.
 function normTaskType(category?: string | null): string {
   if (!category) return 'assignment';
-  return TASK_TYPES.has(category) ? category : 'other';
+  return category;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -43,6 +44,7 @@ export interface CreateTaskDto {
   duration_seconds?: number;
   scheduled_at?: string;
   category?: string;
+  note?: string;
   date?: string;
   repeat?: RepeatRuleDto;
   until_date?: string;
@@ -55,6 +57,10 @@ export interface QueryTasksDto {
 export interface PatchTaskDto {
   scheduled_at?: string;
   status?: string;
+  title?: string;
+  category?: string;
+  note?: string;
+  duration_seconds?: number;
 }
 export interface ToggleTaskDto {
   date?: string;
@@ -83,6 +89,7 @@ interface OccurrenceDto {
   scheduled_at: string | null;
   status: string;
   category: string;
+  note: string | null;
   repeat: { kind: string; interval: number };
   steps: OccurrenceStepDto[];
 }
@@ -146,6 +153,7 @@ function occurrenceDto(task: any, dateStr: string): OccurrenceDto {
     scheduled_at,
     status,
     category: task.task_type ?? 'general',
+    note: task.description ?? null,
     repeat: { kind: repeatKind, interval: repeatInterval },
     steps,
   };
@@ -331,6 +339,7 @@ export const tasksService = {
         scheduled_end_at: dto.scheduled_at ? new Date(scheduledStart.getTime() + estimatedMins * 60 * 1000) : null,
         due_at: toUtcDate(anchorStr),
         task_type: normTaskType(dto.category),
+        description: dto.note ?? null,
         repeat_rule: repeatRule ? JSON.stringify(repeatRule) : null,
         status: 'pending',
         priority: 'medium',
@@ -367,10 +376,18 @@ export const tasksService = {
         dbData.completed_at = null;
       }
     }
+    // Editable fields (title / study-tag / note / duration).
+    if (dto.title !== undefined) dbData.title = dto.title;
+    if (dto.category !== undefined) dbData.task_type = normTaskType(dto.category);
+    if (dto.note !== undefined) dbData.description = dto.note || null;
+    if (dto.duration_seconds !== undefined) {
+      dbData.estimated_duration_mins = Math.max(1, Math.round(dto.duration_seconds / 60));
+    }
 
     if (isVirtual) {
-      // Materialize virtual task as a concrete instance override
-      const mins = task.estimated_duration_mins ?? 5;
+      // Materialize virtual task as a concrete instance override, carrying any
+      // edited fields (title / tag / note / duration) from dbData.
+      const mins = dbData.estimated_duration_mins ?? task.estimated_duration_mins ?? 5;
       const start = dbData.scheduled_start_at !== undefined
         ? dbData.scheduled_start_at
         : (task.scheduled_start_at ? parseTimeStr(dateStr, formatTime(task.scheduled_start_at)) : null);
@@ -381,7 +398,7 @@ export const tasksService = {
         data: {
           user_id: RequestContext.userId,
           course_id: task.course_id,
-          title: task.title,
+          title: dbData.title ?? task.title,
           parent_task_id: task.id,
           estimated_duration_mins: mins,
           scheduled_start_at: start,
@@ -389,7 +406,8 @@ export const tasksService = {
           due_at: toUtcDate(dateStr),
           status,
           priority: task.priority ?? 'medium',
-          task_type: task.task_type ?? 'general',
+          task_type: dbData.task_type ?? task.task_type ?? 'general',
+          description: dbData.description ?? task.description ?? null,
           completed_at: status === 'completed' ? new Date() : null,
         },
       });

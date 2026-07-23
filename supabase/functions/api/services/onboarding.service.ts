@@ -90,6 +90,20 @@ export const onboardingService = {
       return { ...(await summary(userId)), status: 'already_completed' };
     }
 
+    // Validate the referral code up front (if one was entered) so a typo is
+    // rejected before we provision anything, rather than silently ignored.
+    const referralCodeInput = dto.referral_code?.trim();
+    let referralCodeRow: { id: string; user_id: string } | null = null;
+    if (referralCodeInput) {
+      referralCodeRow = await prismaBase().referralCode.findUnique({
+        where: { code: referralCodeInput.toUpperCase() },
+      });
+      if (!referralCodeRow) throw new HttpError(422, 'Invalid referral code');
+      if (referralCodeRow.user_id === userId) {
+        throw new HttpError(400, 'You cannot use your own referral code');
+      }
+    }
+
     const sem = dto.semester ?? { name: 'My Semester', start: todayYmd(), end: plusMonthsYmd(6) };
 
     // deno-lint-ignore no-explicit-any
@@ -181,6 +195,26 @@ export const onboardingService = {
         update: {},
       });
     });
+
+    // Attribute the referral now that the account is provisioned (best-effort —
+    // the code was already validated above; ignore a duplicate redemption).
+    if (referralCodeRow) {
+      try {
+        const already = await prismaBase().referralRedemption.findUnique({
+          where: { referred_user_id: userId },
+        });
+        if (!already) {
+          await prismaBase().referralRedemption.create({
+            data: {
+              referral_code_id: referralCodeRow.id,
+              referred_user_id: userId,
+            },
+          });
+        }
+      } catch (_) {
+        // Non-fatal: onboarding is complete regardless of referral bookkeeping.
+      }
+    }
 
     await revision.bump(userId, 'onboarding');
     return { ...(await summary(userId)), status: 'completed' };
