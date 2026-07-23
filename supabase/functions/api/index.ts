@@ -15,6 +15,7 @@ import { HttpError, errorBody } from '../_shared/http.ts';
 import { supabaseAuth } from '../_shared/auth.ts';
 import { rateLimit, idempotency } from '../_shared/redis.ts';
 import { prismaBase } from '../_shared/prisma.ts';
+import { notificationsService } from './services/notifications.service.ts';
 
 // ---- feature routers ----
 import { profileRouter, meRouter } from './routers/profile.ts';
@@ -41,7 +42,9 @@ import { filesRouter } from './routers/files.ts';
 const app = new Hono().basePath('/api/v1');
 
 // Public paths (relative to basePath) — mirror @Public() in the Nest app.
-const PUBLIC_PATHS = new Set(['/healthz', '/readyz']);
+// `/cron/notifications` bypasses the Supabase-JWT guard (pg_cron has no user
+// token) but is gated by a shared `x-cron-secret` header inside its handler.
+const PUBLIC_PATHS = new Set(['/healthz', '/readyz', '/cron/notifications']);
 
 // CORS first — browsers (Flutter web) send an unauthenticated OPTIONS preflight,
 // which must be answered before the auth guard runs.
@@ -66,6 +69,17 @@ app.get('/readyz', async (c) => {
     db = 'error';
   }
   return c.json({ status: db === 'ok' ? 'ready' : 'degraded', db }, db === 'ok' ? 200 : 503);
+});
+
+// ---- internal: cron-triggered reminder sweep ----
+// pg_cron POSTs here every minute with the shared secret. Runs system-wide (no
+// user context) and fires due task reminders via FCM/APNs.
+app.post('/cron/notifications', async (c) => {
+  const secret = Deno.env.get('CRON_SECRET');
+  if (!secret || c.req.header('x-cron-secret') !== secret) {
+    throw new HttpError(401, 'Unauthorized');
+  }
+  return c.json(await notificationsService.runReminderSweep());
 });
 
 // ---- feature routers (mounted under basePath /api/v1) ----

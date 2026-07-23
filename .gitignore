@@ -10,3 +10,6 @@ supabase/.temp/
 .flutter-plugins-dependencies
 cloud-sql-proxy.exe
 /build/
+
+# Firebase service-account key (secret — never commit)
+*firebase-adminsdk*.json
