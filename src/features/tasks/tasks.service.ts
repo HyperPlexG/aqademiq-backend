@@ -17,6 +17,32 @@ const RANGE_CAP_DAYS = 366;
 const COMPLETIONS_TTL = 300;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Resolve wire `category` into `tasks.task_type`. Prefer a real study-tag id;
+ * never coerce unknown values to `other` (that was the Plan "other" chip bug).
+ */
+async function resolveTaskCategory(
+  prisma: PrismaService,
+  category?: string | null,
+): Promise<string> {
+  if (!category) return 'assignment';
+  const trimmed = category.trim();
+  if (!trimmed) return 'assignment';
+
+  const db = prisma.tenant;
+  if (UUID_RE.test(trimmed)) {
+    const byId = await db.studyTag.findFirst({ where: { id: trimmed } });
+    return byId?.id ?? trimmed;
+  }
+
+  const byName = await db.studyTag.findFirst({
+    where: { name: { equals: trimmed, mode: 'insensitive' } },
+  });
+  if (byName) return byName.id;
+
+  return trimmed;
+}
+
 interface SeriesLike {
   anchor_date: Date | string | null;
   repeat_kind: string;
@@ -83,7 +109,8 @@ export class TasksService {
         scheduled_start_at: dto.scheduled_at ? scheduledStart : null,
         scheduled_end_at: dto.scheduled_at ? new Date(scheduledStart.getTime() + estimatedMins * 60 * 1000) : null,
         due_at: toUtcDate(anchorStr),
-        task_type: dto.category ?? 'general',
+        task_type: await resolveTaskCategory(this.prisma, dto.category),
+        description: dto.note ?? null,
         repeat_rule: repeatRule ? JSON.stringify(repeatRule) : null,
         status: 'pending',
         priority: 'medium',
@@ -118,6 +145,12 @@ export class TasksService {
         dbData.completed_at = null;
       }
     }
+    if (dto.category !== undefined) {
+      dbData.task_type = await resolveTaskCategory(this.prisma, dto.category);
+    }
+    if (dto.note !== undefined) {
+      dbData.description = dto.note || null;
+    }
 
     if (isVirtual) {
       // Materialize virtual task as a concrete instance override
@@ -138,7 +171,8 @@ export class TasksService {
           due_at: toUtcDate(dateStr),
           status,
           priority: task.priority ?? 'medium',
-          task_type: task.task_type ?? 'general',
+          task_type: dbData.task_type ?? task.task_type ?? 'general',
+          description: dbData.description !== undefined ? dbData.description : (task.description ?? null),
           completed_at: status === 'completed' ? new Date() : null,
         },
       });
@@ -466,7 +500,8 @@ export class TasksService {
     const repeatKind = repeatRule?.repeat_kind ?? 'none';
     const repeatInterval = repeatRule?.repeat_interval ?? 1;
 
-    const scheduled_at = task.scheduled_start_at ? this.formatTime(task.scheduled_start_at) : null;
+    const hhmm = task.scheduled_start_at ? this.formatTime(task.scheduled_start_at) : null;
+    const scheduled_at = hhmm ? `${dateStr}T${hhmm}:00` : null;
     const status = task.status === 'completed' ? 'COMPLETE' : 'PENDING';
     const steps = (task.steps ?? [])
       .sort((a: any, b: any) => a.order_index - b.order_index)
@@ -488,6 +523,7 @@ export class TasksService {
       scheduled_at,
       status,
       category: task.task_type ?? 'general',
+      note: task.description ?? null,
       repeat: { kind: repeatKind, interval: repeatInterval },
       steps,
     };

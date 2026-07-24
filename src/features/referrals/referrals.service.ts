@@ -11,6 +11,18 @@ export class ReferralsService {
     private readonly rc: RequestContext,
   ) {}
 
+  /** POST /referrals/validate — check a code without redeeming it. */
+  async validate(dto: RedeemDto) {
+    const referralCode = await this.prisma.referralCode.findUnique({
+      where: { code: dto.code.toUpperCase() },
+    });
+    if (!referralCode) throw new UnprocessableEntityException('Invalid referral code');
+    if (referralCode.user_id === this.rc.userId) {
+      throw new BadRequestException('You cannot use your own referral code');
+    }
+    return { valid: true as const };
+  }
+
   /** POST /referrals/redeem — attribute the current user to a code's owner. */
   async redeem(dto: RedeemDto) {
     const referralCode = await this.prisma.referralCode.findUnique({

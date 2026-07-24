@@ -40,6 +40,10 @@ export class CreateTaskDto {
   @IsString()
   category?: string;
 
+  @IsOptional()
+  @IsString()
+  note?: string;
+
   // Anchor / first-occurrence date (yyyy-MM-dd). Defaults to today (UTC).
   @IsOptional()
   @Matches(YMD)
@@ -77,6 +81,14 @@ export class PatchTaskDto {
   @IsOptional()
   @IsIn(['PENDING', 'COMPLETE'])
   status?: string;
+
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
 }
 
 export class ToggleTaskDto {

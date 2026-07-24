@@ -23,15 +23,36 @@ import {
 // constraint `tasks_task_type_check` is dropped in the accompanying migration —
 // coercing arbitrary tag ids to 'other' was what made every custom tag render
 // as "Other" on the plan.) An absent category keeps the column default.
-function normTaskType(category?: string | null): string {
-  if (!category) return 'assignment';
-  return category;
-}
-
 const MS_PER_DAY = 86_400_000;
 const RANGE_CAP_DAYS = 366;
 const COMPLETIONS_TTL = 300;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolve the wire `category` into the value we persist on `tasks.task_type`.
+ *
+ * Prefer a real study-tag id so the Plan UI can colour/label the chip. Accepts:
+ * - study-tag UUID from the client
+ * - study-tag label / Ada legacy enum (`assignment`, `exam`, …) matched by name
+ * - any other free-form string (passthrough — never coerce to `other`)
+ */
+async function resolveTaskCategory(category?: string | null): Promise<string> {
+  if (!category) return 'assignment';
+  const trimmed = category.trim();
+  if (!trimmed) return 'assignment';
+
+  if (UUID_RE.test(trimmed)) {
+    const byId = await tenantDb().studyTag.findFirst({ where: { id: trimmed } });
+    return byId?.id ?? trimmed;
+  }
+
+  const byName = await tenantDb().studyTag.findFirst({
+    where: { name: { equals: trimmed, mode: 'insensitive' } },
+  });
+  if (byName) return byName.id;
+
+  return trimmed;
+}
 
 // ---- DTO shapes (mirror src/features/tasks/dto/tasks.dto.ts) ----
 export interface RepeatRuleDto {
@@ -129,7 +150,8 @@ function occurrenceDto(task: any, dateStr: string): OccurrenceDto {
   const repeatKind = repeatRule?.repeat_kind ?? 'none';
   const repeatInterval = repeatRule?.repeat_interval ?? 1;
 
-  const scheduled_at = task.scheduled_start_at ? formatTime(task.scheduled_start_at) : null;
+  const hhmm = task.scheduled_start_at ? formatTime(task.scheduled_start_at) : null;
+  const scheduled_at = hhmm ? `${dateStr}T${hhmm}:00` : null;
   const status = task.status === 'completed' ? 'COMPLETE' : 'PENDING';
   const steps = (task.steps ?? [])
     // deno-lint-ignore no-explicit-any
@@ -338,7 +360,7 @@ export const tasksService = {
         scheduled_start_at: dto.scheduled_at ? scheduledStart : null,
         scheduled_end_at: dto.scheduled_at ? new Date(scheduledStart.getTime() + estimatedMins * 60 * 1000) : null,
         due_at: toUtcDate(anchorStr),
-        task_type: normTaskType(dto.category),
+        task_type: await resolveTaskCategory(dto.category),
         description: dto.note ?? null,
         repeat_rule: repeatRule ? JSON.stringify(repeatRule) : null,
         status: 'pending',
@@ -378,7 +400,7 @@ export const tasksService = {
     }
     // Editable fields (title / study-tag / note / duration).
     if (dto.title !== undefined) dbData.title = dto.title;
-    if (dto.category !== undefined) dbData.task_type = normTaskType(dto.category);
+    if (dto.category !== undefined) dbData.task_type = await resolveTaskCategory(dto.category);
     if (dto.note !== undefined) dbData.description = dto.note || null;
     if (dto.duration_seconds !== undefined) {
       dbData.estimated_duration_mins = Math.max(1, Math.round(dto.duration_seconds / 60));

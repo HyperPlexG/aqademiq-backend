@@ -7,6 +7,11 @@ import { RedeemDto } from './dto/referrals.dto';
 export class ReferralsController {
   constructor(private readonly svc: ReferralsService) {}
 
+  @Post('validate')
+  validate(@Body() dto: RedeemDto) {
+    return this.svc.validate(dto);
+  }
+
   @Post('redeem')
   redeem(@Body() dto: RedeemDto) {
     return this.svc.redeem(dto);

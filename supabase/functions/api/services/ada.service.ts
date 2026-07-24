@@ -348,7 +348,11 @@ function tools(): ToolDef[] {
                       subject_id: { type: 'string', description: 'Target subject/course id.' },
                       duration_seconds: { type: 'integer' },
                       scheduled_at: { type: 'string', description: 'Optional HH:MM start time.' },
-                      category: { type: 'string', description: 'Optional assignment|exam|project|revision|other.' },
+                      category: {
+                        type: 'string',
+                        description:
+                          'Optional study-tag id (UUID from the user\'s study tags). Do not use legacy enums like other/assignment.',
+                      },
                       repeat: { type: 'object', properties: { kind: { type: 'string' }, interval: { type: 'integer' } } },
                     },
                     required: ['title', 'subject_id'],

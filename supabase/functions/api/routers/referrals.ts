@@ -5,6 +5,14 @@ import { jsonBody, str } from '../../_shared/validate.ts';
 
 export const referralsRouter = new Hono();
 
+referralsRouter.post('/validate', async (c) => {
+  const b = await jsonBody(c.req);
+  const dto: RedeemDto = {
+    code: str(b, 'code', true, { min: 4, max: 32 })!,
+  };
+  return c.json(await referralsService.validate(dto));
+});
+
 referralsRouter.post('/redeem', async (c) => {
   const b = await jsonBody(c.req);
   const dto: RedeemDto = {
