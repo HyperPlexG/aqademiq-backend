@@ -11,6 +11,16 @@ export interface RedeemDto {
   code: string;
 }
 
+// Referral codes are hex, so an even length; the client's onboarding input
+// (ob_referral_screen.dart) renders exactly this many boxes. Keep the two in
+// sync — a mismatch is what made the code impossible to type (input was 5).
+export const REFERRAL_CODE_LENGTH = 8;
+
+/** Normalise a user-entered code for lookup: trim, strip inner spaces, upper. */
+function normalizeCode(code: string): string {
+  return code.replace(/\s+/g, '').toUpperCase();
+}
+
 // ---- internals -----------------------------------------------------------
 
 async function ensureCode(): Promise<string> {
@@ -19,7 +29,10 @@ async function ensureCode(): Promise<string> {
   });
   if (existing) return existing.code;
   for (let i = 0; i < 5; i++) {
-    const code = crypto.randomBytes(4).toString('hex').toUpperCase(); // 8 chars
+    const code = crypto
+      .randomBytes(REFERRAL_CODE_LENGTH / 2)
+      .toString('hex')
+      .toUpperCase();
     try {
       const created = await prismaBase().referralCode.create({
         data: { code, user_id: RequestContext.userId },
@@ -36,10 +49,26 @@ async function ensureCode(): Promise<string> {
 }
 
 export const referralsService = {
+  /**
+   * POST /referrals/validate — check a code exists and is usable by this user
+   * without recording a redemption. Used by onboarding so typos fail on the
+   * referral step instead of at final setup.
+   */
+  async validate(dto: RedeemDto) {
+    const referralCode = await prismaBase().referralCode.findUnique({
+      where: { code: normalizeCode(dto.code) },
+    });
+    if (!referralCode) throw new HttpError(422, 'Invalid referral code');
+    if (referralCode.user_id === RequestContext.userId) {
+      throw new HttpError(400, 'You cannot use your own referral code');
+    }
+    return { valid: true as const };
+  },
+
   /** POST /referrals/redeem — attribute the current user to a code's owner. */
   async redeem(dto: RedeemDto) {
     const referralCode = await prismaBase().referralCode.findUnique({
-      where: { code: dto.code.toUpperCase() },
+      where: { code: normalizeCode(dto.code) },
     });
     if (!referralCode) throw new HttpError(422, 'Invalid referral code');
     if (referralCode.user_id === RequestContext.userId) {
