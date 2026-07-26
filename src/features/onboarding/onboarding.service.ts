@@ -32,6 +32,20 @@ export class OnboardingService {
 
     const existingCourse = await this.prisma.course.findFirst({ where: { user_id: userId } });
     if (existingCourse) {
+      // Heal onboarding_complete: an account with subjects whose flag was never
+      // set would otherwise be re-routed into onboarding on every launch (this
+      // branch always short-circuits). Consent/age were validated above.
+      await this.prisma.profile.update({
+        where: { id: userId },
+        data: {
+          onboarding_complete: true,
+          consent_given: true,
+          consent_timestamp: new Date(),
+          consent_version: dto.consent_version ?? null,
+          age: dto.age,
+          ...(dto.name !== undefined ? { full_name: dto.name, display_name: dto.name } : {}),
+        },
+      });
       return { ...(await this.summary(userId)), status: 'already_completed' };
     }
 

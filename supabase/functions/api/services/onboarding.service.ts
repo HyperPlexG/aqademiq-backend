@@ -87,6 +87,23 @@ export const onboardingService = {
 
     const existingCourse = await prismaBase().course.findFirst({ where: { user_id: userId } });
     if (existingCourse) {
+      // The account already has subjects, so don't re-provision. But heal
+      // onboarding_complete here: without this, an account whose flag was never
+      // set (created before the flag, or a course added outside onboarding) is
+      // short-circuited on every attempt and the launch gate re-routes it into
+      // onboarding forever. Consent/age were just validated above, so record
+      // them too.
+      await prismaBase().profile.update({
+        where: { id: userId },
+        data: {
+          onboarding_complete: true,
+          consent_given: true,
+          consent_timestamp: new Date(),
+          consent_version: dto.consent_version ?? null,
+          age: dto.age,
+          ...(dto.name !== undefined ? { full_name: dto.name, display_name: dto.name } : {}),
+        },
+      });
       return { ...(await summary(userId)), status: 'already_completed' };
     }
 
