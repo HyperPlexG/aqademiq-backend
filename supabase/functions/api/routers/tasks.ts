@@ -16,6 +16,7 @@ import { HttpError } from '../../_shared/http.ts';
 import { type Body, jsonBody, num, str } from '../../_shared/validate.ts';
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const PART_OF_DAY = ['anytime', 'morning', 'afternoon', 'evening'] as const;
 const REPEAT_KINDS = ['none', 'daily', 'weekdays', 'weekly', 'monthly', 'everyNDays', 'everyNWeeks', 'everyNMonths'] as const;
 
 export const tasksRouter = new Hono();
@@ -46,6 +47,7 @@ tasksRouter.post('/', async (c) => {
     date: str(b, 'date', false, { pattern: YMD }),
     repeat: parseRepeat(b),
     until_date: str(b, 'until_date', false, { pattern: YMD }),
+    part_of_day: str(b, 'part_of_day', false, { enum: PART_OF_DAY }),
   };
   return c.json(await tasksService.create(dto), 201);
 });
@@ -84,6 +86,7 @@ tasksRouter.patch('/:occ', async (c) => {
     category: str(b, 'category', false),
     note: str(b, 'note', false),
     duration_seconds: num(b, 'duration_seconds', false, { int: true, min: 0 }),
+    part_of_day: str(b, 'part_of_day', false, { enum: PART_OF_DAY }),
   };
   return c.json(await tasksService.patch(c.req.param('occ'), dto));
 });

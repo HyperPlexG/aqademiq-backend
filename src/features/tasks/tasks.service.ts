@@ -112,6 +112,7 @@ export class TasksService {
         task_type: await resolveTaskCategory(this.prisma, dto.category),
         description: dto.note ?? null,
         repeat_rule: repeatRule ? JSON.stringify(repeatRule) : null,
+        planner_section: dto.part_of_day ?? 'anytime',
         status: 'pending',
         priority: 'medium',
       } as any,
@@ -151,6 +152,9 @@ export class TasksService {
     if (dto.note !== undefined) {
       dbData.description = dto.note || null;
     }
+    if (dto.part_of_day !== undefined) {
+      dbData.planner_section = dto.part_of_day || 'anytime';
+    }
 
     if (isVirtual) {
       // Materialize virtual task as a concrete instance override
@@ -172,6 +176,7 @@ export class TasksService {
           status,
           priority: task.priority ?? 'medium',
           task_type: dbData.task_type ?? task.task_type ?? 'general',
+          planner_section: dbData.planner_section ?? task.planner_section ?? 'anytime',
           description: dbData.description !== undefined ? dbData.description : (task.description ?? null),
           completed_at: status === 'completed' ? new Date() : null,
         },
@@ -521,6 +526,7 @@ export class TasksService {
       subject_id: task.course_id,
       duration_seconds: (task.estimated_duration_mins ?? 5) * 60,
       scheduled_at,
+      part_of_day: task.planner_section ?? 'anytime',
       status,
       category: task.task_type ?? 'general',
       note: task.description ?? null,

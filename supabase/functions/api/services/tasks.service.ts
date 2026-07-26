@@ -69,6 +69,9 @@ export interface CreateTaskDto {
   date?: string;
   repeat?: RepeatRuleDto;
   until_date?: string;
+  // Time-of-day bucket ("anytime"|"morning"|"afternoon"|"evening") for tasks
+  // without a specific clock time. Persisted on tasks.planner_section.
+  part_of_day?: string;
 }
 export interface QueryTasksDto {
   date?: string;
@@ -82,6 +85,7 @@ export interface PatchTaskDto {
   category?: string;
   note?: string;
   duration_seconds?: number;
+  part_of_day?: string;
 }
 export interface ToggleTaskDto {
   date?: string;
@@ -108,6 +112,7 @@ interface OccurrenceDto {
   subject_id: string | null;
   duration_seconds: number;
   scheduled_at: string | null;
+  part_of_day: string;
   status: string;
   category: string;
   note: string | null;
@@ -173,6 +178,7 @@ function occurrenceDto(task: any, dateStr: string): OccurrenceDto {
     subject_id: task.course_id,
     duration_seconds: (task.estimated_duration_mins ?? 5) * 60,
     scheduled_at,
+    part_of_day: task.planner_section ?? 'anytime',
     status,
     category: task.task_type ?? 'general',
     note: task.description ?? null,
@@ -363,6 +369,7 @@ export const tasksService = {
         task_type: await resolveTaskCategory(dto.category),
         description: dto.note ?? null,
         repeat_rule: repeatRule ? JSON.stringify(repeatRule) : null,
+        planner_section: dto.part_of_day ?? 'anytime',
         status: 'pending',
         priority: 'medium',
         // deno-lint-ignore no-explicit-any
@@ -398,10 +405,11 @@ export const tasksService = {
         dbData.completed_at = null;
       }
     }
-    // Editable fields (title / study-tag / note / duration).
+    // Editable fields (title / study-tag / note / duration / time-of-day).
     if (dto.title !== undefined) dbData.title = dto.title;
     if (dto.category !== undefined) dbData.task_type = await resolveTaskCategory(dto.category);
     if (dto.note !== undefined) dbData.description = dto.note || null;
+    if (dto.part_of_day !== undefined) dbData.planner_section = dto.part_of_day || 'anytime';
     if (dto.duration_seconds !== undefined) {
       dbData.estimated_duration_mins = Math.max(1, Math.round(dto.duration_seconds / 60));
     }
@@ -429,6 +437,7 @@ export const tasksService = {
           status,
           priority: task.priority ?? 'medium',
           task_type: dbData.task_type ?? task.task_type ?? 'general',
+          planner_section: dbData.planner_section ?? task.planner_section ?? 'anytime',
           description: dbData.description ?? task.description ?? null,
           completed_at: status === 'completed' ? new Date() : null,
         },

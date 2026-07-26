@@ -5,6 +5,7 @@ import { Type } from 'class-transformer';
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 export const REPEAT_KINDS = ['none', 'daily', 'weekdays', 'weekly', 'monthly', 'everyNDays', 'everyNWeeks', 'everyNMonths'];
+export const PART_OF_DAY = ['anytime', 'morning', 'afternoon', 'evening'];
 
 export class RepeatRuleDto {
   @IsIn(REPEAT_KINDS)
@@ -57,6 +58,12 @@ export class CreateTaskDto {
   @IsOptional()
   @Matches(YMD)
   until_date?: string;
+
+  // Time-of-day bucket for tasks without a specific time. Persisted on
+  // tasks.planner_section.
+  @IsOptional()
+  @IsIn(PART_OF_DAY)
+  part_of_day?: string;
 }
 
 export class QueryTasksDto {
@@ -89,6 +96,10 @@ export class PatchTaskDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  @IsOptional()
+  @IsIn(PART_OF_DAY)
+  part_of_day?: string;
 }
 
 export class ToggleTaskDto {
