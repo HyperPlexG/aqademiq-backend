@@ -49,10 +49,31 @@ async function sendFcm(token: string, title: string, body: string, data?: Record
   if (!fcmConfigured()) return { status: 'skipped_no_provider' };
   try {
     const at = await fcmAccessToken();
+    // FCM v1 requires every `data` value to be a string, or the send 400s.
+    const stringData = data
+      ? Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)]))
+      : undefined;
     const res = await fetch(`https://fcm.googleapis.com/v1/projects/${FCM_PROJECT()}/messages:send`, {
       method: 'POST',
       headers: { authorization: `Bearer ${at}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ message: { token, notification: { title, body }, data } }),
+      body: JSON.stringify({
+        message: {
+          token,
+          notification: { title, body },
+          data: stringData,
+          // Explicit iOS alert config: a high-priority alert with sound so the
+          // banner reliably shows on APNs (the bare `notification` block relies
+          // on FCM's default aps mapping, which some iOS versions render silently).
+          apns: {
+            headers: { 'apns-priority': '10' },
+            payload: { aps: { alert: { title, body }, sound: 'default', badge: 1 } },
+          },
+          android: {
+            priority: 'high',
+            notification: { channel_id: 'aqademiq_default' },
+          },
+        },
+      }),
     });
     if (!res.ok) return { status: 'failed', error: `${res.status}: ${await res.text()}` };
     const json = await res.json() as { name?: string };
