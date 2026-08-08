@@ -22,6 +22,14 @@ import { streaksService } from '../services/streaks.service.ts';
 import { type ActionPreview, type AgentTool, ToolInputError } from './types.ts';
 import { forget, MAX_MEMORY_CHARS, MEMORY_KINDS, remember } from './memory.ts';
 import { listReadableFiles, readFile } from './files.ts';
+import {
+  busyBlocks,
+  conflictsFor,
+  DEFAULT_MIN_SLOT_MINUTES,
+  describeConflicts,
+  freeSlots,
+  MAX_RANGE_DAYS,
+} from './schedule.ts';
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -162,6 +170,19 @@ function minutesLabel(mins?: number): string | null {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
+/** Free/busy over a huge span is never what was meant and is expensive to build. */
+function assertRange(from: string, to: string) {
+  const days = Math.floor(
+    (new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86_400_000,
+  ) + 1;
+  if (days > MAX_RANGE_DAYS) {
+    throw new ToolInputError(
+      `That range is ${days} days; ask for at most ${MAX_RANGE_DAYS} at a time.`,
+      'Narrow it to the week or fortnight you actually need.',
+    );
+  }
+}
+
 /** Only include fields that actually change; a card of "unchanged" rows is noise. */
 function diff(fields: Array<{ label: string; from?: string | null; to?: string | null }>) {
   return fields.filter((f) => f.to !== undefined && f.to !== null && f.to !== f.from);
@@ -263,6 +284,70 @@ const readTools: AgentTool[] = [
     input_schema: { type: 'object', properties: {} },
     parse: () => Promise.resolve({}),
     run: () => profileService.stats(),
+  },
+  {
+    name: 'list_free_time',
+    description:
+      'Find when the user is actually free. Returns the gaps left once timed tasks AND imported calendar events (lectures, labs) are removed from their day. Call this before proposing any task with a clock time — scheduling on top of a lecture is the most damaging mistake you can make.',
+    kind: 'read',
+    resource: 'schedule',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'First day, YYYY-MM-DD.' },
+        to: { type: 'string', description: 'Last day (inclusive), YYYY-MM-DD. Defaults to `from`.' },
+        min_minutes: { type: 'integer', description: `Ignore gaps shorter than this. Default ${DEFAULT_MIN_SLOT_MINUTES}.` },
+        day_start: { type: 'string', description: 'Earliest hour to consider, "HH:MM". Default 08:00.' },
+        day_end: { type: 'string', description: 'Latest hour to consider, "HH:MM". Default 22:00.' },
+      },
+      required: ['from'],
+    },
+    parse(i) {
+      const from = reqYmd(i, 'from');
+      const to = optYmd(i, 'to') ?? from;
+      if (to < from) throw new ToolInputError('`to` must not be before `from`.');
+      return Promise.resolve({
+        from,
+        to,
+        min_minutes: optInt(i, 'min_minutes', 5, 480),
+        day_start: optHhmm(i, 'day_start'),
+        day_end: optHhmm(i, 'day_end'),
+      });
+    },
+    async run(a, ctx) {
+      assertRange(a.from, a.to);
+      const slots = await freeSlots(a.from, a.to, ctx.timezone, {
+        minMinutes: a.min_minutes,
+        dayStart: a.day_start,
+        dayEnd: a.day_end,
+      });
+      return { free: slots, note: 'Untimed "anytime" tasks are not counted as busy.' };
+    },
+  },
+  {
+    name: 'list_calendar',
+    description:
+      'List what already occupies the user\'s time in a date range: their timed tasks plus any events imported from their calendar. Use it to understand a day before rearranging it.',
+    kind: 'read',
+    resource: 'schedule',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'First day, YYYY-MM-DD.' },
+        to: { type: 'string', description: 'Last day (inclusive), YYYY-MM-DD. Defaults to `from`.' },
+      },
+      required: ['from'],
+    },
+    parse(i) {
+      const from = reqYmd(i, 'from');
+      const to = optYmd(i, 'to') ?? from;
+      if (to < from) throw new ToolInputError('`to` must not be before `from`.');
+      return Promise.resolve({ from, to });
+    },
+    async run(a, ctx) {
+      assertRange(a.from, a.to);
+      return { busy: await busyBlocks(a.from, a.to, ctx.timezone) };
+    },
   },
   {
     name: 'list_files',
@@ -460,8 +545,16 @@ const writeTools: AgentTool[] = [
         until_date: optYmd(i, 'until_date'),
       };
     },
-    async preview(a): Promise<ActionPreview> {
+    async preview(a, ctx): Promise<ActionPreview> {
       const subject = await subjectName(a.subject_id);
+      // The clash is surfaced on the card, while it is still a proposal the user
+      // can decline — rather than being discovered after they've approved a
+      // study block that lands on top of a lecture.
+      const clash = a.scheduled_at
+        ? describeConflicts(
+          await conflictsFor(a.date, a.scheduled_at, a.duration_minutes ?? 30, ctx.timezone),
+        )
+        : undefined;
       return {
         title: `Add task “${a.title}”`,
         fields: diff([
@@ -473,6 +566,7 @@ const writeTools: AgentTool[] = [
           { label: 'Repeats', to: a.repeat ? `${a.repeat.kind}${a.repeat.interval && a.repeat.interval > 1 ? ` ×${a.repeat.interval}` : ''}` : null },
           { label: 'Note', to: a.note },
         ]),
+        ...(clash ? { warning: clash } : {}),
       };
     },
     execute: (a) =>
@@ -530,11 +624,27 @@ const writeTools: AgentTool[] = [
       }
       return args;
     },
-    async preview(a): Promise<ActionPreview> {
+    async preview(a, ctx): Promise<ActionPreview> {
       const before = await ownedTask(a.task_id);
       const beforeMins = before.estimated_duration_mins ?? undefined;
+      // Only when a real time is being set — clearing one ('') cannot clash, and
+      // the task is excluded from its own check.
+      let clash: string | undefined;
+      if (a.scheduled_at) {
+        const date = a.task_id.includes('@') ? a.task_id.split('@')[1] : await ownedTaskDate(a.task_id);
+        clash = describeConflicts(
+          await conflictsFor(
+            date,
+            a.scheduled_at,
+            a.duration_minutes ?? beforeMins ?? 30,
+            ctx.timezone,
+            a.task_id,
+          ),
+        );
+      }
       return {
         title: `Edit task “${before.title}”`,
+        ...(clash ? { warning: clash } : {}),
         fields: diff([
           { label: 'Title', from: before.title, to: a.title },
           { label: 'Duration', from: minutesLabel(beforeMins ?? undefined), to: minutesLabel(a.duration_minutes) },

@@ -66,6 +66,13 @@ jobs:
       - name: Type-check edge functions
         working-directory: supabase/functions
         run: deno check api/index.ts prisma-spike/index.ts
+      # Unit tests for the pure logic under supabase/functions/ — jest only covers
+      # the NestJS reference in src/, so without this the edge tree has no test
+      # gate at all. Currently the free/busy arithmetic, where a wrong answer is
+      # silent: it reports a slot as free that is already booked.
+      - name: Test edge functions
+        working-directory: supabase/functions
+        run: deno test --allow-env api/
 
   # ---- Deploy the api edge function ----
   # Runs on every push to main once `backend` + `edge` are green (a `needs` job

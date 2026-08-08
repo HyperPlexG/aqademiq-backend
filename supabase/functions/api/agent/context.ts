@@ -11,6 +11,7 @@ import { RequestContext } from '../../_shared/context.ts';
 import { subjectsService } from '../services/subjects.service.ts';
 import { tagsService } from '../services/tags.service.ts';
 import { type MemoryRow, recallMemories, renderMemories, touchMemories } from './memory.ts';
+import { buildInsights, type Insights, renderInsights } from './insights.ts';
 
 /** How many earlier turns of this conversation get a one-line recap. */
 const DIGEST_RUNS = 6;
@@ -29,6 +30,8 @@ export interface AgentContext {
   awaiting_confirmation_count: number;
   /** Durable cross-conversation memory (agent/memory.ts). */
   memories: MemoryRow[];
+  /** Behaviour derived from their own history (agent/insights.ts). */
+  insights: Insights;
   /** What earlier turns of THIS conversation actually did. */
   digest: string[];
   readable_file_count: number;
@@ -48,7 +51,9 @@ export function ymdInTz(d: Date, tz: string): string {
   }
 }
 
-function hhmmInTz(d: Date, tz: string): string {
+/** HH:MM for `d` as seen in `tz`. Exported: scheduling compares a real instant
+ *  (a calendar event) against wall-clock task times, so it needs this too. */
+export function hhmmInTz(d: Date, tz: string): string {
   try {
     return new Intl.DateTimeFormat('en-GB', {
       timeZone: tz,
@@ -134,7 +139,7 @@ export interface BuildContextOptions {
 export async function buildContext(opts: BuildContextOptions = {}): Promise<AgentContext> {
   const now = new Date();
 
-  const [profile, subjectsRes, tagsRes, openTasks, awaiting, memories, digest, materialCount] = await Promise.all([
+  const [profile, subjectsRes, tagsRes, openTasks, awaiting, memories, digest, materialCount, insights] = await Promise.all([
     prismaBase().profile.findUnique({
       where: { id: RequestContext.userId },
       select: { full_name: true, display_name: true, timezone: true, is_guest: true },
@@ -146,6 +151,7 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Agen
     recallMemories().catch(() => [] as MemoryRow[]),
     opts.sessionId ? buildDigest(opts.sessionId, opts.excludeRunId) : Promise.resolve([]),
     tenantDb().subjectMaterial.count().catch(() => 0),
+    buildInsights(),
   ]);
 
   // Fire-and-forget: bumps retrieval counters so a later pass can retire
@@ -179,6 +185,7 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Agen
     open_task_count: openTasks,
     awaiting_confirmation_count: awaiting,
     memories,
+    insights,
     digest,
     readable_file_count: materialCount,
   };
@@ -236,6 +243,12 @@ export function renderContext(ctx: AgentContext): string {
   const subjectNames = new Map(ctx.subjects.map((s) => [s.id, s.name]));
   const memoryBlock = renderMemories(ctx.memories, subjectNames);
   if (memoryBlock) lines.push('', memoryBlock);
+
+  // Placed after memory so a stated preference is read before an inference drawn
+  // from behaviour — what the user says about themselves outranks what the data
+  // suggests when the two disagree.
+  const insightBlock = renderInsights(ctx.insights);
+  if (insightBlock) lines.push('', insightBlock);
 
   return lines.join('\n');
 }

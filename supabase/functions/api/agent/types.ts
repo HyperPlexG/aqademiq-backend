@@ -90,9 +90,15 @@ export interface AgentTool {
   /** `kind: 'read'` and `'memory'` — execute now and return data for the agent. */
   // deno-lint-ignore no-explicit-any
   run?(args: any, ctx: ToolContext): Promise<unknown>;
-  /** `kind: 'write'` only — describe the change for the user. */
+  /**
+   * `kind: 'write'` only — describe the change for the user.
+   *
+   * Takes the run context because a good preview is not just a diff: a proposed
+   * time has to be checked against what is already booked, and that needs the
+   * user's timezone to compare a calendar instant with a wall-clock task.
+   */
   // deno-lint-ignore no-explicit-any
-  preview?(args: any): Promise<ActionPreview>;
+  preview?(args: any, ctx: ToolContext): Promise<ActionPreview>;
   /** `kind: 'write'` only — perform the change, after approval. */
   // deno-lint-ignore no-explicit-any
   execute?(args: any): Promise<unknown>;

@@ -265,6 +265,14 @@ function systemPrompt(contextBlock: string): string {
     '- Do not ask "shall I?" in text and then wait — propose the change; the card IS',
     '  the question.',
     '',
+    '## Their time is not empty',
+    'Before you give any task a clock time, call `list_free_time` for those days.',
+    'The user has lectures, labs and existing work; proposing study on top of a',
+    'commitment is the most damaging thing you can do, because they will trust the',
+    'plan and miss the class. Place work in real gaps, and if there is no room,',
+    'say so and offer another day instead of double-booking.',
+    'Untimed work is fine without this — a task in "anytime" occupies no slot.',
+    '',
     '## Files',
     'When the user attaches something or refers to a syllabus, brief or timetable,',
     'open it with read_file instead of guessing at what it says. Its deadlines are',
@@ -487,7 +495,7 @@ async function runTool(state: LoopState, name: string, input: Record<string, unk
       };
     }
 
-    const preview = await tool.preview!(args);
+    const preview = await tool.preview!(args, toolContext(state));
     const action = await createPendingAction({
       sessionId: state.sessionId,
       runId: state.runId,
