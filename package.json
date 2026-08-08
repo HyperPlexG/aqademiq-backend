@@ -15,7 +15,10 @@
     "db:test:feedback": "node scripts/test-feedback-board.mjs",
     "keys:gen": "bash scripts/gen-keys.sh",
     "openapi:sync": "node scripts/merge-openapi.mjs",
-    "openapi:check": "node scripts/merge-openapi.mjs --check"
+    "openapi:check": "node scripts/merge-openapi.mjs --check",
+    "ada:tokens": "cd supabase/functions && deno run --allow-env --allow-read --allow-write api/agent/tokens_bench.ts",
+    "ada:tokens:save": "npm run ada:tokens -- --save",
+    "ada:tokens:diff": "npm run ada:tokens -- --compare"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",

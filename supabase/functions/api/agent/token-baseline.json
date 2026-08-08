@@ -1,0 +1,197 @@
+{
+  "components": [
+    {
+      "name": "tool definitions",
+      "chars": 12588,
+      "tokens": 4054
+    },
+    {
+      "name": "system: static rules",
+      "chars": 3399,
+      "tokens": 875
+    },
+    {
+      "name": "system: context block",
+      "chars": 3179,
+      "tokens": 818
+    }
+  ],
+  "tools": {
+    "count": 32,
+    "chars": 12588,
+    "tokens": 4054,
+    "perTool": [
+      {
+        "name": "create_task",
+        "chars": 1378,
+        "tokens": 434
+      },
+      {
+        "name": "remember",
+        "chars": 1148,
+        "tokens": 338
+      },
+      {
+        "name": "list_free_time",
+        "chars": 832,
+        "tokens": 266
+      },
+      {
+        "name": "update_task",
+        "chars": 671,
+        "tokens": 220
+      },
+      {
+        "name": "create_subject",
+        "chars": 540,
+        "tokens": 192
+      },
+      {
+        "name": "update_settings",
+        "chars": 597,
+        "tokens": 181
+      },
+      {
+        "name": "read_file",
+        "chars": 598,
+        "tokens": 175
+      },
+      {
+        "name": "move_tasks",
+        "chars": 492,
+        "tokens": 172
+      },
+      {
+        "name": "list_tasks",
+        "chars": 499,
+        "tokens": 164
+      },
+      {
+        "name": "list_calendar",
+        "chars": 439,
+        "tokens": 142
+      },
+      {
+        "name": "log_mood",
+        "chars": 372,
+        "tokens": 132
+      },
+      {
+        "name": "update_subject",
+        "chars": 340,
+        "tokens": 125
+      },
+      {
+        "name": "update_semester",
+        "chars": 324,
+        "tokens": 119
+      },
+      {
+        "name": "create_semester",
+        "chars": 315,
+        "tokens": 116
+      },
+      {
+        "name": "update_profile",
+        "chars": 307,
+        "tokens": 109
+      },
+      {
+        "name": "complete_task",
+        "chars": 323,
+        "tokens": 105
+      },
+      {
+        "name": "forget",
+        "chars": 346,
+        "tokens": 104
+      },
+      {
+        "name": "create_study_tag",
+        "chars": 277,
+        "tokens": 92
+      },
+      {
+        "name": "get_mood_week",
+        "chars": 257,
+        "tokens": 87
+      },
+      {
+        "name": "delete_task",
+        "chars": 275,
+        "tokens": 82
+      },
+      {
+        "name": "list_files",
+        "chars": 258,
+        "tokens": 70
+      },
+      {
+        "name": "breakdown_task",
+        "chars": 237,
+        "tokens": 70
+      },
+      {
+        "name": "delete_semester",
+        "chars": 213,
+        "tokens": 66
+      },
+      {
+        "name": "delete_subject",
+        "chars": 206,
+        "tokens": 65
+      },
+      {
+        "name": "delete_study_tag",
+        "chars": 181,
+        "tokens": 60
+      },
+      {
+        "name": "list_study_tags",
+        "chars": 174,
+        "tokens": 59
+      },
+      {
+        "name": "list_subjects",
+        "chars": 163,
+        "tokens": 50
+      },
+      {
+        "name": "get_settings",
+        "chars": 163,
+        "tokens": 50
+      },
+      {
+        "name": "list_semesters",
+        "chars": 165,
+        "tokens": 49
+      },
+      {
+        "name": "get_profile",
+        "chars": 153,
+        "tokens": 48
+      },
+      {
+        "name": "get_study_stats",
+        "chars": 174,
+        "tokens": 46
+      },
+      {
+        "name": "get_streak",
+        "chars": 138,
+        "tokens": 43
+      }
+    ]
+  },
+  "cache": {
+    "stableTokens": 4940,
+    "volatileTokens": 806,
+    "stablePct": 86
+  },
+  "run": {
+    "calls": 8,
+    "promptTokens": 46032,
+    "toolShare": 70
+  },
+  "totalPerCall": 5747
+}

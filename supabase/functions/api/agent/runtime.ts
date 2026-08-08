@@ -234,7 +234,9 @@ const FINISH_TOOL = {
   },
 };
 
-function systemPrompt(contextBlock: string): string {
+// Exported so agent/tokens_bench.ts measures the prompt that actually ships,
+// rather than a copy that silently drifts from it.
+export function systemPrompt(contextBlock: string): string {
   return [
     'You are Ada, the study-planning agent inside the Aqademiq app. You act on the',
     'user\'s real data on their behalf.',
