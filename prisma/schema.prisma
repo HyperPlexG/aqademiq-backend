@@ -211,6 +211,7 @@ model Course {
   tasks              Task[]
   focus_sessions     FocusSession[]
   ada_sessions       AdaSession[]
+  ada_memories       AdaMemory[]
 
   @@map("courses")
 }
@@ -540,6 +541,34 @@ model AdaAgentRun {
   @@index([status])
   @@index([created_at])
   @@map("ada_agent_runs")
+}
+
+/// Durable, cross-conversation memory. Stable facts about how the user works —
+/// not a transcript. Retrieval is by kind/subject/recency, deliberately not
+/// embeddings (that would cost a provider call per turn on a free-tier pool).
+model AdaMemory {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String    @db.Uuid // FK -> auth.users.id
+  /// preference | constraint | pattern | goal | fact
+  kind         String    @db.VarChar(20)
+  content      String
+  /// Set when the memory applies to one subject only; null = applies broadly.
+  subject_id   String?   @db.Uuid
+  subject      Course?   @relation(fields: [subject_id], references: [id], onDelete: Cascade)
+  /// user = stated outright, ada = inferred from behaviour (weaker).
+  source       String    @default("ada") @db.VarChar(10)
+  confidence   Int       @default(3) @db.SmallInt
+  use_count    Int       @default(0)
+  last_used_at DateTime? @db.Timestamptz
+  /// Retrieval filters expired rows rather than deleting them.
+  expires_at   DateTime? @db.Timestamptz
+  created_at   DateTime  @default(now()) @db.Timestamptz
+  updated_at   DateTime  @default(now()) @db.Timestamptz
+
+  @@index([user_id])
+  @@index([user_id, kind])
+  @@index([subject_id])
+  @@map("ada_memories")
 }
 
 model AdaPendingAction {

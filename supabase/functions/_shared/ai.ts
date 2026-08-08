@@ -14,6 +14,14 @@ import { env } from './env.ts';
 import { cacheGet, cacheSet } from './redis.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
+
+/** A file sent inline with the final user turn. Gemini-only (see AiParams.files). */
+export interface AiFile {
+  mime_type: string;
+  /** base64, no data: prefix. */
+  data: string;
+}
+
 export interface AiParams {
   system: string;
   // deno-lint-ignore no-explicit-any
@@ -21,6 +29,29 @@ export interface AiParams {
   tools?: ToolDef[];
   toolChoice?: { type: 'tool'; name: string };
   maxTokens?: number;
+  /**
+   * Inline files appended to the last user turn.
+   *
+   * Gemini accepts PDFs, images, audio and video natively as inlineData parts;
+   * Cerebras' OpenAI-compatible endpoint has no equivalent. Setting this
+   * therefore restricts the rotation to Gemini keys rather than silently
+   * dropping the attachment on a Cerebras failover — a caller that asked about a
+   * file must never get an answer produced without it.
+   */
+  files?: AiFile[];
+}
+
+/**
+ * base64 for binary data, chunked because `String.fromCharCode(...bytes)` on a
+ * multi-megabyte array overflows the argument limit.
+ */
+export function toBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 }
 /** What one call cost. Free-tier quota is spent per call, so this is recorded
  *  even when the run that made the call is later abandoned. */
@@ -127,8 +158,18 @@ function geminiFunctionDeclaration(t: ToolDef) {
 
 /** One chat turn across the rotating pool. Throws if no key succeeds. */
 export async function rotatingChat(params: AiParams): Promise<AiResult> {
-  const candidates = orderedCandidates();
-  if (candidates.length === 0) throw new Error('No AI keys configured (GEMINI_API_KEYS / CEREBRAS_API_KEYS)');
+  // A call carrying files can only be served by Gemini, so narrow the pool
+  // rather than letting a Cerebras failover answer without seeing the file.
+  const candidates = params.files?.length
+    ? orderedCandidates().filter((k) => k.provider === 'gemini')
+    : orderedCandidates();
+  if (candidates.length === 0) {
+    throw new Error(
+      params.files?.length
+        ? 'Reading files needs a Gemini key (GEMINI_API_KEYS); Cerebras cannot accept attachments.'
+        : 'No AI keys configured (GEMINI_API_KEYS / CEREBRAS_API_KEYS)',
+    );
+  }
 
   const fresh: KeyEntry[] = [];
   for (const c of candidates) { if (!(await isExhausted(c.id))) fresh.push(c); }
@@ -279,6 +320,19 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
       contents.push({ role: 'user', parts });
     }
   }
+  // Attachments ride on the final user turn, which is the one the question was
+  // asked in. Appending rather than replacing keeps the prompt text alongside
+  // the file, so the model knows what it is being asked to do with it.
+  if (p.files?.length) {
+    const last = contents[contents.length - 1];
+    const fileParts = p.files.map((f) => ({ inlineData: { mimeType: f.mime_type, data: f.data } }));
+    if (last && last.role === 'user') {
+      last.parts.push(...fileParts);
+    } else {
+      contents.push({ role: 'user', parts: fileParts });
+    }
+  }
+
   // deno-lint-ignore no-explicit-any
   const body: any = {
     systemInstruction: { parts: [{ text: p.system }] },

@@ -58,6 +58,35 @@ export const storage = {
     return `${base()}/storage/v1${json.url}`;
   },
 
+  /**
+   * Read an object's bytes server-side, for Ada's file understanding.
+   *
+   * Distinct from presignDownload, which hands a URL to the client: here the
+   * function itself needs the content to pass to the model. Callers MUST have
+   * already established that `key` belongs to the requesting user — this does no
+   * ownership check of its own and uses the service-role key, so a key built
+   * from unvalidated input would read across tenants.
+   *
+   * `maxBytes` is enforced after the fetch: Storage has no ranged HEAD here, and
+   * the point is to refuse to base64 a 200MB video into a prompt, not to save
+   * the download.
+   */
+  async download(key: string, maxBytes: number): Promise<{ bytes: Uint8Array; mimeType: string }> {
+    const k = serviceKey();
+    const res = await fetch(`${base()}/storage/v1/object/${BUCKET}/${key}`, {
+      headers: { authorization: `Bearer ${k}`, apikey: k },
+    });
+    if (!res.ok) throw new Error(`storage download failed (${res.status}): ${await res.text()}`);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength > maxBytes) {
+      throw new Error(`file is ${Math.round(buf.byteLength / 1024)}KB, over the ${Math.round(maxBytes / 1024)}KB limit`);
+    }
+    return {
+      bytes: buf,
+      mimeType: res.headers.get('content-type') ?? 'application/octet-stream',
+    };
+  },
+
   /** Owner-only signed download; foreign ids are 404'd in the service layer. */
   async presignDownload(key: string): Promise<string> {
     const res = await fetch(`${base()}/storage/v1/object/sign/${BUCKET}/${key}`, {

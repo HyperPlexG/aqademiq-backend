@@ -11,8 +11,41 @@
 // time (so an approval granted minutes ago can't act on state that has since
 // changed, e.g. a subject the user deleted in between).
 
-export type ToolKind = 'read' | 'write';
+/**
+ * read   — runs immediately, result handed back to the model.
+ * write  — proposes only; executes after the user approves.
+ * memory — runs immediately like a read, but mutates Ada's own notes about the
+ *          user rather than the user's data. Kept distinct from `write` so the
+ *          confirmation gate keeps its meaning: it guards tasks, subjects and
+ *          settings, and would be devalued if it also asked permission to
+ *          remember a preference. Kept distinct from `read` so these are never
+ *          run concurrently and are logged as the mutations they are.
+ */
+export type ToolKind = 'read' | 'write' | 'memory';
 export type Operation = 'create' | 'update' | 'delete';
+
+/**
+ * Per-run context handed to a tool's `run`.
+ *
+ * `reserveSpend`/`recordSpend` exist because one tool (read_file) makes a provider
+ * call of its own. Without them that call would be invisible to the run's budget:
+ * quota would be consumed and neither counted against the call allowance nor
+ * recorded in the run's token totals.
+ */
+export interface ToolContext {
+  sessionId: string;
+  /** The user's today, YYYY-MM-DD in their timezone. */
+  today: string;
+  timezone: string;
+  /**
+   * Claim a provider-call slot, or false if the run cannot afford one. Claims
+   * rather than just checks, because read tools in a turn run concurrently and a
+   * plain predicate would let several of them each spend the last slot.
+   */
+  reserveSpend(): boolean;
+  /** Attach token cost to a slot already claimed. Does not re-count the call. */
+  recordSpend(usage: { prompt_tokens: number; completion_tokens: number; model: string }): void;
+}
 
 /** One line of the diff rendered on the confirmation card. */
 export interface PreviewField {
@@ -54,9 +87,9 @@ export interface AgentTool {
   /** Validate + normalise raw model input. Throws ToolInputError on bad input. */
   // deno-lint-ignore no-explicit-any
   parse(input: Record<string, unknown>): Promise<any>;
-  /** `kind: 'read'` only — execute and return data for the agent. */
+  /** `kind: 'read'` and `'memory'` — execute now and return data for the agent. */
   // deno-lint-ignore no-explicit-any
-  run?(args: any): Promise<unknown>;
+  run?(args: any, ctx: ToolContext): Promise<unknown>;
   /** `kind: 'write'` only — describe the change for the user. */
   // deno-lint-ignore no-explicit-any
   preview?(args: any): Promise<ActionPreview>;

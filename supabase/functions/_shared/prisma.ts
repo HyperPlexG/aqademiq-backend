@@ -23,7 +23,7 @@ const TENANT_MODELS = new Set([
   'PrismAudioProfile', 'FocusSession', 'MoodCheckin', 'AnalyticsSnapshot',
   'DailyActivitySnapshot', 'AdaSession', 'CalendarEvent', 'ReferralCode',
   'ShareEvent', 'AppRating', 'AppFeedback',
-  'AdaAgentRun', 'AdaPendingAction',
+  'AdaAgentRun', 'AdaPendingAction', 'AdaMemory',
 ]);
 
 let base: PrismaClient | undefined;

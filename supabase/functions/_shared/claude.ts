@@ -6,7 +6,7 @@
 // All return the Anthropic Messages shape so Ada's tool loop is provider-agnostic.
 import { env } from './env.ts';
 import { isVertexConfigured, vertexMessages, vertexMessagesStream } from './vertex.ts';
-import { type AiUsage, rotatingChat, rotationConfigured } from './ai.ts';
+import { type AiFile, type AiUsage, rotatingChat, rotationConfigured } from './ai.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
 export interface CreateMessageParams {
@@ -17,6 +17,8 @@ export interface CreateMessageParams {
   toolChoice?: { type: 'tool'; name: string };
   model?: string;
   maxTokens?: number;
+  /** Inline files for the final user turn. Requires the `rotating` provider. */
+  files?: AiFile[];
 }
 export interface BreakdownStep { title: string; duration_seconds: number; }
 
@@ -123,7 +125,14 @@ export const claude = {
         tools: params.tools,
         toolChoice: params.toolChoice,
         maxTokens: params.maxTokens ?? 2048,
+        files: params.files,
       });
+    }
+    // Anthropic and Vertex both take documents/images as content blocks rather
+    // than a sibling field, which nothing needs yet — fail loudly instead of
+    // quietly answering a question about a file without having read it.
+    if (params.files?.length) {
+      throw new Error(`Reading files is only implemented for the rotating (Gemini) provider, not "${provider}".`);
     }
     return call(params.model ?? opus(), {
       max_tokens: params.maxTokens ?? 2048,

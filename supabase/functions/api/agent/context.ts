@@ -10,6 +10,10 @@ import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { subjectsService } from '../services/subjects.service.ts';
 import { tagsService } from '../services/tags.service.ts';
+import { type MemoryRow, recallMemories, renderMemories, touchMemories } from './memory.ts';
+
+/** How many earlier turns of this conversation get a one-line recap. */
+const DIGEST_RUNS = 6;
 
 export interface AgentContext {
   today: string;
@@ -23,6 +27,11 @@ export interface AgentContext {
   study_tags: Array<{ id: string; label: string }>;
   open_task_count: number;
   awaiting_confirmation_count: number;
+  /** Durable cross-conversation memory (agent/memory.ts). */
+  memories: MemoryRow[];
+  /** What earlier turns of THIS conversation actually did. */
+  digest: string[];
+  readable_file_count: number;
 }
 
 /** YYYY-MM-DD for `d` as seen in `tz`. 'en-CA' formats as ISO by definition. */
@@ -69,10 +78,63 @@ export async function userTimezone(): Promise<string> {
   return profile?.timezone || 'UTC';
 }
 
-export async function buildContext(): Promise<AgentContext> {
+/**
+ * One line per earlier turn of this conversation: what was asked, and what
+ * actually got applied.
+ *
+ * This is the cheap half of continuity. The 16-message replay in runtime.ts
+ * carries the recent wording; this carries the OUTCOMES, which is what matters
+ * once a conversation is long enough that its opening has scrolled out of the
+ * window. Built entirely from rows already written — no summarisation call —
+ * because an LLM summary per turn would cost the free-tier quota that the run
+ * budget exists to protect.
+ */
+async function buildDigest(sessionId: string, excludeRunId?: string): Promise<string[]> {
+  try {
+    const runs = await tenantDb().adaAgentRun.findMany({
+      where: { ada_session_id: sessionId, ...(excludeRunId ? { id: { not: excludeRunId } } : {}) },
+      orderBy: { created_at: 'desc' },
+      take: DIGEST_RUNS,
+      select: { id: true, goal: true },
+    });
+    if (runs.length === 0) return [];
+
+    const applied = await tenantDb().adaPendingAction.findMany({
+      // deno-lint-ignore no-explicit-any
+      where: { run_id: { in: (runs as any[]).map((r) => r.id) }, status: 'executed' },
+      select: { run_id: true, title: true },
+    });
+
+    const byRun = new Map<string, string[]>();
+    // deno-lint-ignore no-explicit-any
+    for (const a of applied as any[]) {
+      const list = byRun.get(a.run_id) ?? [];
+      list.push(a.title);
+      byRun.set(a.run_id, list);
+    }
+
+    // deno-lint-ignore no-explicit-any
+    return (runs as any[]).reverse().map((r) => {
+      const did = byRun.get(r.id) ?? [];
+      const ask = String(r.goal).replace(/\s+/g, ' ').slice(0, 140);
+      return did.length ? `asked "${ask}" → applied: ${did.join('; ')}` : `asked "${ask}" → nothing applied`;
+    });
+  } catch {
+    // Continuity is a nicety; never fail a run over it.
+    return [];
+  }
+}
+
+export interface BuildContextOptions {
+  sessionId?: string;
+  /** The run being built for, so it does not recap its own goal back to itself. */
+  excludeRunId?: string;
+}
+
+export async function buildContext(opts: BuildContextOptions = {}): Promise<AgentContext> {
   const now = new Date();
 
-  const [profile, subjectsRes, tagsRes, openTasks, awaiting] = await Promise.all([
+  const [profile, subjectsRes, tagsRes, openTasks, awaiting, memories, digest, materialCount] = await Promise.all([
     prismaBase().profile.findUnique({
       where: { id: RequestContext.userId },
       select: { full_name: true, display_name: true, timezone: true, is_guest: true },
@@ -81,7 +143,14 @@ export async function buildContext(): Promise<AgentContext> {
     tagsService.list().catch(() => ({ tags: [] })),
     tenantDb().task.count({ where: { status: 'pending' } }).catch(() => 0),
     tenantDb().adaPendingAction.count({ where: { status: 'pending' } }).catch(() => 0),
+    recallMemories().catch(() => [] as MemoryRow[]),
+    opts.sessionId ? buildDigest(opts.sessionId, opts.excludeRunId) : Promise.resolve([]),
+    tenantDb().subjectMaterial.count().catch(() => 0),
   ]);
+
+  // Fire-and-forget: bumps retrieval counters so a later pass can retire
+  // memories nothing ever reads. Never awaited — it must not add turn latency.
+  void touchMemories(memories.map((m) => m.id));
 
   const tz = profile?.timezone || 'UTC';
 
@@ -109,6 +178,9 @@ export async function buildContext(): Promise<AgentContext> {
     study_tags: (tagsRes.tags as any[]).map((t) => ({ id: t.id, label: t.label })),
     open_task_count: openTasks,
     awaiting_confirmation_count: awaiting,
+    memories,
+    digest,
+    readable_file_count: materialCount,
   };
 }
 
@@ -143,6 +215,27 @@ export function renderContext(ctx: AgentContext): string {
         'confirmation. Do not re-propose the same change.',
     );
   }
+
+  if (ctx.readable_file_count > 0) {
+    lines.push(
+      '',
+      `The user has ${ctx.readable_file_count} file(s) attached to their subjects. Files sent in ` +
+        'this conversation are readable too — call list_files to see everything, then read_file to open one.',
+    );
+  }
+
+  // Outcomes of earlier turns, which survive after the raw messages that
+  // produced them have scrolled out of the 16-message replay window.
+  if (ctx.digest.length) {
+    lines.push('', 'Earlier in this conversation:');
+    for (const d of ctx.digest) lines.push(`- ${d}`);
+  }
+
+  // Memories carry their own ids inline (see renderMemories) so `forget` can name
+  // one when the user contradicts it, without listing every memory twice.
+  const subjectNames = new Map(ctx.subjects.map((s) => [s.id, s.name]));
+  const memoryBlock = renderMemories(ctx.memories, subjectNames);
+  if (memoryBlock) lines.push('', memoryBlock);
 
   return lines.join('\n');
 }
