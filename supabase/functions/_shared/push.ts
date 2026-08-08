@@ -69,7 +69,19 @@ async function sendFcm(token: string, title: string, body: string, data?: Record
             // drop the push. priority 10 = deliver immediately (5 would let iOS
             // batch it for power-saving, which showed up as ~20-minute delays).
             headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
-            payload: { aps: { alert: { title, body }, sound: 'default', badge: 1 } },
+            // interruption-level: time-sensitive makes iOS deliver immediately
+            // and break through Focus / Scheduled Summary batching (which was
+            // holding pushes for ~20 min on idle devices). Requires the
+            // Time-Sensitive Notifications entitlement in the app; without it iOS
+            // silently falls back to the normal level, so this is safe either way.
+            payload: {
+              aps: {
+                alert: { title, body },
+                sound: 'default',
+                badge: 1,
+                'interruption-level': 'time-sensitive',
+              },
+            },
           },
           android: {
             priority: 'high',
