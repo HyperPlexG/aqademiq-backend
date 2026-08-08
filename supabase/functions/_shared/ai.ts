@@ -1,7 +1,8 @@
 // Rotating free-tier AI layer — round-robins across a pool of Gemini + Cerebras
 // API keys, trying Gemini before Cerebras and failing over to the next key when
-// one hits its quota (429, or Cerebras' 402 "payment required"),
-// and marking that key exhausted until UTC midnight. Both providers are adapted
+// one hits its quota (429, or Cerebras' 402 "payment required"), benching that
+// key for as long as the provider says it needs — seconds for an ordinary
+// per-minute rate limit, until the reset for a real daily quota. Both providers are adapted
 // to the Anthropic Messages shape ({ content: [text|tool_use], stop_reason }) so
 // Ada's tool-use agent loop and task breakdown work unchanged.
 //
@@ -97,21 +98,53 @@ export function rotationConfigured(): boolean {
 const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-flash-latest';
 const cerebrasModel = () => env('CEREBRAS_MODEL') ?? 'gpt-oss-120b';
 
-// ---- exhaustion tracking (per-key, resets at UTC midnight) ----
-const memExhausted = new Set<string>();
-function utcDay(): string { return new Date().toISOString().slice(0, 10); }
+// ---- cooldown tracking (per key) ----
+//
+// Benching a key is how the pool routes around a quota, but for how long is the
+// whole question. These providers return 429 for two very different things:
+//
+//   a per-MINUTE rate limit  — the key is fine and usable again in seconds
+//   a per-DAY quota          — the key really is done until it resets
+//
+// Treating both as "exhausted until UTC midnight", as this used to, means a
+// single burst of traffic permanently sidelines a healthy key. Do that five
+// times and the whole pool is empty while every key still works — which is
+// exactly what happened: five Gemini keys benched, every run failing with
+// "All AI keys failed", and intermittent recovery only because the code falls
+// back to trying benched keys when nothing is left.
+//
+// So the cooldown is now derived from what the provider actually said.
+
+/** Fallback when a 429 carries no usable retry hint. */
+const DEFAULT_RATE_LIMIT_COOLDOWN_S = 60;
+/** Nothing is benched longer than this except a genuine daily quota. */
+const MAX_RATE_LIMIT_COOLDOWN_S = 300;
+
+/** id → epoch ms when the bench expires. Mirrors the Redis TTL for isolates
+ *  that have no Upstash configured, or when a lookup fails. */
+const memCooldown = new Map<string, number>();
+
 function secondsToUtcMidnight(): number {
   const now = new Date();
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
   return Math.max(60, Math.ceil((next.getTime() - now.getTime()) / 1000));
 }
+
 async function isExhausted(id: string): Promise<boolean> {
-  if (memExhausted.has(`${id}:${utcDay()}`)) return true;
-  return (await cacheGet(`ai:ex:${id}:${utcDay()}`)) !== null;
+  const until = memCooldown.get(id);
+  if (until !== undefined) {
+    // Expiry is checked rather than assumed: the old Set had no notion of time,
+    // so an entry added for a 30-second limit stayed for the isolate's life.
+    if (Date.now() < until) return true;
+    memCooldown.delete(id);
+  }
+  return (await cacheGet(`ai:cool:${id}`)) !== null;
 }
-async function markExhausted(id: string): Promise<void> {
-  memExhausted.add(`${id}:${utcDay()}`);
-  await cacheSet(`ai:ex:${id}:${utcDay()}`, '1', secondsToUtcMidnight());
+
+async function markExhausted(id: string, seconds: number): Promise<void> {
+  const ttl = Math.max(5, Math.ceil(seconds));
+  memCooldown.set(id, Date.now() + ttl * 1000);
+  await cacheSet(`ai:cool:${id}`, '1', ttl);
 }
 
 // Rotate by a random start so load spreads across stateless invocations
@@ -139,7 +172,33 @@ function orderedCandidates(): KeyEntry[] {
   return out;
 }
 
-class QuotaError extends Error {}
+/**
+ * A key is temporarily unusable. `cooldownSeconds` says for how long, taken from
+ * what the provider reported rather than assumed — see the cooldown block above.
+ */
+class QuotaError extends Error {
+  constructor(message: string, readonly cooldownSeconds: number) {
+    super(message);
+  }
+}
+
+/**
+ * How long to bench a Gemini key after a 429.
+ *
+ * Google returns RetryInfo with an exact delay for rate limits, and names the
+ * violated quota in QuotaFailure. Per-minute limits are the common case for
+ * bursty traffic and must not be treated as the day being over.
+ */
+export function geminiCooldownSeconds(body: string): number {
+  const retry = /"retryDelay"\s*:\s*"(\d+)(?:\.\d+)?s"/.exec(body);
+  if (retry) {
+    // +1s of slack: retrying on the exact boundary tends to 429 again.
+    return Math.min(MAX_RATE_LIMIT_COOLDOWN_S, Math.max(5, Number(retry[1]) + 1));
+  }
+  // Only a genuinely daily quota justifies benching until it resets.
+  if (/PerDay|per day|daily limit/i.test(body)) return secondsToUtcMidnight();
+  return DEFAULT_RATE_LIMIT_COOLDOWN_S;
+}
 
 /**
  * Gemini rejects an OBJECT-typed `parameters` whose `properties` map is empty
@@ -194,7 +253,13 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
       return res;
     } catch (e) {
       errors.push(`${c.id} → ${e instanceof Error ? e.message : String(e)}`);
-      if (e instanceof QuotaError) await markExhausted(c.id);
+      if (e instanceof QuotaError) {
+        await markExhausted(c.id, e.cooldownSeconds);
+        // Logged so a pool that keeps emptying can be diagnosed from the length
+        // of the cooldowns, which distinguishes "bursty traffic" from "the free
+        // tier is genuinely used up for today".
+        console.warn(`[ai] benched ${c.id} for ${Math.ceil(e.cooldownSeconds)}s`);
+      }
       // Any failure (quota, network, 5xx) falls through to the next key.
     }
   }
@@ -237,7 +302,11 @@ async function cerebrasChat(key: string, model: string, p: AiParams): Promise<Ai
   // is treated as a QuotaError so the key gets benched instead of being retried
   // (and burning a round-trip) on every single request.
   if (res.status === 429 || res.status === 402) {
-    throw new QuotaError(`cerebras ${res.status}: ${await res.text()}`);
+    const body = await res.text();
+    // 402 is an account out of credit — that does not fix itself in a minute, so
+    // it is benched until the day rolls over. A 429 is an ordinary rate limit.
+    const cooldown = res.status === 402 ? secondsToUtcMidnight() : DEFAULT_RATE_LIMIT_COOLDOWN_S;
+    throw new QuotaError(`cerebras ${res.status}: ${body.slice(0, 200)}`, cooldown);
   }
   if (!res.ok) throw new Error(`cerebras ${res.status}: ${await res.text()}`);
   const json = await res.json();
@@ -351,8 +420,17 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify(body),
   });
-  if (res.status === 429) throw new QuotaError('gemini 429');
-  if (res.status === 403) { const t = await res.text(); if (/quota|RESOURCE_EXHAUSTED/i.test(t)) throw new QuotaError('gemini quota'); throw new Error(`gemini 403: ${t}`); }
+  if (res.status === 429) {
+    // The body is read rather than discarded: it is the only thing that says
+    // whether this key is unusable for 30 seconds or for the rest of the day.
+    const body = await res.text();
+    throw new QuotaError(`gemini 429: ${body.slice(0, 300)}`, geminiCooldownSeconds(body));
+  }
+  if (res.status === 403) {
+    const t = await res.text();
+    if (/quota|RESOURCE_EXHAUSTED/i.test(t)) throw new QuotaError('gemini quota', geminiCooldownSeconds(t));
+    throw new Error(`gemini 403: ${t}`);
+  }
   if (!res.ok) throw new Error(`gemini ${res.status}: ${await res.text()}`);
   const json = await res.json();
   const parts = json.candidates?.[0]?.content?.parts ?? [];
