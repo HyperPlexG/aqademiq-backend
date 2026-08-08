@@ -23,7 +23,7 @@ import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { claude, usageOf } from '../../_shared/claude.ts';
 import { env } from '../../_shared/env.ts';
-import { buildContext, renderContext } from './context.ts';
+import { buildContext, clockLine, renderContext } from './context.ts';
 import { getTool, toolDefs } from './tools.ts';
 import { createPendingAction, listForRun } from './pending.ts';
 import { type AgentOutcome, type AgentUsage, type PlanStep, type ToolContext, ToolInputError } from './types.ts';
@@ -602,7 +602,12 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
     const system = systemPrompt(renderContext(ctx));
     const history = await recentHistory(input.sessionId, input.messageId);
     // deno-lint-ignore no-explicit-any
-    const messages: any[] = [...history, { role: 'user', content: input.goal }];
+    // The clock rides the user turn, not the system prompt, so the prefix above
+    // it stays cacheable between requests (see clockLine).
+    const messages: any[] = [
+      ...history,
+      { role: 'user', content: `${input.goal}\n\n${clockLine(ctx)}` },
+    ];
 
     await loop(state, system, messages, MAX_TURNS);
 
@@ -754,6 +759,8 @@ export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
           'If something was DECLINED, respect that and adapt — do not re-propose it.',
           'If everything is done, verify with a read tool where it matters, then call',
           'finish with a short, warm confirmation of what is now true.',
+          '',
+          clockLine(ctx),
         ].join('\n'),
       },
     ];

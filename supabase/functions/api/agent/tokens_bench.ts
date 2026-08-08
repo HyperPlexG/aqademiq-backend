@@ -183,13 +183,24 @@ export function measure(ctx: AgentContext = FIXTURE): Measurement {
   ];
 
   // --- cache split ---
-  // Everything up to the first volatile byte is reusable across requests. Today
-  // that boundary is the clock on line 2 of the context block, which moves every
-  // minute — so only the static rules survive it.
-  const clockLine = contextBlock.split('\n').find((l) => l.includes(ctx.now_local)) ?? '';
-  const clockAt = clockLine ? full.indexOf(clockLine) : full.length;
-  const stableTokens = estimateTokens(full.slice(0, clockAt)) + tools.tokens;
-  const volatileTokens = estimateTokens(full.slice(clockAt));
+  // Caching is a strict prefix match, so the reusable part ends at the FIRST
+  // byte that differs between two requests — not the last. Several things in the
+  // context block vary; the boundary is whichever appears earliest.
+  //
+  // Ranked by how fast each moves: the clock changed every minute (until it was
+  // moved out to the user turn), the digest changes per run, and the open-task
+  // count changes whenever a task is ticked off.
+  const volatileMarkers = [
+    ctx.now_local, // per-minute — should no longer be present
+    'Earlier in this conversation:', // per-run
+    `Open (pending) tasks: ${ctx.open_task_count}`, // per-task-completion
+  ];
+  const boundary = volatileMarkers
+    .map((m) => full.indexOf(m))
+    .filter((i) => i >= 0)
+    .reduce((min, i) => Math.min(min, i), full.length);
+  const stableTokens = estimateTokens(full.slice(0, boundary)) + tools.tokens;
+  const volatileTokens = estimateTokens(full.slice(boundary));
   const cache = {
     stableTokens,
     volatileTokens,

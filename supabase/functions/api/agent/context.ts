@@ -192,15 +192,49 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Agen
 }
 
 /** Renders the context block that gets prepended to the agent's system prompt. */
+/**
+ * The wall clock — rendered into the last *user message*, never the system prompt.
+ *
+ * Prompt caching is a strict prefix match: one changed byte invalidates every
+ * cached token after it. A minute-resolution clock at the head of the context
+ * block therefore invalidated the context, the tools and the whole conversation
+ * on every single request — 1,440 times a day, for a value almost no turn reads.
+ * It is the most common cache-breaking mistake there is, and Ada had it.
+ *
+ * Kept out here, the tools + rules + context prefix stays byte-identical between
+ * requests and only this one line is re-read. Precision is not sacrificed: the
+ * agent still sees the exact minute, just after the cacheable boundary.
+ *
+ * The *date* stays in the system prompt on purpose — it changes once a day, and
+ * every relative date the agent parses ("next Tuesday") is grounded on it.
+ */
+export function clockLine(ctx: AgentContext): string {
+  return `[Local time now: ${ctx.now_local} ${ctx.timezone}.]`;
+}
+
+/**
+ * The grounded world-state block.
+ *
+ * **Ordered by how often each part changes, slowest first.** This is not
+ * cosmetic. Prompt caching matches on a prefix, so the reusable region ends at
+ * the first byte that differs between two requests — putting a counter that
+ * moves whenever a task is ticked ahead of the subject list makes the subject
+ * list uncacheable too, for nothing. Stable identity and ids go first; the
+ * counters and the per-run digest go last, behind the VOLATILE marker.
+ *
+ * Adding something here? Put it on the correct side of that marker.
+ * `npm run ada:tokens` reports where the boundary actually lands.
+ */
 export function renderContext(ctx: AgentContext): string {
+  // ---- stable: identity and ids (changes daily at most) ----
   const lines = [
     '## Current state (authoritative — never guess these)',
-    `Today is ${ctx.weekday}, ${ctx.today}. Local time ${ctx.now_local} (${ctx.timezone}).`,
+    // The clock deliberately does NOT live here — see clockLine() above.
+    `Today is ${ctx.weekday}, ${ctx.today} (${ctx.timezone}).`,
     ctx.user_name ? `The user's name is ${ctx.user_name}.` : 'The user has not set a name.',
     ctx.active_semester
       ? `Active semester: "${ctx.active_semester.name}" (id ${ctx.active_semester.id}).`
       : 'No active semester.',
-    `Open (pending) tasks: ${ctx.open_task_count}.`,
   ];
 
   if (ctx.subjects.length) {
@@ -215,29 +249,6 @@ export function renderContext(ctx: AgentContext): string {
     for (const t of ctx.study_tags) lines.push(`- ${t.label} → ${t.id}`);
   }
 
-  if (ctx.awaiting_confirmation_count > 0) {
-    lines.push(
-      '',
-      `NOTE: ${ctx.awaiting_confirmation_count} earlier proposal(s) are still awaiting the user's ` +
-        'confirmation. Do not re-propose the same change.',
-    );
-  }
-
-  if (ctx.readable_file_count > 0) {
-    lines.push(
-      '',
-      `The user has ${ctx.readable_file_count} file(s) attached to their subjects. Files sent in ` +
-        'this conversation are readable too — call list_files to see everything, then read_file to open one.',
-    );
-  }
-
-  // Outcomes of earlier turns, which survive after the raw messages that
-  // produced them have scrolled out of the 16-message replay window.
-  if (ctx.digest.length) {
-    lines.push('', 'Earlier in this conversation:');
-    for (const d of ctx.digest) lines.push(`- ${d}`);
-  }
-
   // Memories carry their own ids inline (see renderMemories) so `forget` can name
   // one when the user contradicts it, without listing every memory twice.
   const subjectNames = new Map(ctx.subjects.map((s) => [s.id, s.name]));
@@ -249,6 +260,31 @@ export function renderContext(ctx: AgentContext): string {
   // suggests when the two disagree.
   const insightBlock = renderInsights(ctx.insights);
   if (insightBlock) lines.push('', insightBlock);
+
+  // ---- VOLATILE: everything below moves between requests ----
+  // Kept last so nothing above it is invalidated when one of these ticks.
+  lines.push('', `Open (pending) tasks: ${ctx.open_task_count}.`);
+
+  if (ctx.awaiting_confirmation_count > 0) {
+    lines.push(
+      `NOTE: ${ctx.awaiting_confirmation_count} earlier proposal(s) are still awaiting the user's ` +
+        'confirmation. Do not re-propose the same change.',
+    );
+  }
+
+  if (ctx.readable_file_count > 0) {
+    lines.push(
+      `The user has ${ctx.readable_file_count} file(s) attached to their subjects. Files sent in ` +
+        'this conversation are readable too — call list_files to see everything, then read_file to open one.',
+    );
+  }
+
+  // Outcomes of earlier turns, which survive after the raw messages that
+  // produced them have scrolled out of the 16-message replay window.
+  if (ctx.digest.length) {
+    lines.push('', 'Earlier in this conversation:');
+    for (const d of ctx.digest) lines.push(`- ${d}`);
+  }
 
   return lines.join('\n');
 }
