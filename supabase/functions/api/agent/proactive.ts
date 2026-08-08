@@ -59,6 +59,60 @@ export function nudgesEnabled(): boolean {
   return env('ADA_NUDGES_ENABLED') === '1';
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Optional allowlist of user ids that may receive check-ins.
+ *
+ * ADA_NUDGES_ENABLED is all-or-nothing, which is the wrong shape for the first
+ * run of anything that messages people unprompted: turning it on means every
+ * eligible user hears from Ada on the very next minute tick, before anyone has
+ * read a single generated message. This narrows that to a named few, so the
+ * feature can be tried on your own account first and widened deliberately.
+ *
+ * Purely a narrowing filter — every other gate (check-in window, having something
+ * worth saying, the daily claim, the caps) still applies to the listed users.
+ * Unset means no restriction, which is the eventual steady state.
+ *
+ * Malformed entries are dropped rather than passed to the query: a typo'd id
+ * should match nobody, not become a SQL fragment.
+ *
+ * `restricted` is tracked separately from the id list precisely so a mistyped
+ * value cannot fail OPEN. Collapsing "set, but nothing in it parsed" into the
+ * same empty list as "not set at all" would turn one typo into a broadcast to
+ * every eligible user — the exact outcome this exists to prevent.
+ */
+interface Allowlist {
+  /** True when ADA_NUDGE_ONLY_USERS was set to anything non-empty. */
+  restricted: boolean;
+  ids: string[];
+}
+
+function nudgeAllowlist(): Allowlist {
+  const raw = (env('ADA_NUDGE_ONLY_USERS') ?? '').trim();
+  if (!raw) return { restricted: false, ids: [] };
+
+  const ids = raw.split(',').map((s) => s.trim()).filter((s) => UUID.test(s));
+  if (ids.length === 0) {
+    console.warn(
+      '[ada-nudge] ADA_NUDGE_ONLY_USERS is set but contains no valid user ids; ' +
+        'nudging nobody. Fix or unset it.',
+    );
+  }
+  return { restricted: true, ids };
+}
+
+/**
+ * The filter value for the query.
+ *
+ * '' means no restriction. A restricted-but-empty list must NOT become '', so it
+ * is sent as a token that cannot equal any uuid and therefore matches nobody.
+ */
+function allowlistParam(a: Allowlist): string {
+  if (!a.restricted) return '';
+  return a.ids.length > 0 ? a.ids.join(',') : 'none';
+}
+
 type NudgeKind = 'morning' | 'evening';
 
 interface Candidate {
@@ -90,7 +144,7 @@ interface Candidate {
  * timezones — an Asia/Kolkata user at local 20:56 with a 20:00 review correctly
  * reads 57 minutes elapsed.
  */
-async function findCandidates(limit: number): Promise<Candidate[]> {
+async function findCandidates(limit: number, allowlist: Allowlist): Promise<Candidate[]> {
   return await prismaBase().$queryRawUnsafe<Candidate[]>(
     `with base as (
        select distinct on (p.id)
@@ -105,6 +159,9 @@ async function findCandidates(limit: number): Promise<Candidate[]> {
        join device_profiles d
          on d.user_id = p.id and d.push_token is not null and d.push_token <> ''
        where np.push_enabled = true
+         -- Empty string = no allowlist = everyone. Passed as text rather than a
+         -- uuid[] so the shape does not depend on how the driver adapts arrays.
+         and ($4 = '' or p.id::text = any(string_to_array($4, ',')))
        order by p.id, d.id desc
      ),
      elapsed as (
@@ -151,6 +208,7 @@ async function findCandidates(limit: number): Promise<Candidate[]> {
     WINDOW_MINUTES,
     LOOKAHEAD_DAYS,
     limit,
+    allowlistParam(allowlist),
   );
 }
 
@@ -245,9 +303,18 @@ export async function runNudgeSweep(): Promise<NudgeResult> {
   const result: NudgeResult = { scanned: 0, sent: 0, failed: 0, skipped: 0 };
   if (!nudgesEnabled() || !claude.isConfigured()) return result;
 
-  const candidates = await findCandidates(MAX_PER_SWEEP);
+  const allowlist = nudgeAllowlist();
+  const candidates = await findCandidates(MAX_PER_SWEEP, allowlist);
   result.scanned = candidates.length;
-  if (candidates.length === 0) return result;
+  if (candidates.length === 0) {
+    // Logged only when there was nothing to do AND a restriction is in force, so
+    // "why did nobody get one?" has an answer in the logs rather than looking
+    // like the feature is broken.
+    if (allowlist.restricted) {
+      console.log(`[ada-nudge] allowlist active (${allowlist.ids.length} user(s)); no candidates this sweep`);
+    }
+    return result;
+  }
 
   // Checked once per sweep rather than per user: it is a global brake, and the
   // per-sweep cap already bounds how far past it a single pass can go.

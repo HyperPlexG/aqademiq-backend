@@ -139,6 +139,7 @@ Set in **Supabase → Edge Functions → Secrets**:
 | Secret | Default | What it does |
 |---|---|---|
 | `ADA_NUDGES_ENABLED` | *(off)* | `1` turns proactive check-ins on. Nothing runs without it. |
+| `ADA_NUDGE_ONLY_USERS` | *(unset)* | Comma-separated user ids. When set, **only** those users get check-ins — everyone else is skipped. Use it to try the feature on one account before widening. Set-but-invalid nudges nobody, never everybody. |
 | `ADA_NUDGE_DAILY_CAP` | `50` | Hard ceiling on agent runs per day across **all** users. The main cost control. |
 | `ADA_NUDGE_DEADLINE_MS` | `18000` | Wall-clock budget for one check-in run. |
 | `ADA_NUDGE_MAX_CALLS` | `4` | Provider calls one check-in may make. |
@@ -161,6 +162,11 @@ Only then does the agent run. Its reply is saved as a real Ada message (with any
 proposed changes attached as normal confirmation cards) and a short form is
 pushed. The message is persisted **before** the push, so a delivery failure still
 leaves it waiting in the app.
+
+Roll it out narrowly first. `ADA_NUDGES_ENABLED=1` alone means every eligible
+user hears from Ada on the next minute tick, before anyone has read a single
+generated message — set `ADA_NUDGE_ONLY_USERS` to your own id, read a few, then
+widen or unset it.
 
 Turning it off is just removing `ADA_NUDGES_ENABLED`; in-flight state is only ever
 one sweep deep.
