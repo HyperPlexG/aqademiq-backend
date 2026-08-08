@@ -18,6 +18,7 @@ import { storage } from '../../_shared/storage.ts';
 import { subjectsService } from './subjects.service.ts';
 import { tasksService } from './tasks.service.ts';
 import { resumeRun, runAgent } from '../agent/runtime.ts';
+import { forget as forgetMemory } from '../agent/memory.ts';
 import {
   approveAction,
   decideAll,
@@ -166,6 +167,34 @@ export const adaService = {
       messages: [messageDto(userMsg), messageDto(assistantMsg, actions)],
       actions: actions.get(assistantMsg.id) ?? [],
     };
+  },
+
+  /**
+   * GET /ada/memories — what Ada has stored about this user.
+   *
+   * The agent can already recall and forget these, but that is not sufficient on
+   * its own: data held about a person has to be inspectable and removable by
+   * them directly, not only by asking the assistant that wrote it.
+   */
+  async memories() {
+    const rows = await tenantDb().adaMemory.findMany({
+      orderBy: [{ kind: 'asc' }, { updated_at: 'desc' }],
+    });
+    // deno-lint-ignore no-explicit-any
+    return { memories: (rows as any[]).map(memoryDto) };
+  },
+
+  /** DELETE /ada/memories/:id */
+  async deleteMemory(id: string) {
+    const removed = await forgetMemory(id);
+    if (!removed) throw new HttpError(404, 'Memory not found');
+    return { status: 'deleted', id };
+  },
+
+  /** DELETE /ada/memories — forget everything about this user. */
+  async clearMemories() {
+    const { count } = await tenantDb().adaMemory.deleteMany({});
+    return { status: 'cleared', deleted: count };
   },
 
   /** GET /ada/pending-actions[?conversation_id=] */
@@ -483,6 +512,23 @@ function messageDto(m: any, actions?: Map<string, any[]>) {
     actions: actions?.get(m.id) ?? [],
     attachments: m.attachments ?? null,
     created_at: m.sent_at,
+  };
+}
+
+/** Wire shape for a stored memory. `source` is surfaced so the UI can show
+ *  whether the user said it or Ada inferred it. */
+// deno-lint-ignore no-explicit-any
+function memoryDto(m: any) {
+  return {
+    id: m.id,
+    kind: m.kind,
+    content: m.content,
+    subject_id: m.subject_id,
+    source: m.source,
+    confidence: m.confidence,
+    expires_at: m.expires_at,
+    created_at: m.created_at,
+    updated_at: m.updated_at,
   };
 }
 

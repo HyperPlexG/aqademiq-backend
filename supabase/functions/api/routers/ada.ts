@@ -44,6 +44,20 @@ adaRouter.post('/conversations/:id/messages', async (c) => {
 adaRouter.post('/conversations/:cid/messages/:mid/apply-plan', async (c) =>
   c.json(await adaService.applyPlan(c.req.param('cid'), c.req.param('mid')), 201));
 
+// ---- memory --------------------------------------------------------------
+// Ada can recall and forget these itself, but the user must be able to inspect
+// and delete what is stored about them without going through the assistant.
+
+// GET /ada/memories
+adaRouter.get('/memories', async (c) => c.json(await adaService.memories()));
+
+// DELETE /ada/memories — forget everything (before the :id route).
+adaRouter.delete('/memories', async (c) => c.json(await adaService.clearMemories()));
+
+// DELETE /ada/memories/:id
+adaRouter.delete('/memories/:id', async (c) =>
+  c.json(await adaService.deleteMemory(c.req.param('id'))));
+
 // ---- agent confirmation gate --------------------------------------------
 // Every create/update/delete the agent proposes waits here until the user acts.
 
