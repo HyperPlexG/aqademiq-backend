@@ -40,8 +40,32 @@ adaRouter.post('/conversations/:id/messages', async (c) => {
 });
 
 // POST /ada/conversations/:cid/messages/:mid/apply-plan
+// Legacy propose-then-apply path, kept for conversations that predate the agent.
 adaRouter.post('/conversations/:cid/messages/:mid/apply-plan', async (c) =>
   c.json(await adaService.applyPlan(c.req.param('cid'), c.req.param('mid')), 201));
+
+// ---- agent confirmation gate --------------------------------------------
+// Every create/update/delete the agent proposes waits here until the user acts.
+
+// GET /ada/pending-actions[?conversation_id=]
+adaRouter.get('/pending-actions', async (c) =>
+  c.json(await adaService.pendingActions(c.req.query('conversation_id') || undefined)));
+
+// POST /ada/actions/:id/approve — execute it, then let the agent continue.
+adaRouter.post('/actions/:id/approve', async (c) =>
+  c.json(await adaService.approve(c.req.param('id')), 201));
+
+// POST /ada/actions/:id/reject
+adaRouter.post('/actions/:id/reject', async (c) =>
+  c.json(await adaService.reject(c.req.param('id')), 201));
+
+// POST /ada/conversations/:id/actions/decide  { approve: boolean }
+adaRouter.post('/conversations/:id/actions/decide', async (c) => {
+  const b = await jsonBody(c.req);
+  const approve = b.approve;
+  if (typeof approve !== 'boolean') throw new HttpError(422, 'approve must be a boolean');
+  return c.json(await adaService.decideAllActions(c.req.param('id'), approve), 201);
+});
 
 // POST /ada/conversations/:id/archive
 adaRouter.post('/conversations/:id/archive', async (c) =>

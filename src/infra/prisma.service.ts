@@ -11,7 +11,8 @@ const TENANT_MODELS = new Set([
   'AcademicTerm', 'Course', 'SubjectMaterial', 'TaskTag', 'Task',
   'PrismAudioProfile', 'FocusSession', 'MoodCheckin', 'AnalyticsSnapshot',
   'DailyActivitySnapshot', 'AdaSession', 'CalendarEvent', 'ReferralCode',
-  'ShareEvent', 'AppRating', 'AppFeedback'
+  'ShareEvent', 'AppRating', 'AppFeedback',
+  'AdaAgentRun', 'AdaPendingAction'
 ]);
 
 /** §3: application-level row scoping — every tenant query filtered by auth user.
