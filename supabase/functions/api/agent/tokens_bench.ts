@@ -122,19 +122,22 @@ export const FIXTURE: AgentContext = {
 /**
  * A representative agent loop, used to project per-run cost.
  *
+ * Values are **tokens**, not characters. They were briefly characters, fed
+ * through estimateTokens('x'.repeat(n)) — which counts a run of x's as ONE word
+ * and so valued every turn at ~1 token, silently reporting history as free.
  * Sizes come from the shape of real observations: a `list_tasks` dump is large,
- * a write proposal's echo is small. Only the *relative* sizes matter for
- * before/after work, and they are held constant across runs.
+ * a write proposal's echo is small. Held constant across runs, so they never
+ * affect a before/after delta.
  */
 const TURNS: Array<{ label: string; assistant: number; observation: number }> = [
-  { label: 'record_plan', assistant: 380, observation: 40 },
-  { label: 'list_tasks', assistant: 120, observation: 2600 },
-  { label: 'get_free_slots', assistant: 140, observation: 900 },
-  { label: 'list_subjects', assistant: 90, observation: 520 },
-  { label: 'create_task ×2', assistant: 460, observation: 300 },
-  { label: 'update_task', assistant: 300, observation: 160 },
-  { label: 'remember', assistant: 160, observation: 60 },
-  { label: 'finish', assistant: 520, observation: 0 },
+  { label: 'record_plan', assistant: 110, observation: 12 },
+  { label: 'list_tasks', assistant: 35, observation: 745 },
+  { label: 'get_free_slots', assistant: 40, observation: 258 },
+  { label: 'get_reference', assistant: 26, observation: 150 },
+  { label: 'task_write ×2', assistant: 132, observation: 86 },
+  { label: 'task_write update', assistant: 86, observation: 46 },
+  { label: 'remember', assistant: 46, observation: 17 },
+  { label: 'finish', assistant: 150, observation: 0 },
 ];
 
 // ---- measurement ---------------------------------------------------------
@@ -150,7 +153,7 @@ export interface Measurement {
   tools: { count: number; chars: number; tokens: number; perTool: Component[] };
   /** Prefix that is byte-identical between two requests a minute apart. */
   cache: { stableTokens: number; volatileTokens: number; stablePct: number };
-  run: { calls: number; promptTokens: number; toolShare: number };
+  run: { calls: number; promptTokens: number; repeatedTokens: number; historyTokens: number; toolShare: number };
   totalPerCall: number;
 }
 
@@ -210,14 +213,21 @@ export function measure(ctx: AgentContext = FIXTURE): Measurement {
   // --- per-run projection ---
   const perCall = components.reduce((n, c) => n + c.tokens, 0);
   let transcript = 0;
-  let promptTokens = 0;
+  let historyTokens = 0;
   for (const t of TURNS) {
-    promptTokens += perCall + transcript;
-    transcript += estimateTokens('x'.repeat(t.assistant)) + estimateTokens('x'.repeat(t.observation));
+    historyTokens += transcript;
+    transcript += t.assistant + t.observation;
   }
+  // The invariant prefix — tools + system — re-uploaded verbatim on every call.
+  // This is the number an optimisation actually moves; history is the same
+  // regardless of how the tools are declared.
+  const repeatedTokens = perCall * TURNS.length;
+  const promptTokens = repeatedTokens + historyTokens;
   const run = {
     calls: TURNS.length,
     promptTokens,
+    repeatedTokens,
+    historyTokens,
     toolShare: Math.round(((tools.tokens * TURNS.length) / promptTokens) * 100),
   };
 
@@ -250,6 +260,8 @@ function report(m: Measurement): string {
   out.push(`Projected run — ${m.run.calls} calls, history growing each turn`);
   out.push('─'.repeat(64));
   out.push(`  prompt tokens per run      ${n(m.run.promptTokens)}`);
+  out.push(`    repeated prefix          ${n(m.run.repeatedTokens)}  (tools + system, re-sent every call)`);
+  out.push(`    growing history          ${n(m.run.historyTokens)}`);
   out.push(`  spent re-sending tools     ${n(m.tools.tokens * m.run.calls)}  (${m.run.toolShare}% of the run)`);
   out.push('');
 
@@ -291,6 +303,7 @@ function diff(before: Measurement, after: Measurement): string {
   out.push('─'.repeat(70));
   out.push(row('per call', before.totalPerCall, after.totalPerCall));
   out.push(row('per run', before.run.promptTokens, after.run.promptTokens));
+  out.push(row('  repeated prefix', before.run.repeatedTokens ?? 0, after.run.repeatedTokens));
   out.push(row('cacheable prefix', before.cache.stableTokens, after.cache.stableTokens));
   out.push(row('tool count', before.tools.count, after.tools.count));
   out.push('');

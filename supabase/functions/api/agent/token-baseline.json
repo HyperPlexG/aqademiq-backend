@@ -184,14 +184,16 @@
     ]
   },
   "cache": {
-    "stableTokens": 4940,
-    "volatileTokens": 806,
+    "stableTokens": 4953,
+    "volatileTokens": 793,
     "stablePct": 86
   },
   "run": {
     "calls": 8,
-    "promptTokens": 46032,
-    "toolShare": 70
+    "promptTokens": 54685,
+    "repeatedTokens": 45976,
+    "historyTokens": 8709,
+    "toolShare": 59
   },
   "totalPerCall": 5747
 }
