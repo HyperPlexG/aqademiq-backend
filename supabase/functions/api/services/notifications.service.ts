@@ -28,29 +28,43 @@ export const notificationsService = {
 
   /** POST /me/notifications/test */
   async test() {
-    const device = await tenantDb().deviceProfile.findFirst({
-      orderBy: { id: 'desc' },
-    });
-    if (!device) throw new HttpError(400, 'No registered device to send a test push to');
+    // Send to EVERY registered device for this user, not just the most recent
+    // one. Otherwise a user signed in on two devices (e.g. iPhone + Android)
+    // only ever gets the test on whichever registered last — so tapping "test"
+    // on Android could deliver to their iPhone and look broken on Android.
+    const devices = await tenantDb().deviceProfile.findMany({});
+    const tokens = devices
+      .map((d: { push_token: string | null }) => d.push_token)
+      .filter((t: string | null): t is string => !!t && t.length > 0);
+    if (tokens.length === 0) {
+      throw new HttpError(400, 'No registered device to send a test push to');
+    }
 
     // Always FCM — iOS registers an FCM token too (Firebase → APNs).
-    const token = device.push_token ?? '';
-    const result = await push.send(
-      'fcm',
-      token,
-      'Aqademiq',
-      'This is a test notification 🎓',
-      { channel_key: 'test' },
-    );
+    let sent = 0;
+    let lastError: string | undefined;
+    for (const token of tokens) {
+      const r = await push.send(
+        'fcm',
+        token,
+        'Aqademiq',
+        'This is a test notification 🎓',
+        { channel_key: 'test' },
+      );
+      if (r.status === 'sent') sent++;
+      else lastError = r.error ?? r.status;
+    }
 
     return {
       id: crypto.randomUUID(),
       channel_key: 'test',
-      status: result.status,
+      status: sent > 0 ? 'sent' : 'failed',
       read: false,
       created_at: new Date(),
       provider: 'fcm',
-      error: result.error,
+      error: sent > 0 ? undefined : lastError,
+      devices: tokens.length,
+      sent,
     };
   },
 
