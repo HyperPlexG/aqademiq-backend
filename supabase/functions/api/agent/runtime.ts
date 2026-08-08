@@ -24,7 +24,7 @@ import { RequestContext } from '../../_shared/context.ts';
 import { claude, usageOf } from '../../_shared/claude.ts';
 import { env } from '../../_shared/env.ts';
 import { buildContext, clockLine, renderContext } from './context.ts';
-import { getTool, toolDefs } from './tools.ts';
+import { isCallableName, kindOfCall, resolveCall, toolDefs } from './tools.ts';
 import { createPendingAction, listForRun } from './pending.ts';
 import { type AgentOutcome, type AgentUsage, type PlanStep, type ToolContext, ToolInputError } from './types.ts';
 
@@ -242,9 +242,10 @@ export function systemPrompt(contextBlock: string): string {
     'user\'s real data on their behalf.',
     '',
     '## How you work',
-    '1. Read before you write. Use the list_*/get_* tools to learn the real current',
-    '   state — never assume what tasks, subjects or settings exist.',
-    '2. Then propose changes with the create_/update_/delete_/move_/complete_ tools.',
+    '1. Read before you write. Use the list_* and get_* tools to learn the real',
+    '   current state — never assume what tasks, subjects or settings exist.',
+    '2. Then propose changes with the *_write tools, picking the right `action`',
+    '   (task_write with action "create", "update", "move", and so on).',
     '3. Call `finish` with your reply to the user.',
     '',
     '## Work in as few turns as you can',
@@ -441,7 +442,7 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
       // tasks + subjects + tags costs one round trip rather than three. Writes
       // stay sequential: they append to pendingIds in a meaningful order, and a
       // plan often creates a subject that a later tool in the same turn names.
-      if (getTool(tu.name)?.kind === 'read') {
+      if (kindOfCall(tu.name) === 'read') {
         reads.push(runTool(state, tu.name, input).then((o) => { observations[i] = o; }));
         continue;
       }
@@ -467,17 +468,27 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
 
 /** Execute one registry tool. Errors become observations so the agent can adapt. */
 async function runTool(state: LoopState, name: string, input: Record<string, unknown>): Promise<unknown> {
-  const tool = getTool(name);
-  if (!tool) {
+  if (!isCallableName(name)) {
     return { error: `Unknown tool "${name}".`, hint: 'Use only the tools provided.' };
   }
 
   try {
-    const args = await tool.parse(input);
+    // Dispatch names (task_write, subject_write, …) are translated to the tool
+    // that implements them here, and only here — everything below this line
+    // still sees the original tool, so the confirmation gate, the operation and
+    // resource on the card, and the name stored on the pending row are all
+    // unchanged. A missing or unknown `action` throws ToolInputError and is
+    // caught alongside every other input mistake.
+    const resolved = resolveCall(name, input);
+    if (!resolved.tool) {
+      return { error: `Unknown tool "${name}".`, hint: 'Use only the tools provided.' };
+    }
+    const tool = resolved.tool;
+    const args = await tool.parse(resolved.input);
 
     if (tool.kind === 'read') {
       const result = await tool.run!(args, toolContext(state));
-      state.scratchpad.push(`Read ${name}.`);
+      state.scratchpad.push(`Read ${tool.name}.`);
       return result;
     }
 
@@ -486,7 +497,7 @@ async function runTool(state: LoopState, name: string, input: Record<string, unk
     // `memory` kind in types.ts). Logged as a mutation, not a read.
     if (tool.kind === 'memory') {
       const result = await tool.run!(args, toolContext(state));
-      state.scratchpad.push(`Memory ${name}: ${args.content ?? args.memory_id ?? ''}`.slice(0, 200));
+      state.scratchpad.push(`Memory ${tool.name}: ${args.content ?? args.memory_id ?? ''}`.slice(0, 200));
       return result;
     }
 
@@ -507,7 +518,7 @@ async function runTool(state: LoopState, name: string, input: Record<string, unk
       preview,
     });
     state.pendingIds.push(action.id);
-    state.scratchpad.push(`Proposed ${name}: ${preview.title}`);
+    state.scratchpad.push(`Proposed ${tool.name}: ${preview.title}`);
 
     return {
       status: 'awaiting_user_confirmation',

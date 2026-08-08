@@ -12,11 +12,17 @@
 import { assert } from 'jsr:@std/assert@1';
 import { measure } from './tokens_bench.ts';
 
-/** Whole-registry ceiling. Lower this as the surface is collapsed. */
-const MAX_TOOL_TOKENS = 4_200;
+/** Whole-registry ceiling. Ratcheted down after the action-dispatch collapse. */
+const MAX_TOOL_TOKENS = 3_200;
 
-/** No single tool should dominate. `create_task` is the current worst, at ~434. */
-const MAX_SINGLE_TOOL_TOKENS = 500;
+/**
+ * No single tool should dominate.
+ *
+ * Sized for a dispatch group, not a plain tool: `task_write` is ~672 because it
+ * carries six actions' worth of fields — which is the point, since those six
+ * cost 1,083 when declared separately. A plain tool anywhere near this is a bug.
+ */
+const MAX_SINGLE_TOOL_TOKENS = 750;
 
 /**
  * Tools must not outgrow everything else combined by more than 3×. This catches
@@ -65,5 +71,8 @@ Deno.test('the bench fixture still reflects a real context', () => {
   // look great and mean nothing.
   const ctxBlock = m.components.find((c) => c.name === 'system: context block');
   assert(ctxBlock && ctxBlock.tokens > 300, 'Bench fixture has gone empty — measurements are meaningless.');
-  assert(m.tools.count >= 20, `Only ${m.tools.count} tools found — the registry import is broken.`);
+  // Floor, not a target: this catches a broken import returning an empty or
+  // near-empty registry. It sits below the declared count (15 after the
+  // action-dispatch collapse) so shrinking the surface further is allowed.
+  assert(m.tools.count >= 10, `Only ${m.tools.count} tools found — the registry import is broken.`);
 });

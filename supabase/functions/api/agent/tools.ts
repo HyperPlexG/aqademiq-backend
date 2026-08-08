@@ -19,7 +19,7 @@ import { moodService } from '../services/mood.service.ts';
 import { profileService } from '../services/profile.service.ts';
 import { settingsService } from '../services/settings.service.ts';
 import { streaksService } from '../services/streaks.service.ts';
-import { type ActionPreview, type AgentTool, ToolInputError } from './types.ts';
+import { type ActionPreview, type AgentTool, type ToolKind, ToolInputError } from './types.ts';
 import { forget, MAX_MEMORY_CHARS, MEMORY_KINDS, remember } from './memory.ts';
 import { listReadableFiles, readFile } from './files.ts';
 import {
@@ -117,16 +117,16 @@ function reqOccurrenceId(i: Raw, f: string): string {
 // ---- ownership guards (the tenancy floor for every id the model supplies) ----
 
 async function ownedSubject(id: string) {
-  if (!UUID.test(id)) throw new ToolInputError(`\`subject_id\` must be a subject id from list_subjects, got "${id}".`);
+  if (!UUID.test(id)) throw new ToolInputError(`\`subject_id\` must be a subject id from get_reference(what="subjects"), got "${id}".`);
   const row = await tenantDb().course.findFirst({ where: { id } });
-  if (!row) throw new ToolInputError(`No subject with id ${id} belongs to this user.`, 'Call list_subjects and use an id from it.');
+  if (!row) throw new ToolInputError(`No subject with id ${id} belongs to this user.`, 'Call get_reference with what="subjects" and use an id from it.');
   return row;
 }
 
 async function ownedSemester(id: string) {
-  if (!UUID.test(id)) throw new ToolInputError(`\`semester_id\` must be a semester id from list_semesters, got "${id}".`);
+  if (!UUID.test(id)) throw new ToolInputError(`\`semester_id\` must be a semester id from get_reference(what="semesters"), got "${id}".`);
   const row = await tenantDb().academicTerm.findFirst({ where: { id } });
-  if (!row) throw new ToolInputError(`No semester with id ${id} belongs to this user.`, 'Call list_semesters first.');
+  if (!row) throw new ToolInputError(`No semester with id ${id} belongs to this user.`, 'Call get_reference with what="semesters" first.');
   return row;
 }
 
@@ -142,7 +142,7 @@ async function resolveCategory(raw?: string): Promise<string | undefined> {
   if (!raw) return undefined;
   if (UUID.test(raw)) {
     const byId = await tenantDb().studyTag.findFirst({ where: { id: raw } });
-    if (!byId) throw new ToolInputError(`No study tag with id ${raw} belongs to this user.`, 'Call list_study_tags first.');
+    if (!byId) throw new ToolInputError(`No study tag with id ${raw} belongs to this user.`, 'Call get_reference with what="study_tags" first.');
     return byId.id;
   }
   const byName = await tenantDb().studyTag.findFirst({ where: { name: { equals: raw, mode: 'insensitive' } } });
@@ -1084,7 +1084,7 @@ const writeTools: AgentTool[] = [
     async parse(i) {
       const label = reqStr(i, 'label', 60);
       const found = await tenantDb().studyTag.findFirst({ where: { name: { equals: label, mode: 'insensitive' } } });
-      if (!found) throw new ToolInputError(`No study tag called "${label}".`, 'Call list_study_tags first.');
+      if (!found) throw new ToolInputError(`No study tag called "${label}".`, 'Call get_reference with what="study_tags" first.');
       return { label: found.name };
     },
     preview: (a) =>
@@ -1237,11 +1237,205 @@ export function getTool(name: string): AgentTool | undefined {
   return BY_NAME.get(name);
 }
 
+// ---- action dispatch -----------------------------------------------------
+//
+// Tool definitions are re-sent on EVERY provider call — about eight times per
+// Ada message — so the wire surface was 70% of every request. Six task tools
+// each re-declared `task_id`, `title`, `subject_id`, `due_date` and friends,
+// and the model paid for all six copies every single call.
+//
+// So the *wire* surface is collapsed while the implementations stay exactly as
+// they were: one declared tool per resource with an `action` enum, translated
+// back to the original tool at the entry point (resolveCall). Nothing
+// downstream changes — parse, preview, the confirmation gate, tenancy and the
+// re-validation on approve all run on the same objects as before.
+//
+// Two properties fall out of doing it this way rather than rewriting:
+//
+//  - `ada_pending_actions.tool_name` still stores the UNDERLYING name, so rows
+//    parked before this change approve normally and no data migration is
+//    needed.
+//  - The merged schema is GENERATED from the sub-tools, so it cannot drift from
+//    what they actually accept.
+//
+// The one real trade-off: per-action `required` lists are lost, because a field
+// required for `update` is meaningless for `delete`. The sub-tool's parse()
+// still enforces them and throws ToolInputError, which the runtime turns into a
+// correctable observation the model fixes mid-turn — the same path a bad id
+// already takes.
+
+interface DispatchGroup {
+  name: string;
+  description: string;
+  /** Discriminator field name. `action` for writes, `what` reads better for lookups. */
+  key?: string;
+  /** action value → the tool that actually implements it */
+  actions: Record<string, string>;
+}
+
+const DISPATCH: DispatchGroup[] = [
+  {
+    // Eight single-purpose lookups that between them declared almost no
+    // arguments — nearly all of their cost was the per-tool name/description
+    // wrapper, paid on every call. Folding them loses no round trips: reads
+    // already run concurrently within a turn, so the model can still ask for
+    // subjects + settings + streak in one response and get one provider call.
+    name: 'get_reference',
+    key: 'what',
+    description:
+      'Look up one of the user\'s reference lists or summaries. `what`: profile, ' +
+      'settings, subjects, semesters, study_tags, streak, study_stats, mood_week. ' +
+      'Ask for several in one turn by calling this once per item.',
+    actions: {
+      profile: 'get_profile',
+      settings: 'get_settings',
+      subjects: 'list_subjects',
+      semesters: 'list_semesters',
+      study_tags: 'list_study_tags',
+      streak: 'get_streak',
+      study_stats: 'get_study_stats',
+      mood_week: 'get_mood_week',
+    },
+  },
+  {
+    name: 'task_write',
+    description:
+      'Propose a change to the user\'s tasks. `action` selects what to do: ' +
+      'create (a new task), update (edit fields of one), complete (tick it off), ' +
+      'move (shift one or more to another date), breakdown (split a big task into ' +
+      'steps), delete (remove it). Pass only the fields that action needs.',
+    actions: {
+      create: 'create_task',
+      update: 'update_task',
+      complete: 'complete_task',
+      move: 'move_tasks',
+      breakdown: 'breakdown_task',
+      delete: 'delete_task',
+    },
+  },
+  {
+    name: 'subject_write',
+    description:
+      'Propose a change to the user\'s subjects. `action`: create, update, delete.',
+    actions: {
+      create: 'create_subject',
+      update: 'update_subject',
+      delete: 'delete_subject',
+    },
+  },
+  {
+    name: 'semester_write',
+    description:
+      'Propose a change to the user\'s semesters. `action`: create, update, delete.',
+    actions: {
+      create: 'create_semester',
+      update: 'update_semester',
+      delete: 'delete_semester',
+    },
+  },
+  {
+    name: 'study_tag_write',
+    description:
+      'Propose a change to the user\'s study tags (task categories). `action`: create, delete.',
+    actions: {
+      create: 'create_study_tag',
+      delete: 'delete_study_tag',
+    },
+  },
+];
+
+const DISPATCH_BY_NAME = new Map(DISPATCH.map((g) => [g.name, g]));
+
+/** Tools that are reached through a dispatch group and so are not declared directly. */
+const COLLAPSED = new Set(DISPATCH.flatMap((g) => Object.values(g.actions)));
+
+type JsonSchema = { type: string; properties?: Record<string, unknown>; required?: string[] };
+
+/**
+ * Union of every sub-tool's properties, deduplicated.
+ *
+ * The dedup IS the saving: `task_id` and `title` were declared six times over
+ * and are now declared once. Where two sub-tools describe the same field
+ * differently, the first wins — they are the same field, and a second wording
+ * would only cost tokens.
+ */
+function mergedSchema(g: DispatchGroup): JsonSchema {
+  const key = g.key ?? 'action';
+  const properties: Record<string, unknown> = {
+    [key]: { type: 'string', enum: Object.keys(g.actions) },
+  };
+  for (const toolName of Object.values(g.actions)) {
+    const sub = BY_NAME.get(toolName);
+    if (!sub) continue;
+    const subProps = (sub.input_schema as JsonSchema).properties ?? {};
+    for (const [field, spec] of Object.entries(subProps)) {
+      if (!(field in properties)) properties[field] = spec;
+    }
+  }
+  return { type: 'object', properties, required: [key] };
+}
+
+/**
+ * Map a model-issued tool call onto the tool that implements it.
+ *
+ * Dispatch names are translated here and nowhere else, so every caller
+ * downstream keeps seeing the original tools. Unknown actions come back as a
+ * ToolInputError rather than a crash, because a wrong enum value is exactly the
+ * kind of mistake the model can fix on the next turn if told what is valid.
+ */
+export function resolveCall(
+  name: string,
+  input: Record<string, unknown>,
+): { tool: AgentTool | undefined; input: Record<string, unknown> } {
+  const group = DISPATCH_BY_NAME.get(name);
+  if (!group) return { tool: BY_NAME.get(name), input };
+
+  const key = group.key ?? 'action';
+  const chosen = typeof input[key] === 'string' ? input[key] as string : '';
+  const target = group.actions[chosen];
+  if (!target) {
+    throw new ToolInputError(
+      `"${name}" needs a valid \`${key}\`. Got ${chosen ? `"${chosen}"` : 'nothing'}; ` +
+        `valid values are: ${Object.keys(group.actions).join(', ')}.`,
+    );
+  }
+
+  const { [key]: _drop, ...rest } = input;
+  return { tool: BY_NAME.get(target), input: rest };
+}
+
+/** True for a name the model is allowed to call (declared, not just implemented). */
+export function isCallableName(name: string): boolean {
+  return DISPATCH_BY_NAME.has(name) || (BY_NAME.has(name) && !COLLAPSED.has(name));
+}
+
+/**
+ * Kind of the tool a call resolves to, without validating its arguments.
+ *
+ * The loop needs this before parsing, to decide what may run concurrently. A
+ * group's actions always share a kind, so the first one answers for all — and
+ * reading it from the sub-tool rather than hardcoding "dispatch means write"
+ * keeps a future read-group correct here for free.
+ */
+export function kindOfCall(name: string): ToolKind | undefined {
+  const group = DISPATCH_BY_NAME.get(name);
+  if (group) return BY_NAME.get(Object.values(group.actions)[0])?.kind;
+  return BY_NAME.get(name)?.kind;
+}
+
 /** Provider-facing declarations (Anthropic Messages shape; adapted for Gemini upstream). */
 export function toolDefs() {
-  return ALL_TOOLS.map((t) => ({
+  const declared = ALL_TOOLS.filter((t) => !COLLAPSED.has(t.name)).map((t) => ({
     name: t.name,
     description: t.description,
-    input_schema: t.input_schema,
+    input_schema: t.input_schema as Record<string, unknown>,
   }));
+
+  const grouped = DISPATCH.map((g) => ({
+    name: g.name,
+    description: g.description,
+    input_schema: mergedSchema(g) as unknown as Record<string, unknown>,
+  }));
+
+  return [...declared, ...grouped];
 }
