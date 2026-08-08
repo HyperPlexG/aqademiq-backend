@@ -134,12 +134,19 @@ export const adaService = {
         ada_session_id: conversationId,
         role: 'assistant',
         content: outcome.text,
+        // The provider spend behind this one reply. `ada_messages` has carried
+        // these columns since the baseline schema and nothing ever filled them,
+        // which left free-tier quota burn unmeasurable per conversation.
+        model: outcome.usage.model,
+        prompt_tokens: outcome.usage.prompt_tokens,
+        completion_tokens: outcome.usage.completion_tokens,
         metadata: {
           run_id: outcome.run_id,
           agent_status: outcome.status,
           // deno-lint-ignore no-explicit-any
           agent_plan: outcome.plan as any,
           pending_action_ids: outcome.pending_action_ids,
+          llm_calls: outcome.usage.llm_calls,
         },
       },
     });
@@ -530,12 +537,16 @@ async function continueRunById(runId: string, conversationId: string) {
       ada_session_id: conversationId,
       role: 'assistant',
       content: outcome.text,
+      model: outcome.usage.model,
+      prompt_tokens: outcome.usage.prompt_tokens,
+      completion_tokens: outcome.usage.completion_tokens,
       metadata: {
         run_id: outcome.run_id,
         agent_status: outcome.status,
         // deno-lint-ignore no-explicit-any
         agent_plan: outcome.plan as any,
         pending_action_ids: outcome.pending_action_ids,
+        llm_calls: outcome.usage.llm_calls,
         resumed: true,
       },
     },

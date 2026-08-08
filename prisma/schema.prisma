@@ -524,6 +524,13 @@ model AdaAgentRun {
   transcript         Json      @default("[]") @db.JsonB
   scratchpad         Json      @default("[]") @db.JsonB
   turns              Int       @default(0)
+  prompt_tokens      Int       @default(0)
+  completion_tokens  Int       @default(0)
+  /// Provider calls made. The prompt is replayed in full each turn, so spend
+  /// grows superlinearly in this number — watch it rather than wall-clock.
+  llm_calls          Int       @default(0)
+  /// null = ran to a natural end. Otherwise deadline | call_budget | turn_budget.
+  stopped_reason     String?   @db.VarChar(20)
   error              String?
   created_at         DateTime  @default(now()) @db.Timestamptz
   updated_at         DateTime  @default(now()) @db.Timestamptz
@@ -531,6 +538,7 @@ model AdaAgentRun {
   @@index([user_id])
   @@index([ada_session_id])
   @@index([status])
+  @@index([created_at])
   @@map("ada_agent_runs")
 }
 

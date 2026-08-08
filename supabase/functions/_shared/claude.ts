@@ -6,7 +6,7 @@
 // All return the Anthropic Messages shape so Ada's tool loop is provider-agnostic.
 import { env } from './env.ts';
 import { isVertexConfigured, vertexMessages, vertexMessagesStream } from './vertex.ts';
-import { rotatingChat, rotationConfigured } from './ai.ts';
+import { type AiUsage, rotatingChat, rotationConfigured } from './ai.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
 export interface CreateMessageParams {
@@ -82,6 +82,29 @@ async function call(model: string, body: Record<string, any>, stream = false): P
     return stream ? vertexMessagesStream(params) : vertexMessages(params);
   }
   throw new Error('No AI provider configured (set ANTHROPIC_API_KEY or Vertex GCP_* secrets)');
+}
+
+/**
+ * Cost of one call, whichever provider served it.
+ *
+ * `rotating` reports it in our own shape; Anthropic and Vertex both use the
+ * Messages-API `usage: { input_tokens, output_tokens }`. Returns zeros rather
+ * than undefined when a provider omits usage, so accumulating a run's spend
+ * never has to null-check.
+ */
+// deno-lint-ignore no-explicit-any
+export function usageOf(res: any, fallbackModel: string): AiUsage {
+  const rotating = res?.usage as AiUsage | undefined;
+  if (rotating && typeof rotating.prompt_tokens === 'number' && 'key_id' in rotating) {
+    return rotating;
+  }
+  const u = res?.usage ?? {};
+  return {
+    prompt_tokens: Number(u.input_tokens ?? 0),
+    completion_tokens: Number(u.output_tokens ?? 0),
+    key_id: provider,
+    model: res?.model ?? fallbackModel,
+  };
 }
 
 export const claude = {

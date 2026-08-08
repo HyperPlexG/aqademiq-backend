@@ -71,6 +71,16 @@ export interface PlanStep {
   status: 'pending' | 'done' | 'blocked';
 }
 
+/** What one agent phase cost. Recorded even on failure — the quota was spent. */
+export interface AgentUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  /** Provider calls made in this phase. */
+  llm_calls: number;
+  /** Model that served the last call, for per-message attribution. */
+  model: string | null;
+}
+
 export interface AgentOutcome {
   run_id: string;
   status: 'completed' | 'awaiting_confirmation' | 'failed';
@@ -79,4 +89,5 @@ export interface AgentOutcome {
   plan: PlanStep[];
   /** Ids of ada_pending_actions rows created this turn. */
   pending_action_ids: string[];
+  usage: AgentUsage;
 }

@@ -22,11 +22,22 @@ export interface AiParams {
   toolChoice?: { type: 'tool'; name: string };
   maxTokens?: number;
 }
+/** What one call cost. Free-tier quota is spent per call, so this is recorded
+ *  even when the run that made the call is later abandoned. */
+export interface AiUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  /** Which pool entry served it, e.g. "gemini:a1b2c3" — for per-key attribution. */
+  key_id: string;
+  model: string;
+}
+
 // Anthropic-shaped result the callers expect.
 export interface AiResult {
   // deno-lint-ignore no-explicit-any
   content: any[];
   stop_reason: 'tool_use' | 'end_turn';
+  usage?: AiUsage;
 }
 
 type Provider = 'gemini' | 'cerebras';
@@ -129,9 +140,17 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
   const errors: string[] = [];
   for (const c of order) {
     try {
-      return c.provider === 'gemini'
-        ? await geminiChat(c.key, geminiModel(), params)
-        : await cerebrasChat(c.key, cerebrasModel(), params);
+      const model = c.provider === 'gemini' ? geminiModel() : cerebrasModel();
+      const res = c.provider === 'gemini'
+        ? await geminiChat(c.key, model, params)
+        : await cerebrasChat(c.key, model, params);
+      // Stamped here rather than inside each adapter so the key id (which only
+      // the pool knows) travels with the cost.
+      if (res.usage) {
+        res.usage.key_id = c.id;
+        res.usage.model = model;
+      }
+      return res;
     } catch (e) {
       errors.push(`${c.id} → ${e instanceof Error ? e.message : String(e)}`);
       if (e instanceof QuotaError) await markExhausted(c.id);
@@ -191,7 +210,16 @@ async function cerebrasChat(key: string, model: string, p: AiParams): Promise<Ai
     content.push({ type: 'tool_use', id: tc.id, name: tc.function?.name, input });
   }
   const stop_reason = (json.choices?.[0]?.finish_reason === 'tool_calls' || content.some((b) => b.type === 'tool_use')) ? 'tool_use' : 'end_turn';
-  return { content, stop_reason };
+  return {
+    content,
+    stop_reason,
+    usage: {
+      prompt_tokens: Number(json.usage?.prompt_tokens ?? 0),
+      completion_tokens: Number(json.usage?.completion_tokens ?? 0),
+      key_id: '',
+      model,
+    },
+  };
 }
 
 // ================= Gemini (generateContent) =================
@@ -299,5 +327,18 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
     }
   }
   const stop_reason = content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn';
-  return { content, stop_reason };
+  // Thinking models bill their reasoning as output too, so thoughtsTokenCount is
+  // folded into completion — otherwise the recorded spend understates the real
+  // quota burn on exactly the turns that cost the most.
+  const um = json.usageMetadata ?? {};
+  return {
+    content,
+    stop_reason,
+    usage: {
+      prompt_tokens: Number(um.promptTokenCount ?? 0),
+      completion_tokens: Number(um.candidatesTokenCount ?? 0) + Number(um.thoughtsTokenCount ?? 0),
+      key_id: '',
+      model,
+    },
+  };
 }

@@ -51,28 +51,33 @@ adaRouter.post('/conversations/:cid/messages/:mid/apply-plan', async (c) =>
 adaRouter.get('/pending-actions', async (c) =>
   c.json(await adaService.pendingActions(c.req.query('conversation_id') || undefined)));
 
+// These four decide or archive existing rows — nothing is created, so they
+// answer 200, not 201. Dio treats the whole 2xx range as success, so this is
+// transparent to the client; it only stops the edge logs reading as a wall of
+// "201 Created" for operations that create nothing.
+
 // POST /ada/actions/:id/approve — execute it, then let the agent continue.
 adaRouter.post('/actions/:id/approve', async (c) =>
-  c.json(await adaService.approve(c.req.param('id')), 201));
+  c.json(await adaService.approve(c.req.param('id'))));
 
 // POST /ada/actions/:id/reject
 adaRouter.post('/actions/:id/reject', async (c) =>
-  c.json(await adaService.reject(c.req.param('id')), 201));
+  c.json(await adaService.reject(c.req.param('id'))));
 
 // POST /ada/conversations/:id/actions/decide  { approve: boolean }
 adaRouter.post('/conversations/:id/actions/decide', async (c) => {
   const b = await jsonBody(c.req);
   const approve = b.approve;
   if (typeof approve !== 'boolean') throw new HttpError(422, 'approve must be a boolean');
-  return c.json(await adaService.decideAllActions(c.req.param('id'), approve), 201);
+  return c.json(await adaService.decideAllActions(c.req.param('id'), approve));
 });
 
 // POST /ada/conversations/:id/archive
 adaRouter.post('/conversations/:id/archive', async (c) =>
-  c.json(await adaService.archive(c.req.param('id')), 201));
+  c.json(await adaService.archive(c.req.param('id'))));
 
 // POST /ada/chat/clear
-adaRouter.post('/chat/clear', async (c) => c.json(await adaService.clear(), 201));
+adaRouter.post('/chat/clear', async (c) => c.json(await adaService.clear()));
 
 // POST /ada/uploads
 adaRouter.post('/uploads', async (c) => {

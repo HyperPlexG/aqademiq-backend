@@ -2,8 +2,9 @@
 //
 // This is an agent rather than a tool dispatcher in four specific senses:
 //
-//  1. It decomposes. Before acting it must call `record_plan` and commit to
-//     steps, and it may re-call it whenever what it learns invalidates the plan.
+//  1. It decomposes. For anything multi-step it commits to a plan via
+//     `record_plan` (alongside its first reads, not as a turn of its own) and
+//     may re-call it whenever what it learns invalidates the plan.
 //  2. It self-corrects. A tool given bad input returns the error as an
 //     observation instead of aborting the run, so the agent revises and retries
 //     within the same turn budget.
@@ -20,11 +21,12 @@
 
 import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
-import { claude } from '../../_shared/claude.ts';
+import { claude, usageOf } from '../../_shared/claude.ts';
+import { env } from '../../_shared/env.ts';
 import { buildContext, renderContext } from './context.ts';
 import { getTool, toolDefs } from './tools.ts';
 import { createPendingAction, listForRun } from './pending.ts';
-import { type AgentOutcome, type PlanStep, ToolInputError } from './types.ts';
+import { type AgentOutcome, type AgentUsage, type PlanStep, ToolInputError } from './types.ts';
 
 const MAX_TURNS = 8;
 const MAX_RESUME_TURNS = 5;
@@ -35,12 +37,134 @@ const MAX_PENDING_PER_RUN = 25;
 const MAX_OBSERVATION_CHARS = 6000;
 const MAX_TOKENS = 2400;
 
+function intEnv(name: string, fallback: number): number {
+  const raw = Number(env(name));
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+// ---- spend control -------------------------------------------------------
+//
+// The provider pool is free-tier: quota is consumed per CALL, and because the
+// loop is stateless (the whole transcript is replayed every turn) turn N costs
+// roughly N times the base prompt. So a run's cost grows superlinearly in the
+// number of calls, and a run that is abandoned half-way has already paid for
+// every call it made.
+//
+// The dangerous case is therefore not a slow run — it is a run the *client*
+// gives up on while the server keeps spending. Dio's receiveTimeout is 30s, so
+// the deadline here is deliberately well inside that: the server always decides
+// to stop first, banks the work it has (pending actions are already durable),
+// and answers. Nothing is ever spent on a response no one is waiting for.
+
+/** Wall-clock ceiling for one user turn. Must stay below the client timeout. */
+const RUN_DEADLINE_MS = intEnv('ADA_RUN_DEADLINE_MS', 24_000);
+/** Resume runs after an approval — the user is watching a spinner, keep it short. */
+const RESUME_DEADLINE_MS = intEnv('ADA_RESUME_DEADLINE_MS', 15_000);
+/** Hard cap on provider calls per run, independent of the clock. */
+const MAX_LLM_CALLS = intEnv('ADA_MAX_LLM_CALLS', 8);
+/** Never start a call we have less than this long to finish. */
+const MIN_CALL_HEADROOM_MS = 3_000;
+
+export type StoppedReason = 'deadline' | 'call_budget' | 'turn_budget';
+
+/**
+ * The spend ledger for one run: how long it may take, how many calls it may
+ * make, and what it has actually cost so far.
+ *
+ * `canCall` is asked *before* every provider call, so the budget can only ever
+ * prevent spend — it never interrupts a call already in flight (which would pay
+ * the quota and throw the result away, the exact waste this exists to stop).
+ */
+class Budget {
+  readonly startedAt = Date.now();
+  stoppedReason: StoppedReason | null = null;
+
+  /** Spend in THIS phase — what the allowances below are checked against. */
+  private calls = 0;
+  private promptTokens = 0;
+  private completionTokens = 0;
+
+  /**
+   * Spend already banked by an earlier phase of the same run (a resume inherits
+   * what the original turn cost). Carried for accounting only: a resume is a new
+   * request the user is waiting on, so it gets its own clock and call allowance
+   * rather than being refused because the first half used them up.
+   */
+  private carryCalls = 0;
+  private carryPromptTokens = 0;
+  private carryCompletionTokens = 0;
+
+  /** Headroom required before starting another call — the worst seen so far. */
+  private slowestCallMs = MIN_CALL_HEADROOM_MS;
+  /** Model that served the most recent call, for per-message attribution. */
+  lastModel: string | null = null;
+
+  constructor(private readonly deadlineMs: number, private readonly maxCalls: number) {}
+
+  /** Lifetime totals for the run row. */
+  get totalCalls() { return this.carryCalls + this.calls; }
+  get totalPromptTokens() { return this.carryPromptTokens + this.promptTokens; }
+  get totalCompletionTokens() { return this.carryCompletionTokens + this.completionTokens; }
+
+  /** Spend in this phase only — what the message being written now cost. */
+  get phaseUsage(): AgentUsage {
+    return {
+      prompt_tokens: this.promptTokens,
+      completion_tokens: this.completionTokens,
+      llm_calls: this.calls,
+      model: this.lastModel,
+    };
+  }
+
+  carry(calls: number, promptTokens: number, completionTokens: number) {
+    this.carryCalls = calls;
+    this.carryPromptTokens = promptTokens;
+    this.carryCompletionTokens = completionTokens;
+  }
+
+  canCall(): boolean {
+    if (this.calls >= this.maxCalls) {
+      this.stoppedReason = 'call_budget';
+      return false;
+    }
+    // The first call is always allowed. A deadline misconfigured below the
+    // headroom floor would otherwise refuse it and return a run that spent
+    // nothing and did nothing — a silent no-op is worse than a slow answer.
+    if (this.calls === 0) return true;
+    // Budget for a call as slow as the slowest one this run, rather than an
+    // average: one 6s turn means the next could be 6s too, and overshooting the
+    // deadline is what loses the whole run's spend.
+    const elapsed = Date.now() - this.startedAt;
+    if (elapsed + this.slowestCallMs > this.deadlineMs) {
+      this.stoppedReason = 'deadline';
+      return false;
+    }
+    return true;
+  }
+
+  record(durationMs: number, usage: { prompt_tokens: number; completion_tokens: number; model: string }) {
+    this.calls++;
+    this.promptTokens += usage.prompt_tokens;
+    this.completionTokens += usage.completion_tokens;
+    if (usage.model) this.lastModel = usage.model;
+    if (durationMs > this.slowestCallMs) this.slowestCallMs = durationMs;
+  }
+}
+
+/** A budget for continuing `run`, carrying forward what it has already cost. */
+// deno-lint-ignore no-explicit-any
+function resumeBudget(run: any): Budget {
+  const b = new Budget(RESUME_DEADLINE_MS, MAX_LLM_CALLS);
+  b.carry(run.llm_calls ?? 0, run.prompt_tokens ?? 0, run.completion_tokens ?? 0);
+  return b;
+}
+
 // ---- meta-tools (plan + terminate) ---------------------------------------
 
 const PLAN_TOOL = {
   name: 'record_plan',
   description:
-    'Record the steps you intend to take, before doing anything else. Call it again to revise the plan when what you learn changes it.',
+    'Record the steps you intend to take. Call it in the same turn as your first read tools, not on its own, and skip it for simple one-step requests. Call it again to revise the plan when what you learn changes it.',
   input_schema: {
     type: 'object',
     properties: {
@@ -76,11 +200,20 @@ function systemPrompt(contextBlock: string): string {
     'user\'s real data on their behalf.',
     '',
     '## How you work',
-    '1. Call `record_plan` first with the steps you intend to take.',
-    '2. Read before you write. Use the list_*/get_* tools to learn the real current',
+    '1. Read before you write. Use the list_*/get_* tools to learn the real current',
     '   state — never assume what tasks, subjects or settings exist.',
-    '3. Then propose changes with the create_/update_/delete_/move_/complete_ tools.',
-    '4. Call `finish` with your reply to the user.',
+    '2. Then propose changes with the create_/update_/delete_/move_/complete_ tools.',
+    '3. Call `finish` with your reply to the user.',
+    '',
+    '## Work in as few turns as you can',
+    'Every turn costs a full round trip, and you only get a handful of them.',
+    '- Call ALL the tools you need at once. If you need tasks, subjects and tags,',
+    '  call all three read tools in the SAME turn — never one turn each.',
+    '- When you already know what to change, propose every change in one turn too.',
+    '- If the request has more than one step, call `record_plan` ALONGSIDE your',
+    '  first read tools, never on its own — a turn spent only on record_plan is a',
+    '  wasted round trip. For a simple question, skip record_plan entirely.',
+    '- Do not re-read something you read earlier in this run; you already have it.',
     '',
     '## The confirmation rule (absolute)',
     'Every create, update and delete tool only PROPOSES. Nothing changes until the',
@@ -157,19 +290,30 @@ interface LoopState {
   scratchpad: string[];
   finalText: string;
   turns: number;
+  budget: Budget;
 }
 
 /**
  * The act/observe cycle. Returns when the model calls `finish`, stops calling
- * tools, or exhausts its turn budget.
+ * tools, or runs out of budget (turns, calls, or wall-clock).
  */
 // deno-lint-ignore no-explicit-any
 async function loop(state: LoopState, system: string, messages: any[], maxTurns: number) {
   const tools = [PLAN_TOOL, FINISH_TOOL, ...toolDefs()];
 
   for (let turn = 0; turn < maxTurns; turn++) {
+    // Asked before the call, never during: a call already paid for must be
+    // allowed to return, or its quota is spent for nothing.
+    if (!state.budget.canCall()) {
+      state.scratchpad.push(`Stopped early (${state.budget.stoppedReason}) after ${state.turns} turns.`);
+      return;
+    }
+
     state.turns++;
+    const startedAt = Date.now();
     const res = await claude.createMessage({ system, messages, tools, maxTokens: MAX_TOKENS });
+    state.budget.record(Date.now() - startedAt, usageOf(res, claude.opus));
+
     // deno-lint-ignore no-explicit-any
     const blocks = ((res.content as any[]) ?? []);
 
@@ -181,12 +325,16 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
 
     messages.push({ role: 'assistant', content: res.content });
 
-    const observations = [];
+    // Observations are written back by index so the tool_result blocks stay in
+    // the same order as the tool_use blocks that asked for them, regardless of
+    // the order they actually complete in.
+    const observations: unknown[] = new Array(toolUses.length);
+    const reads: Array<Promise<void>> = [];
     let finished = false;
 
-    for (const tu of toolUses) {
+    for (let i = 0; i < toolUses.length; i++) {
+      const tu = toolUses[i];
       const input = (tu.input ?? {}) as Record<string, unknown>;
-      let observation: unknown;
 
       if (tu.name === 'record_plan') {
         const next = planFromSteps(input.steps);
@@ -195,27 +343,43 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
           state.plan = next;
           state.scratchpad.push(`${revised ? 'Revised' : 'Planned'}: ${next.map((s) => s.step).join(' → ')}`);
         }
-        observation = { ok: true, steps_recorded: next.length };
-      } else if (tu.name === 'finish') {
+        observations[i] = { ok: true, steps_recorded: next.length };
+        continue;
+      }
+
+      if (tu.name === 'finish') {
         const summary = typeof input.summary === 'string' ? input.summary.trim() : '';
         if (summary) state.finalText = summary;
         finished = true;
-        observation = { ok: true };
-      } else {
-        observation = await runTool(state, tu.name, input);
+        observations[i] = { ok: true };
+        continue;
       }
 
-      observations.push({
-        type: 'tool_result',
-        tool_use_id: tu.id,
-        content: truncate(observation),
-      });
+      // Reads are side-effect free and independent, so a turn that asks for
+      // tasks + subjects + tags costs one round trip rather than three. Writes
+      // stay sequential: they append to pendingIds in a meaningful order, and a
+      // plan often creates a subject that a later tool in the same turn names.
+      if (getTool(tu.name)?.kind === 'read') {
+        reads.push(runTool(state, tu.name, input).then((o) => { observations[i] = o; }));
+        continue;
+      }
+      observations[i] = await runTool(state, tu.name, input);
     }
 
-    messages.push({ role: 'user', content: observations });
+    if (reads.length) await Promise.all(reads);
+
+    messages.push({
+      role: 'user',
+      content: toolUses.map((tu, i) => ({
+        type: 'tool_result',
+        tool_use_id: tu.id,
+        content: truncate(observations[i]),
+      })),
+    });
     if (finished) return;
   }
 
+  state.budget.stoppedReason ??= 'turn_budget';
   state.scratchpad.push(`Stopped after ${state.turns} turns (budget reached).`);
 }
 
@@ -281,6 +445,12 @@ async function persistRun(state: LoopState, status: string, error?: string) {
       // deno-lint-ignore no-explicit-any
       scratchpad: state.scratchpad as any,
       turns: state.turns,
+      // Written on every exit path, including `failed`: the quota those calls
+      // consumed was spent whether or not the run produced anything.
+      llm_calls: state.budget.totalCalls,
+      prompt_tokens: state.budget.totalPromptTokens,
+      completion_tokens: state.budget.totalCompletionTokens,
+      stopped_reason: state.budget.stoppedReason,
       updated_at: new Date(),
       ...(error ? { error: error.slice(0, 2000) } : {}),
     },
@@ -316,6 +486,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
     scratchpad: [],
     finalText: '',
     turns: 0,
+    budget: new Budget(RUN_DEADLINE_MS, MAX_LLM_CALLS),
   };
 
   try {
@@ -343,6 +514,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
       text: state.finalText || fallbackText(state),
       plan: state.plan,
       pending_action_ids: state.pendingIds,
+      usage: state.budget.phaseUsage,
     };
   } catch (e) {
     const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
@@ -354,14 +526,31 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
       text: "I couldn't reach my planning brain just now — please try again in a moment.",
       plan: state.plan,
       pending_action_ids: state.pendingIds,
+      usage: state.budget.phaseUsage,
     };
   }
 }
 
+/**
+ * The reply when the model never called `finish` and left no text.
+ *
+ * A run cut short by the budget must not pretend it finished: whatever it did
+ * queue is real and durable, so it is offered, but the user is told there may be
+ * more to do rather than being left assuming the request was fully handled.
+ */
 function fallbackText(state: LoopState): string {
-  if (state.pendingIds.length > 0) {
-    const n = state.pendingIds.length;
-    return `I've put ${n} change${n === 1 ? '' : 's'} together for you — confirm below and I'll apply ${n === 1 ? 'it' : 'them'}.`;
+  const n = state.pendingIds.length;
+  const cutShort = state.budget.stoppedReason !== null;
+
+  if (n > 0) {
+    const head = `I've put ${n} change${n === 1 ? '' : 's'} together for you — confirm below and I'll apply ${n === 1 ? 'it' : 'them'}.`;
+    return cutShort
+      ? `${head} That's as far as I got this time, so ask me again if something's missing.`
+      : head;
+  }
+  if (cutShort) {
+    return "That one took me longer than I've got — could you break it into a smaller ask? " +
+      'Nothing has been changed.';
   }
   return "I'm not sure how to help with that yet — could you tell me a bit more?";
 }
@@ -407,6 +596,7 @@ export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
     scratchpad: Array.isArray(run.scratchpad) ? (run.scratchpad as unknown as string[]) : [],
     finalText: '',
     turns: run.turns,
+    budget: resumeBudget(run),
   };
 
   try {
@@ -467,6 +657,7 @@ export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
       text: state.finalText || summariseOutcomes(actions),
       plan: state.plan,
       pending_action_ids: state.pendingIds,
+      usage: state.budget.phaseUsage,
     };
   } catch (e) {
     const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
@@ -479,6 +670,7 @@ export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
       text: summariseOutcomes(actions),
       plan: state.plan,
       pending_action_ids: [],
+      usage: state.budget.phaseUsage,
     };
   }
 }

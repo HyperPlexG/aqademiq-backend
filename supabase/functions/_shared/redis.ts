@@ -88,13 +88,30 @@ function clientIp(c: Context): string {
 
 const IDEM_TTL_SECONDS = 24 * 60 * 60;
 const MUTATING = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+/** How long a claim is held before we assume the handler died mid-flight. */
+const IDEM_LOCK_TTL_SECONDS = 120;
+/** Sentinel stored while a handler owns the key but has not produced a body yet. */
+const IDEM_IN_FLIGHT = '__in_flight__';
 
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Idempotency-Key replay guard for mutating requests, scoped per bearer token. */
+/**
+ * Idempotency-Key replay guard for mutating requests, scoped per bearer token.
+ *
+ * The key is *claimed* before the handler runs, not only cached after it. The
+ * previous read-then-run-then-cache order left a window as wide as the handler
+ * itself: a duplicate arriving while the first was still working saw an empty
+ * cache and ran the whole thing again. For a cheap CRUD write that is merely
+ * wasteful; for `POST /ada/.../messages` it means a second full agent run, and
+ * the provider quota that run consumes is spent whether or not anyone reads the
+ * answer.
+ *
+ * Fails open exactly as before: with Upstash absent or erroring, `cmd` returns
+ * null throughout and every request simply proceeds.
+ */
 export function idempotency() {
   return async (c: Context, next: Next) => {
     const key = c.req.header('Idempotency-Key');
@@ -104,23 +121,51 @@ export function idempotency() {
     const scope = (await sha256Hex(`${auth}:${key}`)).slice(0, 32);
     const redisKey = `idem:${scope}`;
 
-    const cached = await cmd(['GET', redisKey]);
-    if (typeof cached === 'string') {
-      try {
-        const { status, body } = JSON.parse(cached);
-        c.header('Idempotent-Replay', 'true');
-        return c.json(body, status);
-      } catch { /* fall through and re-run */ }
+    // "OK" = we own the key. null = either someone else owns it or Redis is
+    // unreachable; the GET below tells those apart, and an unreadable result
+    // falls through to running the handler (fail-open).
+    const claimed = await cmd(['SET', redisKey, IDEM_IN_FLIGHT, 'EX', IDEM_LOCK_TTL_SECONDS, 'NX']);
+    if (claimed !== 'OK') {
+      const cached = await cmd(['GET', redisKey]);
+      if (cached === IDEM_IN_FLIGHT) {
+        return c.json({
+          status_code: 409,
+          error: 'REQUEST_IN_PROGRESS',
+          message: 'This request is already being processed.',
+          path: c.req.path,
+          timestamp: new Date().toISOString(),
+        }, 409);
+      }
+      if (typeof cached === 'string') {
+        try {
+          const { status, body } = JSON.parse(cached);
+          c.header('Idempotent-Replay', 'true');
+          return c.json(body, status);
+        } catch { /* unreadable — fall through and re-run */ }
+      }
     }
 
-    await next();
+    try {
+      await next();
+    } catch (e) {
+      // Release the claim: an exception is not a result worth replaying, and
+      // holding the key would block the user's retry for the full lock TTL.
+      await cmd(['DEL', redisKey]);
+      throw e;
+    }
 
     const status = c.res.status;
     if (status >= 200 && status < 300) {
       try {
         const body = await c.res.clone().json();
-        await cmd(['SET', redisKey, JSON.stringify({ status, body }), 'EX', IDEM_TTL_SECONDS, 'NX']);
-      } catch { /* non-JSON or clone failure — skip caching */ }
+        // Plain SET, not NX — we hold the claim and are replacing our own
+        // sentinel, which an NX write would refuse to overwrite.
+        await cmd(['SET', redisKey, JSON.stringify({ status, body }), 'EX', IDEM_TTL_SECONDS]);
+      } catch {
+        await cmd(['DEL', redisKey]); // non-JSON body: nothing to replay later
+      }
+    } else {
+      await cmd(['DEL', redisKey]); // a failure should be retryable
     }
   };
 }
