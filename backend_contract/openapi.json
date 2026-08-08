@@ -1,6 +1,128 @@
 {
   "openapi": "3.0.0",
   "paths": {
+    "/v1/activity-dates": {
+      "get": {
+        "operationId": "ActivityController_activityDates",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/ada/actions/{id}/approve": {
+      "post": {
+        "operationId": "AdaController_approveAction",
+        "summary": "Approve one proposed change and apply it",
+        "description": "Re-validates the action's arguments against CURRENT state before executing, so an approval granted minutes ago cannot act on since-deleted data. Once nothing in the run is still undecided the agent resumes and its follow-up turn is returned as `message`. A failure to execute is reported in `error` rather than thrown — the approval was legitimate, the world simply moved on.",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The decided action, plus Ada's follow-up turn when the run resumed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "$ref": "#/components/schemas/AdaPendingActionDto"
+                    },
+                    "error": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Set when execution failed after approval."
+                    },
+                    "message": {
+                      "$ref": "#/components/schemas/AdaMessageDto"
+                    }
+                  },
+                  "required": [
+                    "action"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such action for this user."
+          },
+          "409": {
+            "description": "The action has already been decided."
+          }
+        }
+      }
+    },
+    "/v1/ada/actions/{id}/reject": {
+      "post": {
+        "operationId": "AdaController_rejectAction",
+        "summary": "Decline one proposed change",
+        "description": "Nothing is written. The agent resumes once the run has nothing left undecided and adapts rather than re-proposing.",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The declined action, plus Ada's follow-up turn when the run resumed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "$ref": "#/components/schemas/AdaPendingActionDto"
+                    },
+                    "message": {
+                      "$ref": "#/components/schemas/AdaMessageDto"
+                    }
+                  },
+                  "required": [
+                    "action"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such action for this user."
+          },
+          "409": {
+            "description": "The action has already been decided."
+          }
+        }
+      }
+    },
+    "/v1/ada/chat/clear": {
+      "post": {
+        "operationId": "AdaController_clear",
+        "summary": "Archive every active conversation",
+        "description": "Corrected from the generated 201: nothing is created.",
+        "responses": {
+          "200": {
+            "description": "Cleared."
+          }
+        }
+      }
+    },
     "/v1/ada/conversations": {
       "post": {
         "operationId": "AdaController_createConversation",
@@ -27,6 +149,130 @@
         "responses": {
           "200": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/ada/conversations/{cid}/messages/{mid}/apply-plan": {
+      "post": {
+        "operationId": "AdaController_applyPlan",
+        "parameters": [
+          {
+            "name": "cid",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mid",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/ada/conversations/{id}/actions/decide": {
+      "post": {
+        "operationId": "AdaController_decideAllActions",
+        "summary": "Approve or decline every outstanding change in a conversation",
+        "description": "Applied in proposal order, not concurrently: a plan often creates a subject and then tasks against it, so running them in parallel would race.",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "approve": {
+                    "type": "boolean",
+                    "description": "true applies them all, false declines them all."
+                  }
+                },
+                "required": [
+                  "approve"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Every decided action, and any follow-up turns the resumed runs produced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AdaPendingActionDto"
+                      }
+                    },
+                    "decided": {
+                      "type": "integer"
+                    },
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AdaMessageDto"
+                      }
+                    }
+                  },
+                  "required": [
+                    "actions",
+                    "decided"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`approve` was not a boolean."
+          }
+        }
+      }
+    },
+    "/v1/ada/conversations/{id}/archive": {
+      "post": {
+        "operationId": "AdaController_archive",
+        "summary": "Archive a conversation",
+        "description": "Corrected from the generated 201: nothing is created, an existing row is flagged inactive.",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Archived."
           }
         }
       }
@@ -79,82 +325,149 @@
         }
       }
     },
-    "/v1/ada/conversations/{cid}/messages/{mid}/apply-plan": {
-      "post": {
-        "operationId": "AdaController_applyPlan",
-        "parameters": [
-          {
-            "name": "cid",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "mid",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
+    "/v1/ada/memories": {
+      "get": {
+        "operationId": "AdaController_memories",
+        "summary": "What Ada has stored about this user",
+        "description": "Durable facts carried into every conversation. `source` distinguishes what the user stated outright from what Ada inferred — the pair a user most needs to tell apart when deciding what to remove.",
+        "responses": {
+          "200": {
+            "description": "Stored memories, grouped by kind then most recently updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "memories": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AdaMemoryDto"
+                      }
+                    }
+                  },
+                  "required": [
+                    "memories"
+                  ]
+                }
+              }
             }
           }
-        ],
+        }
+      },
+      "delete": {
+        "operationId": "AdaController_clearMemories",
+        "summary": "Forget everything about this user",
         "responses": {
-          "201": {
-            "description": ""
+          "200": {
+            "description": "How many memories were removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "cleared"
+                    },
+                    "deleted": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "deleted"
+                  ]
+                }
+              }
+            }
           }
         }
       }
     },
-    "/v1/ada/conversations/{id}/archive": {
-      "post": {
-        "operationId": "AdaController_archive",
+    "/v1/ada/memories/{id}": {
+      "delete": {
+        "operationId": "AdaController_deleteMemory",
+        "summary": "Forget one memory",
         "parameters": [
           {
             "name": "id",
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
         "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/ada/chat/clear": {
-      "post": {
-        "operationId": "AdaController_clear",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/ada/uploads": {
-      "post": {
-        "operationId": "AdaController_upload",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdaUploadInitDto"
+          "200": {
+            "description": "Removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "deleted"
+                    },
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "id"
+                  ]
+                }
               }
             }
+          },
+          "404": {
+            "description": "No such memory for this user."
           }
-        },
+        }
+      }
+    },
+    "/v1/ada/pending-actions": {
+      "get": {
+        "operationId": "AdaController_pendingActions",
+        "summary": "Changes Ada has proposed and is waiting on",
+        "description": "Every create/update/delete the agent wants to make is parked here until the user approves it. Nothing in the user's data has changed while an action is `pending`.",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "required": false,
+            "in": "query",
+            "description": "Limit to one conversation. Omit for everything outstanding.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
         "responses": {
-          "201": {
-            "description": ""
+          "200": {
+            "description": "Outstanding proposals, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AdaPendingActionDto"
+                      }
+                    }
+                  },
+                  "required": [
+                    "actions"
+                  ]
+                }
+              }
+            }
           }
         }
       }
@@ -180,686 +493,16 @@
         }
       }
     },
-    "/v1/tasks/history/completions": {
-      "get": {
-        "operationId": "TasksController_completions",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/tasks": {
-      "get": {
-        "operationId": "TasksController_query",
-        "parameters": [
-          {
-            "name": "date",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "pattern": "YMD",
-              "type": "string"
-            }
-          },
-          {
-            "name": "from",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "pattern": "YMD",
-              "type": "string"
-            }
-          },
-          {
-            "name": "to",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "pattern": "YMD",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      },
+    "/v1/ada/uploads": {
       "post": {
-        "operationId": "TasksController_create",
+        "operationId": "AdaController_upload",
         "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateTaskDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/tasks/move": {
-      "post": {
-        "operationId": "TasksController_move",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MoveTasksDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/tasks/{occ}/toggle": {
-      "patch": {
-        "operationId": "TasksController_toggle",
-        "parameters": [
-          {
-            "name": "occ",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "date",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "pattern": "YMD",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/tasks/{occ}/breakdown": {
-      "post": {
-        "operationId": "TasksController_breakdown",
-        "parameters": [
-          {
-            "name": "occ",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BreakdownDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/tasks/{occ}": {
-      "patch": {
-        "operationId": "TasksController_patch",
-        "parameters": [
-          {
-            "name": "occ",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PatchTaskDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      },
-      "delete": {
-        "operationId": "TasksController_remove",
-        "parameters": [
-          {
-            "name": "occ",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/subjects": {
-      "get": {
-        "operationId": "SubjectsController_list",
-        "parameters": [
-          {
-            "name": "semester_id",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      },
-      "post": {
-        "operationId": "SubjectsController_create",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateSubjectDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/subjects/reorder": {
-      "patch": {
-        "operationId": "SubjectsController_reorder",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ReorderSubjectsDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/subjects/{id}": {
-      "get": {
-        "operationId": "SubjectsController_get",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      },
-      "patch": {
-        "operationId": "SubjectsController_update",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateSubjectDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      },
-      "delete": {
-        "operationId": "SubjectsController_remove",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/subjects/{id}/files": {
-      "post": {
-        "operationId": "SubjectsController_addFile",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/subjects/{id}/files/scan": {
-      "post": {
-        "operationId": "SubjectsController_scanFile",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/guest": {
-      "post": {
-        "operationId": "AuthController_guest",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/signup": {
-      "post": {
-        "operationId": "AuthController_signup",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SignupDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/verify-otp": {
-      "post": {
-        "operationId": "AuthController_verifyOtp",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VerifyOtpDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/resend-otp": {
-      "post": {
-        "operationId": "AuthController_resendOtp",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResendOtpDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/signin": {
-      "post": {
-        "operationId": "AuthController_signin",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SigninDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/refresh": {
-      "post": {
-        "operationId": "AuthController_refresh",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RefreshDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/auth/forgot-password": {
-      "post": {
-        "operationId": "AuthController_forgotPassword",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ForgotPasswordDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/auth/forgot-password/verify": {
-      "post": {
-        "operationId": "AuthController_forgotVerify",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ForgotVerifyDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/forgot-password/reset": {
-      "post": {
-        "operationId": "AuthController_forgotReset",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ForgotResetDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/change-password": {
-      "post": {
-        "operationId": "AuthController_changePassword",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChangePasswordDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/link-guest": {
-      "post": {
-        "operationId": "AuthController_linkGuest",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LinkGuestDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/signout": {
-      "post": {
-        "operationId": "AuthController_signout",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/sessions": {
-      "get": {
-        "operationId": "AuthController_listSessions",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/sessions/{id}": {
-      "delete": {
-        "operationId": "AuthController_revokeSession",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/sessions/revoke-all": {
-      "post": {
-        "operationId": "AuthController_revokeAll",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/sso/apple": {
-      "post": {
-        "operationId": "AuthController_ssoApple",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SsoAppleDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/auth/sso/google": {
-      "post": {
-        "operationId": "AuthController_ssoGoogle",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SsoGoogleDto"
+                "$ref": "#/components/schemas/AdaUploadInitDto"
               }
             }
           }
@@ -917,6 +560,349 @@
             }
           }
         },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/change-password": {
+      "post": {
+        "operationId": "AuthController_changePassword",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/forgot-password": {
+      "post": {
+        "operationId": "AuthController_forgotPassword",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotPasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/forgot-password/reset": {
+      "post": {
+        "operationId": "AuthController_forgotReset",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotResetDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/forgot-password/verify": {
+      "post": {
+        "operationId": "AuthController_forgotVerify",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotVerifyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/guest": {
+      "post": {
+        "operationId": "AuthController_guest",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/link-guest": {
+      "post": {
+        "operationId": "AuthController_linkGuest",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkGuestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "operationId": "AuthController_refresh",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/resend-otp": {
+      "post": {
+        "operationId": "AuthController_resendOtp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResendOtpDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/sessions": {
+      "get": {
+        "operationId": "AuthController_listSessions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/sessions/{id}": {
+      "delete": {
+        "operationId": "AuthController_revokeSession",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/sessions/revoke-all": {
+      "post": {
+        "operationId": "AuthController_revokeAll",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/signin": {
+      "post": {
+        "operationId": "AuthController_signin",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SigninDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/signout": {
+      "post": {
+        "operationId": "AuthController_signout",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/signup": {
+      "post": {
+        "operationId": "AuthController_signup",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/sso/apple": {
+      "post": {
+        "operationId": "AuthController_ssoApple",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SsoAppleDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/sso/google": {
+      "post": {
+        "operationId": "AuthController_ssoGoogle",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SsoGoogleDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/auth/verify-otp": {
+      "post": {
+        "operationId": "AuthController_verifyOtp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyOtpDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/debug/sql-smoke-test": {
+      "post": {
+        "operationId": "HealthController_sqlSmokeTest",
+        "summary": "",
+        "description": "Debug-only Cloud SQL smoke test. Creates a table and inserts 5 rows.",
+        "parameters": [],
         "responses": {
           "201": {
             "description": ""
@@ -1023,27 +1009,6 @@
         }
       }
     },
-    "/v1/ratings": {
-      "post": {
-        "operationId": "FeedbackController_rate",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RateDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
     "/v1/feedback": {
       "post": {
         "operationId": "FeedbackController_feedback",
@@ -1058,91 +1023,6 @@
             }
           }
         },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/telemetry/events": {
-      "post": {
-        "operationId": "FeedbackController_telemetry",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TelemetryDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/uploads/init": {
-      "post": {
-        "operationId": "FilesController_initUpload",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InitUploadDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/uploads/staging/init": {
-      "post": {
-        "operationId": "FilesController_initStagingUpload",
-        "summary": "",
-        "description": "No subject_id required yet — used by onboarding step 3 (upload syllabus\n before any subject exists). Client PUTs the file, then passes the\n returned `key` into `POST /onboarding/complete`.",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InitStagingUploadDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/uploads/{id}/commit": {
-      "post": {
-        "operationId": "FilesController_commitUpload",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "201": {
             "description": ""
@@ -1323,11 +1203,217 @@
         }
       }
     },
-    "/v1/readyz": {
+    "/v1/integrations/calendar/ics": {
+      "post": {
+        "operationId": "IntegrationsController_importIcs",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/integrations/google/oauth/callback": {
+      "post": {
+        "operationId": "IntegrationsController_googleOauth",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/email-preferences": {
       "get": {
-        "operationId": "HealthController_readyz",
+        "operationId": "SettingsController_getEmailPrefs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "operationId": "SettingsController_patchEmailPrefs",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateEmailPrefsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/export": {
+      "get": {
+        "operationId": "SettingsController_exportData",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/notification-channels": {
+      "get": {
+        "operationId": "SettingsController_getNotificationChannels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      },
+      "put": {
+        "operationId": "SettingsController_putNotificationChannels",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutChannelsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/notification-preferences": {
+      "get": {
+        "operationId": "SettingsController_getNotificationPrefs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "operationId": "SettingsController_patchNotificationPrefs",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateNotificationPrefsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/notifications/history": {
+      "get": {
+        "operationId": "NotificationsController_history",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/notifications/inbox": {
+      "get": {
+        "operationId": "NotificationsController_inbox",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/notifications/sweep": {
+      "post": {
+        "operationId": "NotificationsController_sweep",
         "summary": "",
-        "description": "Readiness — dependencies reachable. 503 if DB or Redis is down (Cloud Run\n gates traffic on this).",
+        "description": "Manually trigger the reminder sweep for the current user (test/debug).\n `?force=morning|review` bypasses the time-of-day match.",
+        "parameters": [
+          {
+            "name": "force",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/notifications/test": {
+      "post": {
+        "operationId": "NotificationsController_test",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/settings": {
+      "get": {
+        "operationId": "SettingsController_getSettings",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "operationId": "SettingsController_patchSettings",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSettingsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/stats": {
+      "get": {
+        "operationId": "StatsController_stats",
         "parameters": [],
         "responses": {
           "200": {
@@ -1356,88 +1442,6 @@
         }
       }
     },
-    "/v1/debug/sql-smoke-test": {
-      "post": {
-        "operationId": "HealthController_sqlSmokeTest",
-        "summary": "",
-        "description": "Debug-only Cloud SQL smoke test. Creates a table and inserts 5 rows.",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/integrations/calendar/ics": {
-      "post": {
-        "operationId": "IntegrationsController_importIcs",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/integrations/google/oauth/callback": {
-      "post": {
-        "operationId": "IntegrationsController_googleOauth",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/mood-entries/week": {
-      "get": {
-        "operationId": "MoodController_week",
-        "parameters": [
-          {
-            "name": "date",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/mood-entries/today": {
-      "get": {
-        "operationId": "MoodController_today",
-        "parameters": [
-          {
-            "name": "field",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/mood-entries": {
       "post": {
         "operationId": "MoodController_log",
@@ -1454,6 +1458,26 @@
         },
         "responses": {
           "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/mood-entries/{date}": {
+      "get": {
+        "operationId": "MoodController_getDay",
+        "parameters": [
+          {
+            "name": "date",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
             "description": ""
           }
         }
@@ -1489,67 +1513,12 @@
         }
       }
     },
-    "/v1/mood-entries/{date}": {
+    "/v1/mood-entries/today": {
       "get": {
-        "operationId": "MoodController_getDay",
+        "operationId": "MoodController_today",
         "parameters": [
           {
-            "name": "date",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/me/notifications/history": {
-      "get": {
-        "operationId": "NotificationsController_history",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/me/notifications/inbox": {
-      "get": {
-        "operationId": "NotificationsController_inbox",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/me/notifications/test": {
-      "post": {
-        "operationId": "NotificationsController_test",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/me/notifications/sweep": {
-      "post": {
-        "operationId": "NotificationsController_sweep",
-        "summary": "",
-        "description": "Manually trigger the reminder sweep for the current user (test/debug).\n `?force=morning|review` bypasses the time-of-day match.",
-        "parameters": [
-          {
-            "name": "force",
+            "name": "field",
             "required": true,
             "in": "query",
             "schema": {
@@ -1558,7 +1527,34 @@
           }
         ],
         "responses": {
-          "201": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/mood-entries/week": {
+      "get": {
+        "operationId": "MoodController_week",
+        "parameters": [
+          {
+            "name": "date",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
             "description": ""
           }
         }
@@ -1626,69 +1622,32 @@
         }
       }
     },
-    "/v1/me/stats": {
-      "get": {
-        "operationId": "StatsController_stats",
+    "/v1/ratings": {
+      "post": {
+        "operationId": "FeedbackController_rate",
         "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/streaks/current": {
-      "get": {
-        "operationId": "StreaksController_current",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RateDto"
               }
             }
           }
-        }
-      }
-    },
-    "/v1/activity-dates": {
-      "get": {
-        "operationId": "ActivityController_activityDates",
-        "parameters": [],
+        },
         "responses": {
-          "200": {
+          "201": {
             "description": ""
           }
         }
       }
     },
-    "/v1/week-count": {
+    "/v1/readyz": {
       "get": {
-        "operationId": "ActivityController_weekCount",
-        "parameters": [
-          {
-            "name": "date",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/today-has-activity": {
-      "get": {
-        "operationId": "ActivityController_todayHasActivity",
+        "operationId": "HealthController_readyz",
+        "summary": "",
+        "description": "Readiness — dependencies reachable. 503 if DB or Redis is down (Cloud Run\n gates traffic on this).",
         "parameters": [],
         "responses": {
           "200": {
@@ -1729,17 +1688,6 @@
         }
       }
     },
-    "/v1/semesters/active": {
-      "get": {
-        "operationId": "SemestersController_getActive",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
     "/v1/semesters": {
       "get": {
         "operationId": "SemestersController_list",
@@ -1765,26 +1713,6 @@
         },
         "responses": {
           "201": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/semesters/{id}/activate": {
-      "patch": {
-        "operationId": "SemestersController_activate",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
             "description": ""
           }
         }
@@ -1838,10 +1766,157 @@
         }
       }
     },
-    "/v1/me/settings": {
+    "/v1/semesters/{id}/activate": {
+      "patch": {
+        "operationId": "SemestersController_activate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/semesters/active": {
       "get": {
-        "operationId": "SettingsController_getSettings",
+        "operationId": "SemestersController_getActive",
         "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/streaks/current": {
+      "get": {
+        "operationId": "StreaksController_current",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/study-tags": {
+      "get": {
+        "operationId": "TagsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "operationId": "TagsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTagDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/study-tags/{label}": {
+      "delete": {
+        "operationId": "TagsController_remove",
+        "parameters": [
+          {
+            "name": "label",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/subjects": {
+      "get": {
+        "operationId": "SubjectsController_list",
+        "parameters": [
+          {
+            "name": "semester_id",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "operationId": "SubjectsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSubjectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/subjects/{id}": {
+      "get": {
+        "operationId": "SubjectsController_get",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": ""
@@ -1849,14 +1924,23 @@
         }
       },
       "patch": {
-        "operationId": "SettingsController_patchSettings",
-        "parameters": [],
+        "operationId": "SubjectsController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateSettingsDto"
+                "$ref": "#/components/schemas/UpdateSubjectDto"
               }
             }
           }
@@ -1866,102 +1950,71 @@
             "description": ""
           }
         }
-      }
-    },
-    "/v1/me/email-preferences": {
-      "get": {
-        "operationId": "SettingsController_getEmailPrefs",
-        "parameters": [],
+      },
+      "delete": {
+        "operationId": "SubjectsController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": ""
           }
         }
-      },
+      }
+    },
+    "/v1/subjects/{id}/files": {
+      "post": {
+        "operationId": "SubjectsController_addFile",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/subjects/{id}/files/scan": {
+      "post": {
+        "operationId": "SubjectsController_scanFile",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/subjects/reorder": {
       "patch": {
-        "operationId": "SettingsController_patchEmailPrefs",
+        "operationId": "SubjectsController_reorder",
         "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateEmailPrefsDto"
+                "$ref": "#/components/schemas/ReorderSubjectsDto"
               }
             }
           }
         },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/me/notification-preferences": {
-      "get": {
-        "operationId": "SettingsController_getNotificationPrefs",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      },
-      "patch": {
-        "operationId": "SettingsController_patchNotificationPrefs",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateNotificationPrefsDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/me/notification-channels": {
-      "get": {
-        "operationId": "SettingsController_getNotificationChannels",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      },
-      "put": {
-        "operationId": "SettingsController_putNotificationChannels",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PutChannelsDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        }
-      }
-    },
-    "/v1/me/export": {
-      "get": {
-        "operationId": "SettingsController_exportData",
-        "parameters": [],
         "responses": {
           "200": {
             "description": ""
@@ -2005,17 +2058,6 @@
         }
       }
     },
-    "/v1/sync/mutations": {
-      "post": {
-        "operationId": "SyncController_mutations",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        }
-      }
-    },
     "/v1/sync/cursor": {
       "get": {
         "operationId": "SyncController_cursor",
@@ -2027,10 +2069,49 @@
         }
       }
     },
-    "/v1/study-tags": {
-      "get": {
-        "operationId": "TagsController_list",
+    "/v1/sync/mutations": {
+      "post": {
+        "operationId": "SyncController_mutations",
         "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/tasks": {
+      "get": {
+        "operationId": "TasksController_query",
+        "parameters": [
+          {
+            "name": "date",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "pattern": "YMD",
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "pattern": "YMD",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "pattern": "YMD",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": ""
@@ -2038,14 +2119,14 @@
         }
       },
       "post": {
-        "operationId": "TagsController_create",
+        "operationId": "TasksController_create",
         "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateTagDto"
+                "$ref": "#/components/schemas/CreateTaskDto"
               }
             }
           }
@@ -2057,14 +2138,256 @@
         }
       }
     },
-    "/v1/study-tags/{label}": {
-      "delete": {
-        "operationId": "TagsController_remove",
+    "/v1/tasks/{occ}": {
+      "patch": {
+        "operationId": "TasksController_patch",
         "parameters": [
           {
-            "name": "label",
+            "name": "occ",
             "required": true,
             "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchTaskDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      },
+      "delete": {
+        "operationId": "TasksController_remove",
+        "parameters": [
+          {
+            "name": "occ",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/tasks/{occ}/breakdown": {
+      "post": {
+        "operationId": "TasksController_breakdown",
+        "parameters": [
+          {
+            "name": "occ",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BreakdownDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/tasks/{occ}/toggle": {
+      "patch": {
+        "operationId": "TasksController_toggle",
+        "parameters": [
+          {
+            "name": "occ",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "pattern": "YMD",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/tasks/history/completions": {
+      "get": {
+        "operationId": "TasksController_completions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/move": {
+      "post": {
+        "operationId": "TasksController_move",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveTasksDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/telemetry/events": {
+      "post": {
+        "operationId": "FeedbackController_telemetry",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelemetryDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/today-has-activity": {
+      "get": {
+        "operationId": "ActivityController_todayHasActivity",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/uploads/{id}/commit": {
+      "post": {
+        "operationId": "FilesController_commitUpload",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/uploads/init": {
+      "post": {
+        "operationId": "FilesController_initUpload",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitUploadDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/uploads/staging/init": {
+      "post": {
+        "operationId": "FilesController_initStagingUpload",
+        "summary": "",
+        "description": "No subject_id required yet — used by onboarding step 3 (upload syllabus\n before any subject exists). Client PUTs the file, then passes the\n returned `key` into `POST /onboarding/complete`.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitStagingUploadDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/week-count": {
+      "get": {
+        "operationId": "ActivityController_weekCount",
+        "parameters": [
+          {
+            "name": "date",
+            "required": true,
+            "in": "query",
             "schema": {
               "type": "string"
             }
@@ -3162,6 +3485,275 @@
         },
         "required": [
           "label"
+        ]
+      },
+      "AdaActionFieldDto": {
+        "type": "object",
+        "description": "One line of the before/after diff shown on a confirmation card.",
+        "properties": {
+          "label": {
+            "type": "string",
+            "example": "Date"
+          },
+          "from": {
+            "type": "string",
+            "nullable": true,
+            "description": "Absent when the field is being set for the first time."
+          },
+          "to": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "label"
+        ]
+      },
+      "AdaPendingActionDto": {
+        "type": "object",
+        "description": "A change Ada wants to make, waiting on the user's decision.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "conversation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "message_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "The assistant message whose card this is."
+          },
+          "tool_name": {
+            "type": "string",
+            "example": "create_task"
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ]
+          },
+          "resource": {
+            "type": "string",
+            "enum": [
+              "task",
+              "subject",
+              "semester",
+              "study_tag",
+              "mood",
+              "profile",
+              "settings",
+              "memory"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "example": "Add task “Review lecture notes”"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdaActionFieldDto"
+            }
+          },
+          "warning": {
+            "type": "string",
+            "nullable": true,
+            "description": "Irreversible or wide-reaching effects, and scheduling clashes. Shown in red."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "executed",
+              "rejected",
+              "failed",
+              "superseded"
+            ]
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decided_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "tool_name",
+          "operation",
+          "resource",
+          "title",
+          "fields",
+          "status",
+          "created_at"
+        ]
+      },
+      "AdaMemoryDto": {
+        "type": "object",
+        "description": "One durable fact Ada holds about the user, across conversations.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "preference",
+              "constraint",
+              "pattern",
+              "goal",
+              "fact"
+            ],
+            "description": "preference = how they like to work; constraint = a fixed commitment; pattern = something observed repeatedly; goal = what they are working toward; fact = durable context."
+          },
+          "content": {
+            "type": "string",
+            "example": "Prefers deep work before noon"
+          },
+          "subject_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Set when the memory applies to one subject only."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "user",
+              "ada"
+            ],
+            "description": "`user` = they stated it outright. `ada` = inferred from behaviour, so weaker — surface this distinction in the UI."
+          },
+          "confidence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "content",
+          "source",
+          "confidence",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "AdaMessageDto": {
+        "type": "object",
+        "description": "One turn in an Ada conversation.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "is_user": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "object"
+            },
+            "description": "Legacy pre-agent propose_plan payload; drives the \"Add to my plan\" button."
+          },
+          "plan_footer": {
+            "type": "string",
+            "nullable": true
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "agent_status": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "completed",
+              "awaiting_confirmation",
+              "failed",
+              null
+            ]
+          },
+          "agent_plan": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "step": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdaPendingActionDto"
+            }
+          },
+          "attachments": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "object"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "is_user",
+          "text",
+          "created_at"
         ]
       }
     }

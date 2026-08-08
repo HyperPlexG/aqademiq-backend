@@ -35,6 +35,11 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      # Fails if the committed contract is missing the edge-only endpoints or has
+      # drifted between its copies. The frontend repo isn't checked out here, so
+      # that copy is reported as skipped rather than failing the job.
+      - name: Check the OpenAPI contract is merged and in sync
+        run: npm run openapi:check
       # Export the OpenAPI contract as a build artifact (handoff to the app team).
       - name: Generate OpenAPI spec
         run: EMIT_OPENAPI=1 timeout 60 node dist/main.js || true
