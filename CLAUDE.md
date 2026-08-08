@@ -2,10 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## ⚠️ Migration in progress (since 2026-07-16)
+## The deployed backend is `supabase/functions/`, not `src/`
 
-The backend is being **rewritten from NestJS/GCP to Deno + Hono on Supabase Edge
-Functions** — new code lives under `supabase/functions/`. Key decisions:
+The migration from NestJS/GCP to **Deno + Hono on Supabase Edge Functions** is
+**complete** (all 21 routers + services ported; no `TODO(§x)` markers remain).
+`supabase/functions/api/` is what serves production traffic; `src/` is the
+readable NestJS reference, still built and tested in CI. Port behaviour *from*
+`src/features/*` — do not assume it is live. Key decisions from the port:
 - **Vertex AI is kept** for Claude inference, via hand-rolled REST
   (`supabase/functions/_shared/vertex.ts` — SA-JWT signed with Web Crypto, no Node SDK).
 - **Auth is Supabase Auth** (switched 2026-07-18, superseding the earlier keep-custom-JWT decision):
@@ -17,11 +20,18 @@ Functions** — new code lives under `supabase/functions/`. Key decisions:
   `runtime = "deno"`) emitting a gitignored client into `supabase/functions/_shared/prisma/`.
 - URL shape: function `api` + Hono `basePath('/api/v1')` — clients keep `/v1/<resource>`
   paths on base URL `https://<ref>.supabase.co/functions/v1/api`.
-- **Gate:** `supabase/functions/prisma-spike/` must pass (Prisma driver adapter inside a
-  real Edge Function) before further feature porting.
+- `supabase/functions/prisma-spike/` was the phase-1 gate (Prisma driver adapter
+  inside a real Edge Function); it passed and is still deployed as a smoke test.
+- **AI provider is `rotating` in production** — `_shared/ai.ts` round-robins a pool
+  of free-tier Gemini + Cerebras keys (`GEMINI_API_KEYS` / `CEREBRAS_API_KEYS`),
+  adapting both to the Anthropic Messages shape. `_shared/claude.ts` falls back to
+  Anthropic or Vertex only when those creds are set.
+- Storage moved GCS → **Supabase Storage** (private `materials` bucket,
+  `_shared/storage.ts`); the `GCS_*` names in older docs are stale.
 
-The NestJS app below remains the working reference implementation until cutover; port
-module behavior from `src/features/*` into Hono routers rather than reinventing it.
+The sections below describe the NestJS reference (`src/`). The Hono port mirrors
+its structure one-for-one: `routers/<feature>.ts` ≈ controller,
+`services/<feature>.service.ts` ≈ service, `_shared/` ≈ `infra/` + `common/`.
 
 ## Commands
 
@@ -126,9 +136,28 @@ supabase/
 - Auth: `Authorization: Bearer <supabase_access_token>` (Supabase Auth; anonymous sign-in for guests). For local testing without Supabase, serve a mock JWKS and point `SUPABASE_URL` at it.
 - Swagger UI at `/docs`; OpenAPI JSON at `/docs-json`.
 
-### Implementation state
+### Ada's agent runtime (`supabase/functions/api/agent/`)
 
-The scaffold compiles end-to-end with ~219 `TODO(§x)` markers. Service method bodies are stubs. Suggested fill order: `auth` → `tasks` (§4.2 recurring engine first) → `subjects`/`semesters` → `mood`/`streaks` → `sync` → `ada`.
+The most load-bearing subsystem here and the one with no NestJS equivalent —
+`src/features/ada/` still holds the older single-shot `propose_plan` design.
+
+| File | Role |
+|---|---|
+| `runtime.ts` | The act/observe loop. `runAgent` (MAX_TURNS 8) and `resumeRun` (MAX_RESUME_TURNS 5). Owns the system prompt and the `record_plan`/`finish` meta-tools. |
+| `tools.ts` | The capability surface: 9 read tools (execute immediately) + 15 write tools (propose only). Each is a validated adapter over an existing feature service. |
+| `pending.ts` | The confirmation gate — `ada_pending_actions` CRUD, `approveAction` (re-parses args against current state, then executes), `rejectAction`, `decideAll`. |
+| `context.ts` | The grounded world-state block: today/local time/timezone/weekday, subject and study-tag ids to use verbatim, open-task count. |
+
+Invariants to preserve when extending it:
+- Write tools never execute inside the loop — they return
+  `status: 'awaiting_user_confirmation'` and park a row.
+- A tool's `parse()` throwing `ToolInputError` is a *correctable observation*, not
+  a run failure; `runTool` converts every throw into `{error, hint}`.
+- `pending.ts` must not import `runtime.ts` (the service layer calls both, keeping
+  the dependency one-way).
+- Conversation memory is `HISTORY_LIMIT` (16) raw `ada_messages` rows for the
+  current session, replayed as plain text — there is no summarisation or
+  cross-session recall today.
 
 ### Credentials (optional in dev)
 
