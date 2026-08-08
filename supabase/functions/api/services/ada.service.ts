@@ -147,7 +147,7 @@ export const adaService = {
     // Proposals are created mid-run, before this message exists — attach them now
     // so reloading the conversation re-renders their cards in the right place.
     if (outcome.pending_action_ids.length) {
-      await prismaBase().adaPendingAction.updateMany({
+      await tenantDb().adaPendingAction.updateMany({
         where: { id: { in: outcome.pending_action_ids } },
         data: { message_id: assistantMsg.id },
       });

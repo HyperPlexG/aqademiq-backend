@@ -373,13 +373,30 @@ function fallbackText(state: LoopState): string {
  * so it can verify, adapt, or propose a correction rather than assuming success.
  */
 export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
+  // Claim the run atomically. Approving two cards in quick succession means two
+  // requests can each see "nothing pending" and both try to resume; the
+  // conditional update lets exactly one of them win, so the user gets one
+  // follow-up message rather than two.
+  const claimed = await prismaBase().adaAgentRun.updateMany({
+    where: { id: runId, user_id: RequestContext.userId, status: 'awaiting_confirmation' },
+    data: { status: 'running', updated_at: new Date() },
+  });
+  if (claimed.count !== 1) return null;
+
   const run = await tenantDb().adaAgentRun.findFirst({ where: { id: runId } });
   if (!run) return null;
-  if (run.status !== 'awaiting_confirmation') return null;
 
   const actions = await listForRun(runId);
   const decided = actions.filter((a) => a.status !== 'pending');
-  if (decided.length === 0) return null;
+  if (decided.length === 0) {
+    // Nothing actually happened — hand the claim back rather than stranding the
+    // run in `running`, where no later approval could ever resume it.
+    await prismaBase().adaAgentRun.update({
+      where: { id: runId },
+      data: { status: 'awaiting_confirmation' },
+    });
+    return null;
+  }
 
   const state: LoopState = {
     runId,
