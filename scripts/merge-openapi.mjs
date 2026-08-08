@@ -73,6 +73,17 @@ spec.paths = Object.fromEntries(Object.entries(spec.paths).sort(([a], [b]) => a.
 
 const serialised = `${JSON.stringify(spec, null, 2)}\n`;
 
+/**
+ * Compare on content, not line endings.
+ *
+ * The repo has core.autocrlf=true and no .gitattributes, so a Windows working
+ * copy holds CRLF while this writes LF and a Linux CI runner checks out LF.
+ * Without normalising, `--check` would fail on every developer machine for a
+ * file that is byte-identical as far as git is concerned — a gate that cries
+ * wolf gets disabled, which would defeat the point of adding it.
+ */
+const sameContent = (a, b) => a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n');
+
 let drifted = false;
 for (const target of TARGETS) {
   if (!existsSync(target)) {
@@ -83,7 +94,7 @@ for (const target of TARGETS) {
     continue;
   }
   const current = readFileSync(target, 'utf8');
-  if (current === serialised) continue;
+  if (sameContent(current, serialised)) continue;
   drifted = true;
   if (checkOnly) {
     console.error(`out of date: ${target}`);
