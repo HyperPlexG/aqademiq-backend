@@ -65,7 +65,10 @@ async function sendFcm(token: string, title: string, body: string, data?: Record
           // banner reliably shows on APNs (the bare `notification` block relies
           // on FCM's default aps mapping, which some iOS versions render silently).
           apns: {
-            headers: { 'apns-priority': '10' },
+            // apns-push-type is required on iOS 13+; without it APNs may defer or
+            // drop the push. priority 10 = deliver immediately (5 would let iOS
+            // batch it for power-saving, which showed up as ~20-minute delays).
+            headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
             payload: { aps: { alert: { title, body }, sound: 'default', badge: 1 } },
           },
           android: {
