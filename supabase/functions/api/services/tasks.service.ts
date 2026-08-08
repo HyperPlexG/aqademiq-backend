@@ -24,6 +24,8 @@ import {
 // coercing arbitrary tag ids to 'other' was what made every custom tag render
 // as "Other" on the plan.) An absent category keeps the column default.
 const MS_PER_DAY = 86_400_000;
+// How far before a task's scheduled start the "before task" reminder fires.
+const REMINDER_LEAD_MS = 10 * 60 * 1000;
 const RANGE_CAP_DAYS = 366;
 const COMPLETIONS_TTL = 300;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -365,6 +367,11 @@ export const tasksService = {
         estimated_duration_mins: estimatedMins,
         scheduled_start_at: dto.scheduled_at ? scheduledStart : null,
         scheduled_end_at: dto.scheduled_at ? new Date(scheduledStart.getTime() + estimatedMins * 60 * 1000) : null,
+        // A "before task" reminder fires REMINDER_LEAD_MS before the scheduled
+        // start. Without this, tasks.reminder_at stayed null and the sweep never
+        // had anything to send — the root cause of no push reminders arriving.
+        // Date-only tasks (no scheduled time) get no before-task reminder.
+        reminder_at: dto.scheduled_at ? new Date(scheduledStart.getTime() - REMINDER_LEAD_MS) : null,
         due_at: toUtcDate(anchorStr),
         task_type: await resolveTaskCategory(dto.category),
         description: dto.note ?? null,
@@ -392,9 +399,13 @@ export const tasksService = {
         dbData.scheduled_start_at = start;
         const mins = task.estimated_duration_mins ?? 5;
         dbData.scheduled_end_at = new Date(start.getTime() + mins * 60 * 1000);
+        // Reschedule the before-task reminder to match the new start. Clearing
+        // the prior delivery lets it fire again for the new time.
+        dbData.reminder_at = new Date(start.getTime() - REMINDER_LEAD_MS);
       } else {
         dbData.scheduled_start_at = null;
         dbData.scheduled_end_at = null;
+        dbData.reminder_at = null;
       }
     }
     if (dto.status !== undefined) {
@@ -433,6 +444,7 @@ export const tasksService = {
           estimated_duration_mins: mins,
           scheduled_start_at: start,
           scheduled_end_at: end,
+          reminder_at: start ? new Date(start.getTime() - REMINDER_LEAD_MS) : null,
           due_at: toUtcDate(dateStr),
           status,
           priority: task.priority ?? 'medium',
