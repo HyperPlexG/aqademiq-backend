@@ -122,8 +122,53 @@ Once `google-services.json` + `GoogleService-Info.plist` are in place I will add
    delivers it within ~1 minute of the time.
 
 ## Notes / follow-ups
-- v1 sweep covers **before-task** reminders (`tasks.reminder_at`). Daily check-ins
-  (morning/evening, per-timezone from `notification_preferences`) and weekly review are
-  a follow-up — they need per-user timezone handling.
+- The sweep covers **before-task** reminders (`tasks.reminder_at`) and, when enabled,
+  Ada's proactive check-ins (below). Weekly review is still a follow-up.
 - APNs-direct (no Firebase) is intentionally not used; routing iOS through FCM keeps a
   single client SDK and a single backend sender.
+
+## 6. Ada's proactive check-ins (opt-in)
+
+The same minute sweep also runs `agent/proactive.ts`, which lets Ada start a
+conversation instead of only answering one. **It is off by default** — a system
+that messages real users unprompted should be switched on deliberately, not by a
+deploy. No new cron entry is needed; it rides the schedule from step 5.
+
+Set in **Supabase → Edge Functions → Secrets**:
+
+| Secret | Default | What it does |
+|---|---|---|
+| `ADA_NUDGES_ENABLED` | *(off)* | `1` turns proactive check-ins on. Nothing runs without it. |
+| `ADA_NUDGE_DAILY_CAP` | `50` | Hard ceiling on agent runs per day across **all** users. The main cost control. |
+| `ADA_NUDGE_DEADLINE_MS` | `18000` | Wall-clock budget for one check-in run. |
+| `ADA_NUDGE_MAX_CALLS` | `4` | Provider calls one check-in may make. |
+
+How a check-in is decided, cheapest test first:
+
+1. Is the user within 15 minutes of their `morning_checkin_time` or
+   `evening_review_time` **in their own timezone**, with push enabled and a
+   device token? (One indexed query for all users; returns nothing on almost
+   every one of the day's 1,440 sweeps.)
+2. Do they actually have something worth saying — work due within 3 days, or
+   overdue? If not, Ada stays quiet. A check-in with nothing to check in on
+   teaches people to ignore the notification.
+3. Do they already have proposals waiting for a decision? If so, skip; don't pile on.
+4. Win the atomic claim in `notification_deliveries`
+   (`nudge:<user>:<local-date>:<kind>`), which caps it at one per kind per user
+   per day and makes overlapping sweeps safe.
+
+Only then does the agent run. Its reply is saved as a real Ada message (with any
+proposed changes attached as normal confirmation cards) and a short form is
+pushed. The message is persisted **before** the push, so a delivery failure still
+leaves it waiting in the app.
+
+Turning it off is just removing `ADA_NUDGES_ENABLED`; in-flight state is only ever
+one sweep deep.
+
+To watch what it costs:
+
+```sql
+select date_trunc('day', created_at) as day, status, count(*)
+from notification_deliveries where kind = 'ada_nudge'
+group by 1, 2 order by 1 desc;
+```

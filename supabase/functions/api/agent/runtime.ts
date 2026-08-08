@@ -552,6 +552,14 @@ export interface RunAgentInput {
   sessionId: string;
   messageId: string | null;
   goal: string;
+  /**
+   * Tighter allowances than a chat turn.
+   *
+   * A proactive check-in has nobody waiting on it and should cost a fraction of
+   * an interactive run — it is one short message, not a planning session — so
+   * the caller can shrink the budget rather than inheriting the chat defaults.
+   */
+  budget?: { deadlineMs: number; maxCalls: number };
 }
 
 /** Run the agent for one user turn. */
@@ -575,7 +583,10 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
     scratchpad: [],
     finalText: '',
     turns: 0,
-    budget: new Budget(RUN_DEADLINE_MS, MAX_LLM_CALLS),
+    budget: new Budget(
+      input.budget?.deadlineMs ?? RUN_DEADLINE_MS,
+      input.budget?.maxCalls ?? MAX_LLM_CALLS,
+    ),
     today: '',
     timezone: 'UTC',
   };

@@ -16,6 +16,7 @@ import { supabaseAuth } from '../_shared/auth.ts';
 import { rateLimit, idempotency } from '../_shared/redis.ts';
 import { prismaBase } from '../_shared/prisma.ts';
 import { notificationsService } from './services/notifications.service.ts';
+import { runNudgeSweep } from './agent/proactive.ts';
 
 // ---- feature routers ----
 import { profileRouter, meRouter } from './routers/profile.ts';
@@ -79,7 +80,18 @@ app.post('/cron/notifications', async (c) => {
   if (!secret || c.req.header('x-cron-secret') !== secret) {
     throw new HttpError(401, 'Unauthorized');
   }
-  return c.json(await notificationsService.runReminderSweep());
+  // Two independent passes on the same minute tick: due task reminders, and
+  // Ada's proactive check-ins (agent/proactive.ts, off unless ADA_NUDGES_ENABLED).
+  // Settled rather than awaited together so a failure in one never suppresses
+  // the other — a broken nudge must not stop reminders going out.
+  const [reminders, nudges] = await Promise.allSettled([
+    notificationsService.runReminderSweep(),
+    runNudgeSweep(),
+  ]);
+  return c.json({
+    reminders: reminders.status === 'fulfilled' ? reminders.value : { error: String(reminders.reason) },
+    nudges: nudges.status === 'fulfilled' ? nudges.value : { error: String(nudges.reason) },
+  });
 });
 
 // ---- feature routers (mounted under basePath /api/v1) ----
