@@ -790,6 +790,38 @@ export const tasksService = {
     };
   },
 
+  /**
+   * DELETE /tasks/:occ/steps — remove every microstep from this occurrence.
+   *
+   * Turning the breakdown toggle off in the editor has to actually take the
+   * steps away. Leaving them would mean the switch reads "off" while the plan
+   * still shows microtasks, and the next save would append a second set on top.
+   */
+  async clearSteps(occId: string) {
+    const { task, dateStr, isVirtual } = await resolveOccurrence(occId);
+
+    // A repeating occurrence owns no row until a breakdown materialises one, so
+    // its steps hang off that child rather than off the series.
+    //
+    // Both branches derive from tenantDb() lookups, which is what establishes
+    // ownership: task_steps has no user_id of its own, so deleting by task id
+    // is only safe because that id was resolved through the tenant client.
+    const targetIds = isVirtual
+      ? (await tenantDb().task.findMany({
+        where: { parent_task_id: task.id, due_at: toUtcDate(dateStr) },
+        select: { id: true },
+      })).map((t: { id: string }) => t.id)
+      : [task.id];
+
+    if (targetIds.length === 0) return { deleted: 0 };
+
+    const { count } = await prismaBase().taskStep.deleteMany({
+      where: { task_id: { in: targetIds } },
+    });
+    if (count > 0) await invalidateCompletions();
+    return { deleted: count };
+  },
+
   /** GET /tasks/history/completions */
   async completions() {
     const cacheKey = `tasks:completions:${RequestContext.userId}`;

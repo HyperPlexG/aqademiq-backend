@@ -91,6 +91,11 @@ tasksRouter.post('/:occ/breakdown', async (c) => {
   return c.json(await tasksService.breakdown(c.req.param('occ'), dto), 201);
 });
 
+// DELETE /tasks/:occ/steps — drop the microsteps (breakdown toggled off).
+tasksRouter.delete('/:occ/steps', async (c) => {
+  return c.json(await tasksService.clearSteps(c.req.param('occ')));
+});
+
 // PATCH /tasks/:occ
 tasksRouter.patch('/:occ', async (c) => {
   const b = await jsonBody(c.req);

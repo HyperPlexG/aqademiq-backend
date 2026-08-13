@@ -2216,6 +2216,51 @@
         }
       }
     },
+    "/v1/tasks/{occ}/steps": {
+      "delete": {
+        "operationId": "TasksController_clearSteps",
+        "summary": "Remove every microstep from a task occurrence",
+        "description": "Backs the breakdown toggle in the task editor: switching it off has to take the existing microsteps away, or the switch reads \"off\" while the plan still shows them and the next save appends a second set. Idempotent - deleting from a task with no steps returns `deleted: 0`. For a repeating occurrence the steps live on the row that the breakdown materialised for that date, and only that date is affected.",
+        "tags": [
+          "tasks"
+        ],
+        "parameters": [
+          {
+            "name": "occ",
+            "required": true,
+            "in": "path",
+            "description": "Task id, or `<task-id>@<YYYY-MM-DD>` for one occurrence of a repeating task.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "How many steps were removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "integer",
+                      "example": 3
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task for this user."
+          }
+        }
+      }
+    },
     "/v1/tasks/{occ}/toggle": {
       "patch": {
         "operationId": "TasksController_toggle",
