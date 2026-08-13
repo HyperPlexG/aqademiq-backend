@@ -310,6 +310,8 @@ model TaskStep {
   task         Task      @relation(fields: [task_id], references: [id], onDelete: Cascade)
   title        String    @db.VarChar(500)
   description  String?
+  /// Planned length of this step. Null when unknown.
+  estimated_seconds Int?
   status       String    @default("pending") @db.VarChar(20)
   order_index  Int       @default(0)
   completed_at DateTime? @db.Timestamptz

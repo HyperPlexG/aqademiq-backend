@@ -20,7 +20,26 @@ export interface CreateMessageParams {
   /** Inline files for the final user turn. Requires the `rotating` provider. */
   files?: AiFile[];
 }
-export interface BreakdownStep { title: string; duration_seconds: number; }
+export interface BreakdownStep { title: string; detail?: string; duration_seconds: number; }
+
+/**
+ * What the model needs to break a task down usefully.
+ *
+ * The old signature took a bare title and a duration, which is why breakdowns
+ * read as boilerplate: asked to split "Lab report" with nothing else, there is
+ * no honest answer except "plan / work / review". Everything here is already on
+ * the task row or one join away.
+ */
+export interface BreakdownContext {
+  title: string;
+  totalSeconds: number;
+  subject?: string | null;
+  taskType?: string | null;
+  /** The user's own notes on the task — usually the most specific signal there is. */
+  notes?: string | null;
+  dueInDays?: number | null;
+  priority?: string | null;
+}
 
 type Provider = 'rotating' | 'anthropic' | 'vertex' | 'none';
 
@@ -155,18 +174,35 @@ export const claude = {
   },
 
   /** §2.2 task breakdown via fast model + forced tool call. Throws on failure so the caller can fall back. */
-  async breakdownSteps(title: string, totalSeconds: number, maxSteps = 4): Promise<BreakdownStep[]> {
+  async breakdownSteps(ctx: BreakdownContext, maxSteps = 6): Promise<BreakdownStep[]> {
+    const minutes = Math.max(1, Math.round(ctx.totalSeconds / 60));
     const tool: ToolDef = {
       name: 'emit_breakdown',
-      description: 'Return 2–4 concrete, ordered microsteps that complete the task.',
+      description:
+        'Return ordered steps that actually complete THIS task. Each step names ' +
+        'the specific thing to produce or do, not a phase of work.',
       input_schema: {
         type: 'object',
         properties: {
           steps: {
-            type: 'array', minItems: 2, maxItems: maxSteps,
+            type: 'array',
+            minItems: 2,
+            maxItems: maxSteps,
             items: {
               type: 'object',
-              properties: { title: { type: 'string' }, duration_seconds: { type: 'integer', minimum: 0 } },
+              properties: {
+                title: {
+                  type: 'string',
+                  description:
+                    'Imperative and specific: "Derive the transfer function for the RLC network", ' +
+                    'not "Work on assignment". Never restate the task title.',
+                },
+                detail: {
+                  type: 'string',
+                  description: 'One short line on what finishing this step looks like.',
+                },
+                duration_seconds: { type: 'integer', minimum: 0 },
+              },
               required: ['title', 'duration_seconds'],
             },
           },
@@ -174,16 +210,50 @@ export const claude = {
         required: ['steps'],
       },
     };
+
+    // Only real facts go in. An absent subject or note is left out rather than
+    // sent as "unknown", which the model tends to answer around.
+    const facts = [
+      `Task: ${ctx.title}`,
+      ctx.subject ? `Subject: ${ctx.subject}` : null,
+      ctx.taskType ? `Type: ${ctx.taskType}` : null,
+      ctx.notes ? `The user's own notes: ${ctx.notes}` : null,
+      ctx.dueInDays !== null && ctx.dueInDays !== undefined
+        ? `Due in ${ctx.dueInDays} day(s)`
+        : null,
+      ctx.priority ? `Priority: ${ctx.priority}` : null,
+      `Total time budgeted: about ${minutes} minutes`,
+    ].filter(Boolean).join('\n');
+
     const messages = [{
       role: 'user',
       content:
-        `Break this study task into ${maxSteps} or fewer concrete microsteps. ` +
-        `Total time is about ${Math.round(totalSeconds / 60)} minutes; split duration_seconds across the steps.\n\n` +
-        `Task: ${title}`,
+        `${facts}\n\n` +
+        `Break this into the fewest steps that genuinely move it forward — 2 for ` +
+        `something small, up to ${maxSteps} for a large piece of work. Split ` +
+        `duration_seconds so the total is about ${minutes} minutes.`,
     }];
+
+    // The system prompt carries the anti-boilerplate rules because they apply to
+    // every call, and because "don't restate the title" is the single instruction
+    // that most changes the output.
+    const system = [
+      'You break a student\'s task into steps they can actually start.',
+      '',
+      'Rules:',
+      '- Use the subject and the task type. A lab report, an essay and a problem',
+      '  set do not decompose the same way.',
+      '- Name the actual work: the section to draft, the derivation to do, the',
+      '  dataset to plot. Never "Plan X", "Work on X" or "Review X" — a step that',
+      '  would fit any task at all is not a breakdown.',
+      '- Never restate the task title as a step.',
+      '- If the notes say what the task involves, follow them over your own guess.',
+      '- Fewer, meatier steps beat many trivial ones.',
+    ].join('\n');
+
     const res = provider === 'rotating'
       ? await rotatingChat({
-        system: 'You break study tasks into concrete microsteps.',
+        system,
         messages,
         tools: [tool],
         toolChoice: { type: 'tool', name: 'emit_breakdown' },
@@ -191,7 +261,7 @@ export const claude = {
       })
       : await call(haiku(), {
         max_tokens: 1024,
-        system: 'You break study tasks into concrete microsteps.',
+        system,
         messages,
         tools: [tool],
         tool_choice: { type: 'tool', name: 'emit_breakdown' },
@@ -201,9 +271,43 @@ export const claude = {
     const steps = block?.input?.steps;
     if (!Array.isArray(steps) || steps.length === 0) throw new Error('no steps returned');
     // deno-lint-ignore no-explicit-any
-    return steps.map((s: any) => ({
-      title: String(s.title),
-      duration_seconds: Number.isInteger(s.duration_seconds) ? s.duration_seconds : 0,
-    }));
+    const mapped: BreakdownStep[] = steps.map((s: any) => ({
+      title: String(s.title ?? '').trim(),
+      detail: typeof s.detail === 'string' && s.detail.trim() ? s.detail.trim() : undefined,
+      duration_seconds: Number.isInteger(s.duration_seconds) && s.duration_seconds >= 0
+        ? s.duration_seconds
+        : 0,
+    })).filter((s: BreakdownStep) => s.title.length > 0);
+
+    if (mapped.length === 0) throw new Error('no usable steps returned');
+    // A model that ignored the rules and echoed the title back is worse than the
+    // caller's fallback, so reject it rather than persisting it.
+    if (isBoilerplate(mapped, ctx.title)) throw new Error('breakdown was boilerplate');
+    return mapped;
   },
 };
+
+/**
+ * True when the "breakdown" is just the task title wearing a hat.
+ *
+ * Small models under a forced tool call reliably produce `Plan X / Work on X /
+ * Review X` when they have nothing specific to say. Persisting that trains users
+ * to ignore the feature, so it is treated as a failed call.
+ */
+export function isBoilerplate(steps: BreakdownStep[], title: string): boolean {
+  const normalise = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const t = normalise(title);
+  const generic = /^(plan|prepare|start|begin|work on|do|continue|finish|complete|review|check|revise|wrap up)\b/;
+
+  let emptyish = 0;
+  for (const step of steps) {
+    const s = normalise(step.title);
+    // "Work on <title>" / "Review <title>" — the phrase adds nothing to the title.
+    const stripped = s.replace(generic, '').trim();
+    if (s === t || stripped === t || stripped.length === 0) emptyish++;
+    else if (generic.test(s) && stripped.length < 12) emptyish++;
+  }
+  // Tolerates one weak step in an otherwise real plan; rejects a set that is
+  // mostly filler.
+  return emptyish >= Math.ceil(steps.length / 2);
+}

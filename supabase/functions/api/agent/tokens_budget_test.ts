@@ -12,17 +12,25 @@
 import { assert } from 'jsr:@std/assert@1';
 import { measure } from './tokens_bench.ts';
 
-/** Whole-registry ceiling. Ratcheted down after the action-dispatch collapse. */
-const MAX_TOOL_TOKENS = 3_200;
+/**
+ * Whole-registry ceiling.
+ *
+ * Ratcheted down from 4,200 by the action-dispatch collapse, then given back
+ * ~140 for breakdown_task's `steps` array. That schema is what lets Ada write
+ * the steps itself instead of delegating to a context-free call that returned
+ * "Plan X / Work on X / Review X" — worth ~1,100 tokens a message.
+ */
+const MAX_TOOL_TOKENS = 3_300;
 
 /**
  * No single tool should dominate.
  *
- * Sized for a dispatch group, not a plain tool: `task_write` is ~672 because it
+ * Sized for a dispatch group, not a plain tool: `task_write` is ~814 because it
  * carries six actions' worth of fields — which is the point, since those six
- * cost 1,083 when declared separately. A plain tool anywhere near this is a bug.
+ * cost 1,083 when declared separately — plus the nested `steps` array that
+ * breakdown contributes. A plain tool anywhere near this is a bug.
  */
-const MAX_SINGLE_TOOL_TOKENS = 750;
+const MAX_SINGLE_TOOL_TOKENS = 850;
 
 /**
  * Tools must not outgrow everything else combined by more than 3×. This catches

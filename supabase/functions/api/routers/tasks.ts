@@ -72,7 +72,22 @@ tasksRouter.patch('/:occ/toggle', async (c) => {
 // POST /tasks/:occ/breakdown
 tasksRouter.post('/:occ/breakdown', async (c) => {
   const b = await jsonBody(c.req);
-  const dto: BreakdownDto = { date: str(b, 'date', false, { pattern: YMD }) };
+  // `steps` is optional: when absent the service generates them, when present
+  // (Ada, or a client sending edited ones) they are used as written.
+  const rawSteps = (b as Record<string, unknown>).steps;
+  const dto: BreakdownDto = {
+    date: str(b, 'date', false, { pattern: YMD }),
+    steps: Array.isArray(rawSteps)
+      ? rawSteps.map((s) => {
+        const row = (s ?? {}) as Record<string, unknown>;
+        return {
+          title: String(row.title ?? ''),
+          detail: typeof row.detail === 'string' ? row.detail : undefined,
+          duration_seconds: Number(row.duration_seconds) || 0,
+        };
+      })
+      : undefined,
+  };
   return c.json(await tasksService.breakdown(c.req.param('occ'), dto), 201);
 });
 

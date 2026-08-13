@@ -11,6 +11,7 @@
 // ago is re-validated against current state before it runs.
 
 import { tenantDb } from '../../_shared/prisma.ts';
+import { isBoilerplate } from '../../_shared/claude.ts';
 import { tasksService } from '../services/tasks.service.ts';
 import { subjectsService } from '../services/subjects.service.ts';
 import { semestersService } from '../services/semesters.service.ts';
@@ -787,25 +788,94 @@ const writeTools: AgentTool[] = [
   },
   {
     name: 'breakdown_task',
-    description: 'Propose splitting a task into ordered microsteps.',
+    // YOU write the steps. The server has only the task row; you have the
+    // subject, the user's notes, their memories and this conversation — so a
+    // breakdown you write is specific and one the server invents is not.
+    description:
+      'Propose splitting a task into ordered steps that you write yourself. Each ' +
+      'step must name the actual work — the section to draft, the derivation to ' +
+      'do, the dataset to plot. Never "Plan X" / "Work on X" / "Review X", and ' +
+      'never restate the task title: a step that would fit any other task is not ' +
+      'a breakdown. Read the task first if you need its notes.',
     kind: 'write',
     operation: 'update',
     resource: 'task',
     input_schema: {
       type: 'object',
-      properties: { task_id: { type: 'string', description: 'Occurrence id from list_tasks.' } },
-      required: ['task_id'],
+      properties: {
+        task_id: { type: 'string', description: 'Occurrence id from list_tasks.' },
+        steps: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 6,
+          description: 'Ordered. Fewer, meatier steps beat many trivial ones.',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Imperative and specific to this task.' },
+              detail: { type: 'string', description: 'One line on what finishing it looks like.' },
+              duration_minutes: { type: 'integer', description: 'Roughly, 0–1440.' },
+            },
+            required: ['title'],
+          },
+        },
+      },
+      required: ['task_id', 'steps'],
     },
     async parse(i) {
       const taskId = reqOccurrenceId(i, 'task_id');
-      await ownedTask(taskId);
-      return { task_id: taskId };
+      const task = await ownedTask(taskId);
+
+      const raw = i.steps;
+      if (!Array.isArray(raw) || raw.length < 2) {
+        throw new ToolInputError(
+          '`steps` must be an array of at least 2 steps that you write yourself.',
+          'Read the task, then describe the actual pieces of work it breaks into.',
+        );
+      }
+      if (raw.length > 6) throw new ToolInputError('`steps` must have at most 6 items.');
+
+      const steps = raw.map((s, idx) => {
+        const row = (s ?? {}) as Raw;
+        const title = reqStr(row, 'title', 500);
+        const mins = optInt(row, 'duration_minutes', 0, MAX_DURATION_MINUTES);
+        return {
+          title,
+          detail: optStr(row, 'detail', 2000),
+          duration_seconds: mins === undefined ? 0 : mins * 60,
+          _idx: idx,
+        };
+      });
+
+      // The same rule the prompt states, enforced. A model that ignored it gets
+      // a correctable observation instead of writing filler into the user's plan.
+      const flat = steps.map((s) => ({ title: s.title, duration_seconds: s.duration_seconds }));
+      if (isBoilerplate(flat, task.title)) {
+        throw new ToolInputError(
+          'Those steps are generic — they restate the task or say "plan/work on/review".',
+          'Name the actual work: the specific section, derivation, dataset or question set.',
+        );
+      }
+
+      return {
+        task_id: taskId,
+        steps: steps.map(({ title, detail, duration_seconds }) => ({ title, detail, duration_seconds })),
+      };
     },
     async preview(a): Promise<ActionPreview> {
       const before = await ownedTask(a.task_id);
-      return { title: `Break “${before.title}” into steps`, fields: [{ label: 'Task', to: before.title }] };
+      // Every step is shown, because the steps ARE the change being approved —
+      // a card reading only "break this into steps" asks the user to confirm
+      // something they cannot see.
+      return {
+        title: `Break “${before.title}” into ${a.steps.length} steps`,
+        fields: a.steps.map((s: { title: string; detail?: string; duration_seconds: number }, i: number) => ({
+          label: `Step ${i + 1}${s.duration_seconds > 0 ? ` · ${minutesLabel(Math.round(s.duration_seconds / 60))}` : ''}`,
+          to: s.detail ? `${s.title} — ${s.detail}` : s.title,
+        })),
+      };
     },
-    execute: (a) => tasksService.breakdown(a.task_id, {}),
+    execute: (a) => tasksService.breakdown(a.task_id, { steps: a.steps }),
   },
 
   // ---- subjects ----

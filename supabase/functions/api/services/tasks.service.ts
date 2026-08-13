@@ -7,7 +7,7 @@ import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { cacheDel, cacheGet, cacheSet } from '../../_shared/redis.ts';
 import { revision } from '../../_shared/revision.ts';
-import { claude } from '../../_shared/claude.ts';
+import { type BreakdownContext, type BreakdownStep, claude } from '../../_shared/claude.ts';
 import {
   dayDiff,
   occursOn,
@@ -99,12 +99,25 @@ export interface MoveTasksDto {
 }
 export interface BreakdownDto {
   date?: string;
+  /**
+   * Steps supplied by the caller instead of generated here.
+   *
+   * This is the path Ada uses. The agent already holds the subject, the user's
+   * memories, the conversation and any attached material — far more than this
+   * service can reconstruct from a task row — and its steps have been through
+   * the confirmation gate, so the user has already seen and approved the exact
+   * wording. Generating here would throw all of that away and ask a small model
+   * to guess from the title.
+   */
+  steps?: Array<{ title: string; detail?: string; duration_seconds?: number }>;
 }
 
 // ---- occurrence dto ----
 interface OccurrenceStepDto {
   id: string;
   title: string;
+  /** One line on what finishing this step looks like. Null when not set. */
+  detail?: string | null;
   duration_seconds: number;
   status: string;
 }
@@ -140,10 +153,68 @@ function formatTime(d: Date | null | undefined): string | null {
   }
 }
 
-function fallbackStepRows(title: string, totalSeconds: number): Array<{ title: string; duration_seconds: number }> {
-  const t = title.trim() || 'task';
-  const titles = [`Plan: ${t}`, `Work on ${t}`, `Review ${t}`];
-  const per = Math.max(0, Math.round(totalSeconds / titles.length));
+/** Whole days from `dateStr` to the task's due date; null when it has none. */
+function daysUntil(dueAt: Date | null | undefined, dateStr: string): number | null {
+  if (!dueAt) return null;
+  return dayDiff(dateStr, ymd(dueAt));
+}
+
+/**
+ * Used only when the model is unavailable or produced boilerplate.
+ *
+ * This used to be `Plan: X` / `Work on X` / `Review X`, which fits literally
+ * any task and so told the user nothing — and because it also ran whenever the
+ * provider was rate-limited, it was what most people actually saw. Keying off
+ * `task_type` at least produces the shape of the work: an essay, a problem set
+ * and a lab report do not decompose the same way.
+ *
+ * Still a template, and deliberately the last resort — Ada supplies real steps
+ * on its own path (BreakdownDto.steps), and this only backs the app's button.
+ */
+function fallbackStepRows(ctx: BreakdownContext): BreakdownStep[] {
+  const type = (ctx.taskType ?? '').toLowerCase();
+  const of = ctx.subject ? ` for ${ctx.subject}` : '';
+
+  const byType: Array<[RegExp, string[]]> = [
+    [/essay|report|writ|paper|thesis|dissert/, [
+      'Decide the argument and jot the section headings',
+      'Draft the body sections from your notes',
+      'Tighten the intro and conclusion, then proofread',
+    ]],
+    [/lab|experiment|practical/, [
+      'Write up the method and what you measured',
+      'Work through the calculations and plot the results',
+      'Interpret the results and note sources of error',
+    ]],
+    [/problem|assignment|homework|pset|exercise/, [
+      'Read the questions and mark which need which technique',
+      'Work the straightforward questions first',
+      'Attack the ones you flagged, then check your answers',
+    ]],
+    [/exam|test|quiz|midterm|final|revis/, [
+      'List the topics on the syllabus and rate your confidence',
+      'Work through the weakest topics with practice questions',
+      'Do a timed past paper under exam conditions',
+    ]],
+    [/read|chapter|paper|article/, [
+      'Skim headings and the summary to get the shape',
+      'Read closely and take notes in your own words',
+      'Write three sentences on what it argued',
+    ]],
+    [/present|slide|talk|demo|poster/, [
+      'Outline the story you want to tell',
+      'Build the slides for each beat of it',
+      'Rehearse aloud once and cut whatever runs long',
+    ]],
+  ];
+
+  const titles = byType.find(([re]) => re.test(type))?.[1] ?? [
+    `Work out exactly what "${ctx.title.trim()}" needs${of}`,
+    'Do the main part of the work',
+    'Check it over and note anything unfinished',
+  ];
+
+  const per = Math.max(0, Math.round(ctx.totalSeconds / titles.length));
   return titles.map((title) => ({ title, duration_seconds: per }));
 }
 
@@ -167,7 +238,8 @@ function occurrenceDto(task: any, dateStr: string): OccurrenceDto {
     .map((st: any) => ({
       id: st.id,
       title: st.title,
-      duration_seconds: 0,
+      detail: st.description ?? null,
+      duration_seconds: st.estimated_seconds ?? 0,
       status: st.status === 'completed' ? 'COMPLETE' : 'PENDING',
     }));
 
@@ -620,7 +692,7 @@ export const tasksService = {
   },
 
   /** POST /tasks/:occ/breakdown */
-  async breakdown(occId: string, _dto: BreakdownDto) {
+  async breakdown(occId: string, dto: BreakdownDto) {
     const { task, dateStr, isVirtual } = await resolveOccurrence(occId);
     let targetTaskId = task.id;
 
@@ -649,32 +721,70 @@ export const tasksService = {
     }
 
     const durationSeconds = (task.estimated_duration_mins ?? 5) * 60;
-    let steps: Array<{ title: string; duration_seconds: number }>;
-    if (claude.isConfigured()) {
-      try {
-        steps = await claude.breakdownSteps(task.title, durationSeconds);
-      } catch {
-        steps = fallbackStepRows(task.title, durationSeconds);
-      }
+    let steps: BreakdownStep[];
+
+    if (dto.steps?.length) {
+      // Caller-supplied (Ada). Already confirmed by the user, so it is taken as
+      // written rather than re-generated or "improved".
+      steps = dto.steps
+        .map((s) => ({
+          title: String(s.title ?? '').trim().slice(0, 500),
+          detail: s.detail?.trim() ? s.detail.trim().slice(0, 2000) : undefined,
+          duration_seconds: Number.isFinite(s.duration_seconds)
+            ? Math.max(0, Math.min(86_400, Math.round(s.duration_seconds!)))
+            : 0,
+        }))
+        .filter((s) => s.title.length > 0);
     } else {
-      steps = fallbackStepRows(task.title, durationSeconds);
+      // No steps given — the app's own "break this down" button. Generate, but
+      // with the task's real context rather than just its title.
+      const subject = task.course_id
+        ? await tenantDb().course.findFirst({ where: { id: task.course_id } })
+        : null;
+      const ctx = {
+        title: task.title,
+        totalSeconds: durationSeconds,
+        subject: subject?.name ?? null,
+        taskType: task.task_type ?? null,
+        notes: task.description ?? null,
+        dueInDays: daysUntil(task.due_at, dateStr),
+        priority: task.priority ?? null,
+      };
+      steps = [];
+      if (claude.isConfigured()) {
+        try {
+          steps = await claude.breakdownSteps(ctx);
+        } catch {
+          // Includes the boilerplate rejection — treated as a failed call.
+          steps = [];
+        }
+      }
+      if (steps.length === 0) steps = fallbackStepRows(ctx);
     }
+
+    if (steps.length === 0) throw new HttpError(400, 'No usable steps to add.');
 
     const rows = steps.map((s, i) => ({
       task_id: targetTaskId,
       title: s.title,
+      description: s.detail ?? null,
+      estimated_seconds: s.duration_seconds > 0 ? s.duration_seconds : null,
       status: 'pending',
       order_index: i,
     }));
 
     await prismaBase().taskStep.createMany({ data: rows });
-    const createdSteps = await prismaBase().taskStep.findMany({ where: { task_id: targetTaskId } });
+    const createdSteps = await prismaBase().taskStep.findMany({
+      where: { task_id: targetTaskId },
+      orderBy: { order_index: 'asc' },
+    });
 
     return {
       steps: createdSteps.map((s) => ({
         id: s.id,
         title: s.title,
-        duration_seconds: 0,
+        detail: s.description ?? null,
+        duration_seconds: s.estimated_seconds ?? 0,
         status: s.status === 'completed' ? 'COMPLETE' : 'PENDING',
       })),
     };

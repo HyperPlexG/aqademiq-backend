@@ -122,8 +122,38 @@ export class MoveTasksDto {
   ids?: string[];
 }
 
+export class BreakdownStepDto {
+  @IsString()
+  title!: string;
+
+  /** One line on what finishing this step looks like. */
+  @IsOptional()
+  @IsString()
+  detail?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(86400)
+  duration_seconds?: number;
+}
+
 export class BreakdownDto {
   @IsOptional()
   @Matches(YMD)
   date?: string;
+
+  /**
+   * Steps supplied by the caller instead of generated server-side.
+   *
+   * Ada's path: the agent holds the subject, the user's notes, their memories
+   * and the conversation, so its steps are specific in a way this endpoint
+   * cannot reconstruct from a task row — and they have already been approved
+   * through the confirmation gate. Absent, the server generates them.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => BreakdownStepDto)
+  steps?: BreakdownStepDto[];
 }
