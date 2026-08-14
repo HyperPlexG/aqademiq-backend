@@ -12,6 +12,13 @@ focusRouter.post('/', async (c) => {
     prism_mode: str(b, 'prism_mode', false),
     task_id: str(b, 'task_id', false),
     task_date: str(b, 'task_date', false, { pattern: /^\d{4}-\d{2}-\d{2}$/ }),
+    // Optional analytics inputs. All absent today from the app, so each stays
+    // optional — a client that sends none must keep working exactly as before.
+    mood_index: num(b, 'mood_index', false, { int: true, min: 0, max: 4 }),
+    control_arm: typeof (b as Record<string, unknown>).control_arm === 'boolean'
+      ? (b as Record<string, boolean>).control_arm
+      : undefined,
+    engine_version: str(b, 'engine_version', false),
   };
   return c.json(await focusService.start(dto), 201);
 });
@@ -30,6 +37,8 @@ focusRouter.post('/:id/complete', async (c) => {
   const dto: CompleteFocusDto = {
     elapsed_sec: num(b, 'elapsed_sec', false, { int: true, min: 0 }),
     mood_index: num(b, 'mood_index', false, { int: true, min: 0, max: 4 }),
+    // 1–5, matching the column's check constraint. Nothing collects it yet.
+    session_rating: num(b, 'session_rating', false, { int: true, min: 1, max: 5 }),
   };
   return c.json(await focusService.complete(c.req.param('id'), dto), 201);
 });

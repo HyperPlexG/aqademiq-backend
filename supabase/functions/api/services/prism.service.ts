@@ -33,6 +33,26 @@ const MODES: Array<{ key: string; label: string; description: string; file?: str
   { key: 'whitenoise', label: 'White noise', description: 'Even broadband noise', file: 'whitenoise.m3u8' },
 ];
 
+/**
+ * The Prism *engine* modes the app actually runs.
+ *
+ * These are synthesised on device by flutter_soloud, not streamed from a CDN, so
+ * they have no file and never appear in the mode catalog. They still need a
+ * prism_presets row, because the app sends these labels verbatim as
+ * `prism_mode` when a focus session starts and analytics joins on the preset.
+ *
+ * Without them the vocabularies did not overlap at all — the server knew
+ * rain/forest/cafe/whitenoise, the app sent "Deep Work" — so resolvePresetId
+ * returned null for every real session. Measured on production: 2 of 84 rows
+ * carried a preset id.
+ */
+const ENGINE_MODES: Array<{ key: string; label: string; description: string }> = [
+  { key: 'Deep Work', label: 'Deep Work', description: 'Bright, dense low-frequency pulses' },
+  { key: 'Flow', label: 'Flow', description: 'Focus stems with a calmer surface' },
+  { key: 'Review', label: 'Review', description: 'Steady midtempo with rain texture' },
+  { key: 'Wind-down', label: 'Wind-down', description: 'Choir pad and sea, no rhythm' },
+];
+
 const PROFILE_DEFAULTS = { volume_level: 50, adaptive_audio: true, play_in_focus: true };
 
 // Cache: system-preset key→id (shared across requests; presets are app-global).
@@ -64,8 +84,9 @@ function preferencesDto(p: {
 async function ensureSeeded(): Promise<Map<string, string>> {
   if (presetIdByKey) return presetIdByKey;
   const map = new Map<string, string>();
-  for (const m of MODES) {
-    if (!m.file) continue; // 'none' has no preset row
+  // Streamed modes (those with a file) plus the on-device engine modes. 'none'
+  // is deliberately absent: audio off means a NULL preset, not a preset row.
+  for (const m of [...MODES.filter((x) => x.file), ...ENGINE_MODES]) {
     const preset = await prismaBase().prismPreset.upsert({
       where: { name: m.label },
       create: { name: m.label, description: m.description, is_system: true },
@@ -136,10 +157,27 @@ export const prismService = {
   /** Resolve a client-supplied prism reference (mode key or preset id) to a
    *  preset id for persistence on a focus session. Returns null for silence. */
   async resolvePresetId(modeOrId?: string | null): Promise<string | null> {
-    if (!modeOrId || modeOrId === 'none') return null;
+    const raw = modeOrId?.trim();
+    // Audio off is a NULL preset, which is what "Prism was not on" looks like in
+    // the analytics. 'No sound' is the app's label for the same thing.
+    if (!raw) return null;
+    const lower = raw.toLowerCase();
+    if (lower === 'none' || lower === 'no sound') return null;
+
     const ids = await ensureSeeded();
-    if (ids.has(modeOrId)) return ids.get(modeOrId)!;      // a mode key
-    if ([...ids.values()].includes(modeOrId)) return modeOrId; // already a preset id
-    return null;
+    if (ids.has(raw)) return ids.get(raw)!;                 // a mode key
+    if ([...ids.values()].includes(raw)) return raw;        // already a preset id
+
+    // Case- and whitespace-tolerant. The app sends its engine label verbatim, and
+    // an exact-match-only lookup is what silently dropped the tag on every
+    // session whose casing differed by even one character.
+    for (const [key, id] of ids) if (key.toLowerCase() === lower) return id;
+
+    // Last resort: a preset row added by name outside MODES/ENGINE_MODES.
+    const byName = await prismaBase().prismPreset.findFirst({
+      where: { name: { equals: raw, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    return byName?.id ?? null;
   },
 };

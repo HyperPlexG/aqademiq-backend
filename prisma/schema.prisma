@@ -387,7 +387,12 @@ model FocusSession {
   mood_before           Int?          @db.SmallInt
   mood_after            Int?          @db.SmallInt
   session_rating        Int?          @db.SmallInt
+  /// true = Prism actuation was cut for this session (control arm of the holdout).
+  control_arm           Boolean       @default(false)
+  /// Prism engine build that ran this session. Null when there was no audio.
+  engine_version        String?
   notes                 String?
+  /// Also holds `paused_at` while a pause is open — see focus.service.ts.
   metadata              Json          @default("{}") @db.JsonB
   created_at            DateTime      @default(now()) @db.Timestamptz
 

@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 
 /** §2.4 focus-session DTOs. */
 export class StartFocusDto {
@@ -20,6 +20,23 @@ export class StartFocusDto {
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   task_date?: string;
+
+  /** Optional pre-session mood, 0-4 on the wire (stored 1-5). */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(4)
+  mood_index?: number;
+
+  /** Holdout: true when Prism actuation was cut for this session. */
+  @IsOptional()
+  @IsBoolean()
+  control_arm?: boolean;
+
+  /** Prism engine build that ran this session. */
+  @IsOptional()
+  @IsString()
+  engine_version?: string;
 }
 
 export class CheckpointFocusDto {
@@ -44,4 +61,11 @@ export class CompleteFocusDto {
   @Min(0)
   @Max(4)
   mood_index?: number;
+
+  /** Optional post-session rating, 1-5. Nothing collects it yet. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  session_rating?: number;
 }
