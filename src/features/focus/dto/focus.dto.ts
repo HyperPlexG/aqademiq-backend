@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 
 /** §2.4 focus-session DTOs. */
 export class StartFocusDto {
@@ -27,11 +27,6 @@ export class StartFocusDto {
   @Min(0)
   @Max(4)
   mood_index?: number;
-
-  /** Holdout: true when Prism actuation was cut for this session. */
-  @IsOptional()
-  @IsBoolean()
-  control_arm?: boolean;
 
   /** Prism engine build that ran this session. */
   @IsOptional()

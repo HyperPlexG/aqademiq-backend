@@ -321,6 +321,23 @@ model TaskStep {
   @@map("task_steps")
 }
 
+/// Randomized experiment assignment (ANALYTICS_INVESTOR_METRICS §2.7).
+/// One row per (user, experiment); stable for the life of the user.
+model ExperimentAssignment {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String   @db.Uuid // FK -> auth.users.id
+  experiment_key String   @db.VarChar(80)
+  /// 'control' | 'treatment' | 'holdout'
+  variant        String   @db.VarChar(40)
+  /// Deterministic hash bucket 0–999.
+  bucket         Int      @db.SmallInt
+  assigned_at    DateTime @default(now()) @db.Timestamptz
+
+  @@unique([user_id, experiment_key])
+  @@index([experiment_key, variant])
+  @@map("experiment_assignments")
+}
+
 model TaskRescheduleHistory {
   id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   task_id                String    @db.Uuid

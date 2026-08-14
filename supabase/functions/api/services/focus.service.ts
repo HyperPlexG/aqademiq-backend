@@ -17,6 +17,7 @@ import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { prismService } from './prism.service.ts';
 import { tasksService } from './tasks.service.ts';
+import { isPrismHeldOut } from './experiments.service.ts';
 
 // DB constraint focus_sessions_status_check + focus_sessions_mood_*_check.
 // Wire status is UPPERCASE (RUNNING/PAUSED/COMPLETE); stored is lowercase and the
@@ -99,8 +100,14 @@ export interface StartFocusDto {
   task_date?: string;
   /** Optional 0–4 wire index, stored 1–5. */
   mood_index?: number;
-  /** Holdout: true when Prism actuation was cut for this session. */
-  control_arm?: boolean;
+  /**
+   * Prism engine build that ran this session.
+   *
+   * `control_arm` is deliberately NOT here: it is assigned server-side from the
+   * user's permanent experiment variant. A client that could set it could opt
+   * itself out of the holdout, which is the exact selection bias §4.3 exists to
+   * avoid.
+   */
   engine_version?: string;
 }
 
@@ -135,6 +142,10 @@ function dto(s: any) {
     interruption_count: s.interruption_count ?? 0,
     course_id: s.course_id ?? null,
     session_rating: s.session_rating ?? null,
+    // The client reads this to honour the holdout: when true it must not start
+    // the soundscape. Told rather than asked, so the arm cannot be self-selected.
+    control_arm: s.control_arm ?? false,
+    engine_version: s.engine_version ?? null,
     created_at: s.created_at,
   };
 }
@@ -172,7 +183,11 @@ export const focusService = {
         task_id: taskId,
         course_id: courseId,
         status: 'running',
-        control_arm: input.control_arm ?? false,
+        // Server-assigned and permanent per user (experiments.service.ts).
+        // Denormalised onto the session so the analytics can read the arm
+        // without a join, and so a later change to the experiment cannot
+        // retroactively relabel sessions that already happened.
+        control_arm: await isPrismHeldOut(RequestContext.userId),
         engine_version: input.engine_version ?? null,
         ...(input.mood_index !== undefined ? { mood_before: moodIndexToScore(input.mood_index) } : {}),
       },
@@ -212,7 +227,14 @@ export const focusService = {
   /** POST /:id/complete */
   async complete(id: string, input: CompleteFocusDto) {
     const existing = await owned(id);
-    const endedAt = new Date();
+
+    // complete() is called twice by design: once when the timer stops, and
+    // again when the summary screen submits mood and rating. The FIRST call is
+    // the real end of the session, so the timing fields are pinned to it —
+    // otherwise ended_at would drift to whenever the user got round to
+    // dismissing the summary, and every duration derived from it would inherit
+    // that lag.
+    const endedAt = existing.ended_at ?? new Date();
 
     // Completing straight from a paused timer leaves a pause still open; close
     // it here or that time is silently dropped from the total.

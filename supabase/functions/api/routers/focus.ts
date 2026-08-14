@@ -12,12 +12,9 @@ focusRouter.post('/', async (c) => {
     prism_mode: str(b, 'prism_mode', false),
     task_id: str(b, 'task_id', false),
     task_date: str(b, 'task_date', false, { pattern: /^\d{4}-\d{2}-\d{2}$/ }),
-    // Optional analytics inputs. All absent today from the app, so each stays
-    // optional — a client that sends none must keep working exactly as before.
+    // Optional analytics inputs; a client that sends none keeps working exactly
+    // as before. control_arm is absent on purpose — the server assigns it.
     mood_index: num(b, 'mood_index', false, { int: true, min: 0, max: 4 }),
-    control_arm: typeof (b as Record<string, unknown>).control_arm === 'boolean'
-      ? (b as Record<string, boolean>).control_arm
-      : undefined,
     engine_version: str(b, 'engine_version', false),
   };
   return c.json(await focusService.start(dto), 201);
