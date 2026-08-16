@@ -773,7 +773,19 @@ export const tasksService = {
       order_index: i,
     }));
 
-    await prismaBase().taskStep.createMany({ data: rows });
+    // REPLACE, never append. Breaking a task down twice used to stack a second
+    // set on top of the first, so a task that had been through the old
+    // boilerplate fallback and then a real breakdown showed both — "Plan: hello
+    // / Work on hello / Review hello" sitting above the genuine steps, with the
+    // count climbing every time anyone tried again. Re-running is now the fix
+    // for a bad breakdown rather than another way to make it worse.
+    //
+    // Same transaction as the insert: a delete that succeeded while the insert
+    // failed would leave the task with no steps at all.
+    await prismaBase().$transaction([
+      prismaBase().taskStep.deleteMany({ where: { task_id: targetTaskId } }),
+      prismaBase().taskStep.createMany({ data: rows }),
+    ]);
     const createdSteps = await prismaBase().taskStep.findMany({
       where: { task_id: targetTaskId },
       orderBy: { order_index: 'asc' },
@@ -787,6 +799,53 @@ export const tasksService = {
         duration_seconds: s.estimated_seconds ?? 0,
         status: s.status === 'completed' ? 'COMPLETE' : 'PENDING',
       })),
+    };
+  },
+
+  /**
+   * PATCH /tasks/:occ/steps/:stepId — tick a microstep off, or un-tick it.
+   *
+   * There was no way to do this at all: steps were rendered with a circle that
+   * looked tappable and did nothing, so a breakdown could be read but never
+   * worked through. `done` is sent explicitly rather than toggled server-side so
+   * a retried request cannot flip the step back.
+   */
+  async setStepDone(occId: string, stepId: string, done: boolean) {
+    const { task, dateStr, isVirtual } = await resolveOccurrence(occId);
+
+    // Ownership: task_steps carries no user_id, so the step is only safe to
+    // touch because its task id came back from a tenant-scoped lookup. The
+    // step must belong to THIS occurrence — otherwise any step id in the
+    // database could be ticked through any task the caller happens to own.
+    const ownerIds = isVirtual
+      ? (await tenantDb().task.findMany({
+        where: { parent_task_id: task.id, due_at: toUtcDate(dateStr) },
+        select: { id: true },
+      })).map((t: { id: string }) => t.id)
+      : [task.id];
+
+    const step = ownerIds.length
+      ? await prismaBase().taskStep.findFirst({
+        where: { id: stepId, task_id: { in: ownerIds } },
+      })
+      : null;
+    if (!step) throw new HttpError(404, 'Step not found');
+
+    const updated = await prismaBase().taskStep.update({
+      where: { id: stepId },
+      data: {
+        status: done ? 'completed' : 'pending',
+        completed_at: done ? new Date() : null,
+      },
+    });
+    await invalidateCompletions();
+
+    return {
+      id: updated.id,
+      title: updated.title,
+      detail: updated.description ?? null,
+      duration_seconds: updated.estimated_seconds ?? 0,
+      status: updated.status === 'completed' ? 'COMPLETE' : 'PENDING',
     };
   },
 

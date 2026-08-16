@@ -91,6 +91,19 @@ tasksRouter.post('/:occ/breakdown', async (c) => {
   return c.json(await tasksService.breakdown(c.req.param('occ'), dto), 201);
 });
 
+// PATCH /tasks/:occ/steps/:stepId — tick a microstep off (or un-tick it).
+tasksRouter.patch('/:occ/steps/:stepId', async (c) => {
+  const b = await jsonBody(c.req);
+  // Explicit rather than a server-side toggle, so a retry cannot flip it back.
+  const done = (b as Record<string, unknown>).done;
+  if (typeof done !== 'boolean') {
+    throw new HttpError(400, '`done` is required and must be true or false.');
+  }
+  return c.json(
+    await tasksService.setStepDone(c.req.param('occ'), c.req.param('stepId'), done),
+  );
+});
+
 // DELETE /tasks/:occ/steps — drop the microsteps (breakdown toggled off).
 tasksRouter.delete('/:occ/steps', async (c) => {
   return c.json(await tasksService.clearSteps(c.req.param('occ')));

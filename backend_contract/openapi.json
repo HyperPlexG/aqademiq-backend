@@ -2261,6 +2261,97 @@
         }
       }
     },
+    "/v1/tasks/{occ}/steps/{stepId}": {
+      "patch": {
+        "operationId": "TasksController_setStepDone",
+        "summary": "Tick a micro-step off, or un-tick it",
+        "description": "There was previously no way to complete a micro-step: the rows rendered a circle that looked tappable and did nothing, so a breakdown could be read but never worked through. `done` is explicit rather than a server-side toggle, so a retried request cannot flip the step back. The step must belong to the given occurrence - for a repeating task that means the row the breakdown materialised for that date.",
+        "tags": [
+          "tasks"
+        ],
+        "parameters": [
+          {
+            "name": "occ",
+            "required": true,
+            "in": "path",
+            "description": "Task id, or `<task-id>@<YYYY-MM-DD>` for one occurrence of a repeating task.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "stepId",
+            "required": true,
+            "in": "path",
+            "description": "Step id, from the occurrence's `steps[]`.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "done": {
+                    "type": "boolean",
+                    "description": "Target state, not a toggle."
+                  }
+                },
+                "required": [
+                  "done"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated step.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "duration_seconds": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "PENDING",
+                        "COMPLETE"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`done` missing or not a boolean."
+          },
+          "404": {
+            "description": "No such step on this occurrence for this user."
+          }
+        }
+      }
+    },
     "/v1/tasks/{occ}/toggle": {
       "patch": {
         "operationId": "TasksController_toggle",
