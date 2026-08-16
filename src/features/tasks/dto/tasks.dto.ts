@@ -1,4 +1,4 @@
-import { IsArray, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 /** §2.2/§3 task DTOs. snake_case wire contract (matches task_dto.dart §3). */
@@ -156,4 +156,16 @@ export class BreakdownDto {
   @ValidateNested({ each: true })
   @Type(() => BreakdownStepDto)
   steps?: BreakdownStepDto[];
+
+  /**
+   * "Break down more" — go finer instead of regenerating the same shape.
+   *
+   * The task's current steps are handed to the model and it is asked to split
+   * each one, and a result that came back no finer is rejected so the existing
+   * steps survive. Without this the action produced another breakdown at the
+   * same granularity, which read as doing nothing.
+   */
+  @IsOptional()
+  @IsBoolean()
+  refine?: boolean;
 }

@@ -75,8 +75,10 @@ tasksRouter.post('/:occ/breakdown', async (c) => {
   // `steps` is optional: when absent the service generates them, when present
   // (Ada, or a client sending edited ones) they are used as written.
   const rawSteps = (b as Record<string, unknown>).steps;
+  const rawRefine = (b as Record<string, unknown>).refine;
   const dto: BreakdownDto = {
     date: str(b, 'date', false, { pattern: YMD }),
+    refine: rawRefine === true,
     steps: Array.isArray(rawSteps)
       ? rawSteps.map((s) => {
         const row = (s ?? {}) as Record<string, unknown>;

@@ -39,6 +39,13 @@ export interface BreakdownContext {
   notes?: string | null;
   dueInDays?: number | null;
   priority?: string | null;
+  /**
+   * Steps the task already has, when the user asked to go deeper ("Break down
+   * more"). Present means REFINE: split what is there into finer actions rather
+   * than producing another breakdown of the same shape, which is what made the
+   * button look like it did nothing.
+   */
+  existing?: string[];
 }
 
 type Provider = 'rotating' | 'anthropic' | 'vertex' | 'none';
@@ -176,6 +183,11 @@ export const claude = {
   /** §2.2 task breakdown via fast model + forced tool call. Throws on failure so the caller can fall back. */
   async breakdownSteps(ctx: BreakdownContext, maxSteps = 6): Promise<BreakdownStep[]> {
     const minutes = Math.max(1, Math.round(ctx.totalSeconds / 60));
+    const refining = (ctx.existing?.length ?? 0) > 0;
+    // Refining has to be allowed to produce more steps than it was given, or
+    // "more" cannot mean anything. Roughly two finer actions per existing step,
+    // capped so a 6-step plan does not explode into an unusable list.
+    const ceiling = refining ? Math.min(10, Math.max(maxSteps, ctx.existing!.length * 2)) : maxSteps;
     const tool: ToolDef = {
       name: 'emit_breakdown',
       description:
@@ -187,7 +199,7 @@ export const claude = {
           steps: {
             type: 'array',
             minItems: 2,
-            maxItems: maxSteps,
+            maxItems: ceiling,
             items: {
               type: 'object',
               properties: {
@@ -228,10 +240,23 @@ export const claude = {
     const messages = [{
       role: 'user',
       content:
-        `${facts}\n\n` +
-        `Break this into the fewest steps that genuinely move it forward — 2 for ` +
-        `something small, up to ${maxSteps} for a large piece of work. Split ` +
-        `duration_seconds so the total is about ${minutes} minutes.`,
+        `${facts}
+
+` +
+        (refining
+          ? `Break this down FURTHER. It is already split into:
+` +
+            ctx.existing!.map((t, i) => `${i + 1}. ${t}`).join('\n') +
+            `
+
+Replace those with a MORE DETAILED plan: take each one and split ` +
+            `it into the concrete actions it actually involves. Return more steps ` +
+            `than the ${ctx.existing!.length} above (up to ${ceiling}), and do not ` +
+            `simply restate them. Split duration_seconds so the total is still ` +
+            `about ${minutes} minutes.`
+          : `Break this into the fewest steps that genuinely move it forward — 2 for ` +
+            `something small, up to ${ceiling} for a large piece of work. Split ` +
+            `duration_seconds so the total is about ${minutes} minutes.`),
     }];
 
     // The system prompt carries the anti-boilerplate rules because they apply to
@@ -280,6 +305,12 @@ export const claude = {
     })).filter((s: BreakdownStep) => s.title.length > 0);
 
     if (mapped.length === 0) throw new Error('no usable steps returned');
+    // A "refinement" that came back no finer than what the user already had is
+    // a failed refinement. Rejecting it keeps their existing steps intact
+    // instead of replacing them with a shuffle of the same thing.
+    if (refining && mapped.length <= ctx.existing!.length) {
+      throw new Error('refinement returned no more detail than it was given');
+    }
     // A model that ignored the rules and echoed the title back is worse than the
     // caller's fallback, so reject it rather than persisting it.
     if (isBoilerplate(mapped, ctx.title)) throw new Error('breakdown was boilerplate');

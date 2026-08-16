@@ -110,6 +110,15 @@ export interface BreakdownDto {
    * to guess from the title.
    */
   steps?: Array<{ title: string; detail?: string; duration_seconds?: number }>;
+  /**
+   * "Break down more" — go finer rather than regenerating the same shape.
+   *
+   * The existing steps are handed to the model and it is asked to split each of
+   * them, so the result is genuinely more detailed. Without this the button
+   * produced another breakdown at the same granularity, which read as doing
+   * nothing at all.
+   */
+  refine?: boolean;
 }
 
 // ---- occurrence dto ----
@@ -697,6 +706,18 @@ export const tasksService = {
     let targetTaskId = task.id;
 
     if (isVirtual) {
+      // Reuse the row a previous breakdown already materialised for this date.
+      // Creating unconditionally meant breaking a repeating task down twice made
+      // a SECOND child row, splitting its steps across two occurrences of the
+      // same day — invisible in the UI, which reads only one of them.
+      const existingChild = await tenantDb().task.findFirst({
+        where: { parent_task_id: task.id, due_at: toUtcDate(dateStr) },
+        select: { id: true },
+      });
+      if (existingChild) targetTaskId = existingChild.id;
+    }
+
+    if (isVirtual && targetTaskId === task.id) {
       // Materialize virtual task to attach steps
       const mins = task.estimated_duration_mins ?? 5;
       const start = task.scheduled_start_at ? parseTimeStr(dateStr, formatTime(task.scheduled_start_at)) : null;
@@ -741,6 +762,16 @@ export const tasksService = {
       const subject = task.course_id
         ? await tenantDb().course.findFirst({ where: { id: task.course_id } })
         : null;
+      // "Break down more": show the model what the task already has so it can
+      // split those rather than restate them.
+      const current = dto.refine
+        ? (await prismaBase().taskStep.findMany({
+          where: { task_id: targetTaskId },
+          orderBy: { order_index: 'asc' },
+          select: { title: true },
+        })).map((r: { title: string }) => r.title)
+        : [];
+
       const ctx = {
         title: task.title,
         totalSeconds: durationSeconds,
@@ -749,6 +780,7 @@ export const tasksService = {
         notes: task.description ?? null,
         dueInDays: daysUntil(task.due_at, dateStr),
         priority: task.priority ?? null,
+        ...(current.length ? { existing: current } : {}),
       };
       steps = [];
       if (claude.isConfigured()) {
@@ -758,6 +790,13 @@ export const tasksService = {
           // Includes the boilerplate rejection — treated as a failed call.
           steps = [];
         }
+      }
+      // Refining must never fall back to the type-aware template: the user
+      // already has real steps, and replacing them with a generic three would
+      // be worse than doing nothing. Fail loudly so the client can say so and
+      // leave what they have untouched.
+      if (steps.length === 0 && current.length) {
+        throw new HttpError(503, "Couldn't add more detail right now. Your existing steps are unchanged.");
       }
       if (steps.length === 0) steps = fallbackStepRows(ctx);
     }
