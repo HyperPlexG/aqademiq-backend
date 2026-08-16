@@ -73,16 +73,36 @@ export interface AiResult {
 }
 
 type Provider = 'gemini' | 'cerebras';
-interface KeyEntry { provider: Provider; key: string; id: string }
+interface KeyEntry { provider: Provider; key: string; model: string; id: string }
 
 function splitKeys(v?: string): string[] {
   return (v ?? '').split(',').map((k) => k.trim()).filter(Boolean);
 }
 
+/**
+ * Every key paired with every model it may serve.
+ *
+ * Free-tier RPM and RPD are metered per project PER MODEL, so the same key asked
+ * for two different models draws on two independent quotas. Naming a second
+ * model in GEMINI_MODELS is therefore a straight capacity increase on
+ * credentials we already have — and because `id` carries the model, benching a
+ * key for one model leaves it usable for the other.
+ *
+ * Unset GEMINI_MODELS keeps exactly one entry per key, which is the previous
+ * behaviour.
+ */
 function pool(): KeyEntry[] {
   const out: KeyEntry[] = [];
-  for (const key of splitKeys(env('GEMINI_API_KEYS'))) out.push({ provider: 'gemini', key, id: `gemini:${key.slice(-6)}` });
-  for (const key of splitKeys(env('CEREBRAS_API_KEYS'))) out.push({ provider: 'cerebras', key, id: `cerebras:${key.slice(-6)}` });
+  for (const key of splitKeys(env('GEMINI_API_KEYS'))) {
+    for (const model of geminiModels()) {
+      out.push({ provider: 'gemini', key, model, id: `gemini:${key.slice(-6)}:${model}` });
+    }
+  }
+  for (const key of splitKeys(env('CEREBRAS_API_KEYS'))) {
+    for (const model of cerebrasModels()) {
+      out.push({ provider: 'cerebras', key, model, id: `cerebras:${key.slice(-6)}:${model}` });
+    }
+  }
   return out;
 }
 
@@ -97,6 +117,36 @@ export function rotationConfigured(): boolean {
 // more than availability (the alias can change behaviour under you).
 const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-flash-latest';
 const cerebrasModel = () => env('CEREBRAS_MODEL') ?? 'gpt-oss-120b';
+
+/**
+ * The models a provider's keys may serve, widest-quota-first is up to the
+ * operator's ordering. The plural secret wins when set; the singular one remains
+ * the default so an existing deployment behaves identically until it opts in.
+ */
+function modelsFor(listVar: string, single: () => string): string[] {
+  const list = splitKeys(env(listVar));
+  return list.length ? list : [single()];
+}
+const geminiModels = () => modelsFor('GEMINI_MODELS', geminiModel);
+const cerebrasModels = () => modelsFor('CEREBRAS_MODELS', cerebrasModel);
+
+/**
+ * Ceiling on Gemini's internal reasoning tokens, from ADA_THINKING_BUDGET.
+ *
+ * Thinking is billed as output and, more importantly, is slow: a thinking turn
+ * can take long enough to trip the agent's wall-clock deadline, which throws
+ * away every call the run has already paid for. Setting this to 0 turns it off.
+ *
+ * Unset sends no thinkingConfig at all, which is the provider default and the
+ * previous behaviour — deliberate, because not every Gemini model accepts a
+ * budget of 0 and a rejected generationConfig fails the whole request.
+ */
+function thinkingBudget(): number | undefined {
+  const raw = env('ADA_THINKING_BUDGET');
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
 
 // ---- cooldown tracking (per key) ----
 //
@@ -240,15 +290,14 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
   const errors: string[] = [];
   for (const c of order) {
     try {
-      const model = c.provider === 'gemini' ? geminiModel() : cerebrasModel();
       const res = c.provider === 'gemini'
-        ? await geminiChat(c.key, model, params)
-        : await cerebrasChat(c.key, model, params);
+        ? await geminiChat(c.key, c.model, params)
+        : await cerebrasChat(c.key, c.model, params);
       // Stamped here rather than inside each adapter so the key id (which only
       // the pool knows) travels with the cost.
       if (res.usage) {
         res.usage.key_id = c.id;
-        res.usage.model = model;
+        res.usage.model = c.model;
       }
       return res;
     } catch (e) {
@@ -402,11 +451,15 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
     }
   }
 
+  const budget = thinkingBudget();
   // deno-lint-ignore no-explicit-any
   const body: any = {
     systemInstruction: { parts: [{ text: p.system }] },
     contents,
-    generationConfig: { maxOutputTokens: p.maxTokens ?? 2048 },
+    generationConfig: {
+      maxOutputTokens: p.maxTokens ?? 2048,
+      ...(budget === undefined ? {} : { thinkingConfig: { thinkingBudget: budget } }),
+    },
   };
   if (p.tools?.length) {
     body.tools = [{ functionDeclarations: p.tools.map(geminiFunctionDeclaration) }];

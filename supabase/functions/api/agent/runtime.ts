@@ -28,13 +28,17 @@ import { isCallableName, kindOfCall, resolveCall, toolDefs } from './tools.ts';
 import { createPendingAction, listForRun } from './pending.ts';
 import { type AgentOutcome, type AgentUsage, type PlanStep, type ToolContext, ToolInputError } from './types.ts';
 
-const MAX_TURNS = 8;
-const MAX_RESUME_TURNS = 5;
-const HISTORY_LIMIT = 16;
+// Turn ceilings. These are the single biggest lever on free-tier quota: a 429 is
+// counted in REQUESTS, not tokens, so halving the turns a run may take doubles
+// how many messages the same keys can serve. Env-tunable because the right
+// number is a measurement (see ada_agent_runs.turns), not a constant.
+const MAX_TURNS = intEnv('ADA_MAX_TURNS', 4);
+const MAX_RESUME_TURNS = intEnv('ADA_MAX_RESUME_TURNS', 2);
+const HISTORY_LIMIT = intEnv('ADA_HISTORY_LIMIT', 8);
 /** A single run may not queue more than this many confirmations. */
 const MAX_PENDING_PER_RUN = 25;
 /** Observations are truncated so one huge list can't crowd out the conversation. */
-const MAX_OBSERVATION_CHARS = 6000;
+const MAX_OBSERVATION_CHARS = 4000;
 const MAX_TOKENS = 2400;
 
 function intEnv(name: string, fallback: number): number {
@@ -61,7 +65,7 @@ const RUN_DEADLINE_MS = intEnv('ADA_RUN_DEADLINE_MS', 24_000);
 /** Resume runs after an approval — the user is watching a spinner, keep it short. */
 const RESUME_DEADLINE_MS = intEnv('ADA_RESUME_DEADLINE_MS', 15_000);
 /** Hard cap on provider calls per run, independent of the clock. */
-const MAX_LLM_CALLS = intEnv('ADA_MAX_LLM_CALLS', 8);
+const MAX_LLM_CALLS = intEnv('ADA_MAX_LLM_CALLS', 4);
 /** Never start a call we have less than this long to finish. */
 const MIN_CALL_HEADROOM_MS = 3_000;
 /**
@@ -112,6 +116,9 @@ class Budget {
   get totalCalls() { return this.carryCalls + this.calls; }
   get totalPromptTokens() { return this.carryPromptTokens + this.promptTokens; }
   get totalCompletionTokens() { return this.carryCompletionTokens + this.completionTokens; }
+
+  /** Calls still affordable in this phase, which the loop reports to the model. */
+  get remainingCalls() { return Math.max(0, this.maxCalls - this.calls); }
 
   /** Spend in this phase only — what the message being written now cost. */
   get phaseUsage(): AgentUsage {
@@ -221,7 +228,7 @@ const PLAN_TOOL = {
 const FINISH_TOOL = {
   name: 'finish',
   description:
-    'End the run and give the user your reply. Call this exactly once, when you have done everything you can this turn.',
+    'End the run and give the user your reply. Call this exactly once, alongside the other tools of your final turn rather than in a turn of its own.',
   input_schema: {
     type: 'object',
     properties: {
@@ -246,17 +253,22 @@ export function systemPrompt(contextBlock: string): string {
     '   current state — never assume what tasks, subjects or settings exist.',
     '2. Then propose changes with the *_write tools, picking the right `action`',
     '   (task_write with action "create", "update", "move", and so on).',
-    '3. Call `finish` with your reply to the user.',
+    '3. Call `finish` with your reply — in the SAME turn as those writes whenever',
+    '   you can, since a proposed change needs no follow-up read to confirm it.',
     '',
     '## Work in as few turns as you can',
-    'Every turn costs a full round trip, and you only get a handful of them.',
+    'Every turn is a full round trip against a rate limit, you only get a few, and',
+    'a run that overruns is cut off mid-plan. Two turns should be your target.',
     '- Call ALL the tools you need at once. If you need tasks, subjects and tags,',
     '  call all three read tools in the SAME turn — never one turn each.',
-    '- When you already know what to change, propose every change in one turn too.',
+    '- When you already know what to change, propose every change in one turn too,',
+    '  with `finish` alongside them.',
     '- If the request has more than one step, call `record_plan` ALONGSIDE your',
     '  first read tools, never on its own — a turn spent only on record_plan is a',
     '  wasted round trip. For a simple question, skip record_plan entirely.',
     '- Do not re-read something you read earlier in this run; you already have it.',
+    '- A [BUDGET: n calls left] note on an observation is literal. At one, stop and',
+    '  reply with what you already have.',
     '',
     '## The confirmation rule (absolute)',
     'Every create, update and delete tool only PROPOSES. Nothing changes until the',
@@ -451,12 +463,29 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
 
     if (reads.length) await Promise.all(reads);
 
+    const contents = toolUses.map((_, i) => truncate(observations[i]));
+
+    // Turn pressure the model can act on. The prompt tells it to work in as few
+    // turns as it can but never said how few were left, so a run would spend its
+    // last affordable call on one more read and get cut off before replying.
+    //
+    // This rides on the final observation rather than travelling as its own text
+    // block because a text block in a user turn is silently dropped by both the
+    // Gemini and Cerebras adapters — they map only `tool_result` blocks — and a
+    // second consecutive user message is rejected outright by Anthropic.
+    if (!finished && contents.length) {
+      const left = state.budget.remainingCalls;
+      contents[contents.length - 1] += left <= 1
+        ? '\n\n[BUDGET: this is your final call. Reply to the user now — call finish this turn.]'
+        : `\n\n[BUDGET: ${left} calls left. Batch everything still needed into the next turn and finish.]`;
+    }
+
     messages.push({
       role: 'user',
       content: toolUses.map((tu, i) => ({
         type: 'tool_result',
         tool_use_id: tu.id,
-        content: truncate(observations[i]),
+        content: contents[i],
       })),
     });
     if (finished) return;

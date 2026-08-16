@@ -126,18 +126,19 @@ export const FIXTURE: AgentContext = {
  * through estimateTokens('x'.repeat(n)) — which counts a run of x's as ONE word
  * and so valued every turn at ~1 token, silently reporting history as free.
  * Sizes come from the shape of real observations: a `list_tasks` dump is large,
- * a write proposal's echo is small. Held constant across runs, so they never
- * affect a before/after delta.
+ * a write proposal's echo is small.
+ *
+ * These are the same eight tool calls the run has always made, now batched into
+ * the three round trips the turn cap allows. That distinction is the point:
+ * batching does not reduce the WORK, it reduces how many times the invariant
+ * prefix (tools + system, the bulk of every request) is re-uploaded. Totals are
+ * held at 625 assistant / 1,314 observation tokens so a before/after delta
+ * reflects only that.
  */
 const TURNS: Array<{ label: string; assistant: number; observation: number }> = [
-  { label: 'record_plan', assistant: 110, observation: 12 },
-  { label: 'list_tasks', assistant: 35, observation: 745 },
-  { label: 'get_free_slots', assistant: 40, observation: 258 },
-  { label: 'get_reference', assistant: 26, observation: 150 },
-  { label: 'task_write ×2', assistant: 132, observation: 86 },
-  { label: 'task_write update', assistant: 86, observation: 46 },
-  { label: 'remember', assistant: 46, observation: 17 },
-  { label: 'finish', assistant: 150, observation: 0 },
+  { label: 'record_plan + list_tasks', assistant: 145, observation: 757 },
+  { label: 'list_free_time + get_reference', assistant: 66, observation: 408 },
+  { label: 'task_write ×3 + remember + finish', assistant: 414, observation: 149 },
 ];
 
 // ---- measurement ---------------------------------------------------------

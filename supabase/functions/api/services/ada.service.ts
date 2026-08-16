@@ -13,6 +13,7 @@
 import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
+import { env } from '../../_shared/env.ts';
 import { claude, type ToolDef } from '../../_shared/claude.ts';
 import { storage } from '../../_shared/storage.ts';
 import { subjectsService } from './subjects.service.ts';
@@ -33,6 +34,44 @@ const REPEAT_KINDS = ['none', 'daily', 'weekdays', 'weekly', 'monthly', 'everyND
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_DURATION_SECONDS = 24 * 60 * 60;
+
+/**
+ * Per-user ceiling on provider calls per UTC day, from ADA_DAILY_CALL_CAP.
+ *
+ * The key pool is shared and free-tier, so without this one heavy user spends
+ * the day's quota for everybody and every other user sees Ada fail. At the
+ * default run budget this is roughly 50 messages a day per user. 0 disables it.
+ */
+const DAILY_CALL_CAP = (() => {
+  const raw = env('ADA_DAILY_CALL_CAP');
+  // An empty secret means "not set", not "0" — Number('') is 0, which would
+  // silently disable the cap on a deployment that merely declared the variable.
+  if (raw === undefined || raw.trim() === '') return 200;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : 200;
+})();
+
+/**
+ * Whether this user has already spent their day's allowance.
+ *
+ * Fails OPEN. If the total cannot be read, Ada answers anyway: a telemetry query
+ * that is down is never a good enough reason to refuse someone their assistant.
+ */
+async function dailyCallsExhausted(): Promise<boolean> {
+  if (DAILY_CALL_CAP === 0) return false;
+  try {
+    const since = new Date();
+    since.setUTCHours(0, 0, 0, 0);
+    const agg = await prismaBase().adaAgentRun.aggregate({
+      where: { user_id: RequestContext.userId, created_at: { gte: since } },
+      _sum: { llm_calls: true },
+    });
+    return (agg._sum.llm_calls ?? 0) >= DAILY_CALL_CAP;
+  } catch (e) {
+    console.warn('[ada] daily cap check failed, allowing the run:', e instanceof Error ? e.message : String(e));
+    return false;
+  }
+}
 
 // ---- DTOs (port of dto/ada.dto.ts) ---------------------------------------
 export interface CreateConversationDto {
@@ -114,6 +153,23 @@ export const adaService = {
           role: 'assistant',
           content: 'Ada AI is not configured in this environment (set GEMINI_API_KEYS). Your message was saved.',
           metadata: {},
+        },
+      });
+      await touchConversation(conversationId);
+      return { messages: [messageDto(userMsg), messageDto(assistantMsg)], actions: [] };
+    }
+
+    // Refused here rather than by letting the provider 429 mid-run: a run that
+    // starts and dies has already spent the pool's quota, and the user gets a
+    // plain answer instead of Ada's generic failure text.
+    if (await dailyCallsExhausted()) {
+      const assistantMsg = await prismaBase().adaMessage.create({
+        data: {
+          ada_session_id: conversationId,
+          role: 'assistant',
+          content: "I've done all the thinking I can manage today — I'll be back to full speed tomorrow. " +
+            'Your message is saved, so just nudge me then.',
+          metadata: { limit: 'daily_call_cap' },
         },
       });
       await touchConversation(conversationId);

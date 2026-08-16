@@ -26,6 +26,13 @@ readable NestJS reference, still built and tested in CI. Port behaviour *from*
   of free-tier Gemini + Cerebras keys (`GEMINI_API_KEYS` / `CEREBRAS_API_KEYS`),
   adapting both to the Anthropic Messages shape. `_shared/claude.ts` falls back to
   Anthropic or Vertex only when those creds are set.
+- **Free-tier quota is metered in REQUESTS, not tokens**, and per project per model
+  — so turns-per-run is the binding constraint, and one key listed against two
+  models in `GEMINI_MODELS` draws on two independent quotas. See
+  [docs/AI_QUOTA_REPORT.md](docs/AI_QUOTA_REPORT.md). Edge knobs:
+  `ADA_MAX_TURNS`/`ADA_MAX_LLM_CALLS` (4), `ADA_MAX_RESUME_TURNS` (2),
+  `ADA_HISTORY_LIMIT` (8), `ADA_DAILY_CALL_CAP` (200/user/UTC-day, 0 = off),
+  `GEMINI_MODELS`, `ADA_THINKING_BUDGET` (unset = provider default; 0 = no thinking).
 - Storage moved GCS → **Supabase Storage** (private `materials` bucket,
   `_shared/storage.ts`); the `GCS_*` names in older docs are stale.
 

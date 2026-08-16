@@ -2,9 +2,9 @@
 //
 // Ada's binding constraint is free-tier rate limits, and tool definitions are
 // re-sent on every provider call — so a tool added carelessly is not paid once,
-// it is paid ~8 times per Ada message, forever. Nothing else in the codebase
-// makes that cost visible at review time, which is how the surface grew to 70%
-// of every request without anyone deciding it should.
+// it is paid once per turn of every Ada message, forever. Nothing else in the
+// codebase makes that cost visible at review time, which is how the surface grew
+// to 70% of every request without anyone deciding it should.
 //
 // These ceilings are a ratchet, not a target. Raising one is allowed, but it
 // should be a deliberate line in a diff rather than a silent drift.
