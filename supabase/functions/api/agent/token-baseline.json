@@ -2,8 +2,8 @@
   "components": [
     {
       "name": "tool definitions",
-      "chars": 9434,
-      "tokens": 3054
+      "chars": 9853,
+      "tokens": 3196
     },
     {
       "name": "system: static rules",
@@ -18,13 +18,13 @@
   ],
   "tools": {
     "count": 15,
-    "chars": 9434,
-    "tokens": 3054,
+    "chars": 9853,
+    "tokens": 3196,
     "perTool": [
       {
         "name": "task_write",
-        "chars": 2055,
-        "tokens": 672
+        "chars": 2474,
+        "tokens": 814
       },
       {
         "name": "remember",
@@ -99,16 +99,16 @@
     ]
   },
   "cache": {
-    "stableTokens": 4754,
+    "stableTokens": 4896,
     "volatileTokens": 96,
     "stablePct": 98
   },
   "run": {
     "calls": 3,
-    "promptTokens": 16828,
-    "repeatedTokens": 14550,
+    "promptTokens": 17254,
+    "repeatedTokens": 14976,
     "historyTokens": 2278,
-    "toolShare": 54
+    "toolShare": 56
   },
-  "totalPerCall": 4850
+  "totalPerCall": 4992
 }

@@ -247,12 +247,12 @@ Re-run the Step 1 queries and compare. Targets:
 
 | | Before | After | Delta |
 |---|---|---|---|
-| Per call | 5,747 | 4,850 | -15.6% |
-| **Per run** | **54,685** | **16,828** | **-69.2%** |
-| Repeated prefix | 45,976 | 14,550 | -68.4% |
-| Tool share of run | 59% | 54% | |
+| Per call | 5,747 | 4,992 | -13.1% |
+| **Per run** | **54,685** | **17,254** | **-68.4%** |
+| Repeated prefix | 45,976 | 14,976 | -67.4% |
+| Tool share of run | 59% | 56% | |
 
-Two honest caveats on that number. Part of the per-call drop (-1,000 tool tokens) came from the action-dispatch collapse already committed in `d86e1ce`, not from this change. And the static system rules grew **+110 tokens** here — the cost of the turn-pressure guidance, which buys a request reduction worth far more than 110 tokens.
+Three honest caveats on that number. Part of the per-call drop (-1,000 tool tokens) came from the action-dispatch collapse already committed in `d86e1ce`, not from this change. The static system rules grew **+110 tokens** here — the cost of the turn-pressure guidance, which buys a request reduction worth far more than 110 tokens. And the tool surface then grew **+142 tokens** from `af35af6` (task-breakdown specificity), which landed upstream while this work was in progress and is counted against it above.
 
 The run figure is where this change lands: 8 round trips became 3 for the same eight tool calls. Combined with Step 3's second quota bucket, the same free keys should serve roughly 5x the messages per minute.
 
