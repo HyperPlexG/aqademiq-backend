@@ -1,0 +1,398 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Aqademiq — Feedback Admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Aqademiq feedback admin console.
+
+  A local operator tool: open this file, sign in as yourself, change bug/request
+  statuses. It is NOT part of the app and is never deployed.
+
+  Why it is built this way
+  ------------------------
+  * It drives the SAME gated endpoints the app would (`PATCH /admin/feedback/...`).
+    That matters: `adminPatchPost` is what writes the `feedback_status_changes`
+    audit row and auto-drafts a changelog entry when something ships. Editing
+    `status_key` in Supabase Studio would flip the badge and silently leave the
+    user-visible status timeline empty.
+  * Authorisation is entirely server-side — the verified JWT subject must be in
+    the `FEEDBACK_ADMIN_IDS` function secret. Nothing in this file grants
+    access; it only carries your own token. A copy of this page in someone
+    else's hands is useless to them.
+  * It never touches the service-role key, and never talks to Postgres directly.
+    RLS on the feedback tables is deny-all, so the edge function is the only door
+    and this page walks through it like any other client.
+
+  Two deliberate choices
+  ----------------------
+  * The access token is held in a JS variable only — never localStorage or
+    sessionStorage. Close the tab and it is gone. A token sitting on disk is the
+    main realistic risk with a local tool like this.
+  * Every piece of server data is rendered with textContent, never innerHTML.
+    The board is USER-SUBMITTED content: a post titled `<img onerror=...>` would
+    otherwise run script inside the one page that holds an admin token.
+
+  Usage
+  -----
+  Just open it in a browser. If your browser blocks fetch from file:// , serve
+  the folder instead:  python -m http.server 5173   → http://localhost:5173/feedback-admin.html
+  CORS already allows both (the API sends Access-Control-Allow-Origin: *, and
+  auth is a Bearer header rather than a cookie, so there is no CSRF surface).
+-->
+<style>
+  :root {
+    --bg: #14121a; --surface: #1c1a24; --surface2: #24212e; --border: #322e3d;
+    --text: #ece9f2; --dim: #9d97ad; --accent: #6b5cf0; --danger: #e85476;
+    --ok: #2a9d6b; --warn: #e8a430;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--surface);
+    position: sticky; top: 0; z-index: 5;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 800; letter-spacing: -.2px; }
+  .grow { flex: 1; }
+  input, select, textarea, button {
+    font: inherit; color: var(--text); background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+  }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); font-weight: 700; }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; }
+  main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(340px, 1fr); gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+  .post { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; cursor: pointer; background: var(--surface2); }
+  .post:hover { border-color: var(--accent); }
+  .post.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .pill { font-size: 10.5px; font-weight: 800; padding: 2px 8px; border-radius: 99px; background: var(--surface); border: 1px solid var(--border); }
+  .title { font-weight: 700; margin: 2px 0 4px; }
+  .body { white-space: pre-wrap; color: var(--dim); font-size: 13px; }
+  label { display: block; font-size: 11px; font-weight: 800; color: var(--dim); margin: 12px 0 4px; letter-spacing: .04em; }
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); padding: 10px 16px; border-radius: 10px; font-weight: 600; z-index: 20; }
+  .toast.ok { background: var(--ok); } .toast.err { background: var(--danger); }
+  .hist { border-left: 2px solid var(--border); padding-left: 10px; margin-top: 6px; }
+  .hide { display: none !important; }
+  code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+
+<header>
+  <h1>Feedback Admin</h1>
+  <span class="muted" id="who"></span>
+  <span class="grow"></span>
+  <div id="loginBox" class="row">
+    <input id="email" type="email" placeholder="email" autocomplete="username" size="20">
+    <input id="password" type="password" placeholder="password" autocomplete="current-password" size="16">
+    <button class="primary" id="loginBtn">Sign in</button>
+  </div>
+  <button class="ghost hide" id="logoutBtn">Sign out</button>
+</header>
+
+<main>
+  <section class="card">
+    <div class="row">
+      <select id="fStatus"><option value="">All statuses</option></select>
+      <select id="fCategory"><option value="">All categories</option></select>
+      <select id="fSort"><option value="new">Newest</option><option value="top">Top</option></select>
+      <input id="fQuery" placeholder="search…" size="12">
+      <button id="refreshBtn">Refresh</button>
+      <label class="row" style="margin:0;font-size:12px;letter-spacing:0">
+        <input type="checkbox" id="fQueue" style="width:auto"> queue only
+      </label>
+    </div>
+    <div id="list" style="margin-top:12px"><p class="muted">Sign in to load the board.</p></div>
+    <button id="moreBtn" class="ghost hide" style="width:100%">Load more</button>
+  </section>
+
+  <section class="card" id="detail"><p class="muted">Select a post.</p></section>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  // Publishable values — these already ship inside every installed app binary,
+  // so they are not secrets. The service-role key must NEVER appear here.
+  const SUPABASE_URL = 'https://qwvuoooentacjslzpbqy.supabase.co';
+  const ANON_KEY = 'sb_publishable_RsMgTqV7lpVt1YkxqA5rEw_8VCXIoVe';
+  const API = SUPABASE_URL + '/functions/v1/api/v1';
+
+  // In memory only. Never persisted — closing the tab signs you out, which is
+  // the point: a token left on disk is the real risk with a local tool.
+  let token = null;
+  let meta = { statuses: [], categories: [] };
+  let cursor = null;
+  let selected = null;
+
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    // textContent, never innerHTML: the board is user-submitted content and this
+    // page holds an admin token.
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  };
+
+  function toast(msg, ok = true) {
+    const t = el('div', 'toast ' + (ok ? 'ok' : 'err'), msg);
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), ok ? 2600 : 5200);
+  }
+
+  async function api(path, { method = 'GET', body } = {}) {
+    const res = await fetch(API + path, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: 'Bearer ' + token } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data.message || data.error)) || res.status + ' ' + res.statusText;
+      throw new Error(res.status === 403
+        ? 'Not an admin. Your user id must be in the FEEDBACK_ADMIN_IDS function secret.'
+        : msg);
+    }
+    return data;
+  }
+
+  // ---- auth ---------------------------------------------------------------
+
+  async function signIn() {
+    const email = $('email').value.trim();
+    const password = $('password').value;
+    if (!email || !password) return toast('Email and password required', false);
+    $('loginBtn').disabled = true;
+    try {
+      const res = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=password', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', apikey: ANON_KEY },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error_description || data.msg || 'Sign-in failed');
+      token = data.access_token;
+      // The password is not kept anywhere, including the field.
+      $('password').value = '';
+      $('loginBox').classList.add('hide');
+      $('logoutBtn').classList.remove('hide');
+      $('who').textContent = (data.user && data.user.email) || '';
+      await loadMeta();
+      await loadList(true);
+    } catch (e) {
+      toast(e.message, false);
+    } finally {
+      $('loginBtn').disabled = false;
+    }
+  }
+
+  function signOut() {
+    token = null; selected = null; cursor = null;
+    $('loginBox').classList.remove('hide');
+    $('logoutBtn').classList.add('hide');
+    $('who').textContent = '';
+    $('list').replaceChildren(el('p', 'muted', 'Signed out.'));
+    $('detail').replaceChildren(el('p', 'muted', 'Select a post.'));
+  }
+
+  // ---- data ---------------------------------------------------------------
+
+  async function loadMeta() {
+    meta = await api('/feedback/meta');
+    const fill = (sel, items, blank) => {
+      sel.replaceChildren();
+      sel.appendChild(new Option(blank, ''));
+      for (const i of items) sel.appendChild(new Option(i.label, i.key));
+    };
+    fill($('fStatus'), meta.statuses, 'All statuses');
+    fill($('fCategory'), meta.categories, 'All categories');
+  }
+
+  const labelFor = (list, key) => (list.find((x) => x.key === key) || {}).label || key || '—';
+
+  async function loadList(reset) {
+    if (!token) return;
+    if (reset) { cursor = null; $('list').replaceChildren(el('p', 'muted', 'Loading…')); }
+
+    let data;
+    if ($('fQueue').checked) {
+      // Moderation queue = unapproved posts only.
+      data = await api('/admin/feedback/queue');
+      cursor = null;
+    } else {
+      const q = new URLSearchParams({ sort: $('fSort').value });
+      if ($('fStatus').value) q.set('status', $('fStatus').value);
+      if ($('fCategory').value) q.set('category', $('fCategory').value);
+      if ($('fQuery').value.trim()) q.set('q', $('fQuery').value.trim());
+      if (cursor && !reset) q.set('cursor', cursor);
+      data = await api('/feedback/posts?' + q.toString());
+      cursor = data.next_cursor || null;
+    }
+
+    const posts = data.posts || [];
+    if (reset) $('list').replaceChildren();
+    if (!posts.length && reset) $('list').appendChild(el('p', 'muted', 'Nothing here.'));
+
+    for (const p of posts) $('list').appendChild(postRow(p));
+    $('moreBtn').classList.toggle('hide', !cursor);
+  }
+
+  function postRow(p) {
+    const node = el('div', 'post');
+    node.dataset.ref = p.ref;
+    const top = el('div', 'row');
+    top.append(
+      el('span', 'pill', '#' + p.ref),
+      el('span', 'pill', labelFor(meta.statuses, p.status)),
+      el('span', 'pill', labelFor(meta.categories, p.category)),
+      el('span', 'muted', '▲ ' + p.upvotes + ' · 💬 ' + p.comment_count),
+    );
+    if (p.pinned) top.appendChild(el('span', 'pill', '📌'));
+    if (p.locked) top.appendChild(el('span', 'pill', '🔒'));
+    if (!p.approved) top.appendChild(el('span', 'pill', 'UNAPPROVED'));
+    node.append(top, el('div', 'title', p.title));
+    node.onclick = () => openDetail(p.ref);
+    return node;
+  }
+
+  async function openDetail(ref) {
+    selected = ref;
+    for (const n of document.querySelectorAll('.post')) {
+      n.classList.toggle('sel', n.dataset.ref === String(ref));
+    }
+    $('detail').replaceChildren(el('p', 'muted', 'Loading…'));
+    try {
+      render(await api('/feedback/posts/' + ref));
+    } catch (e) {
+      $('detail').replaceChildren(el('p', 'muted', e.message));
+    }
+  }
+
+  function render(p) {
+    const d = $('detail');
+    d.replaceChildren();
+
+    const head = el('div', 'row');
+    head.append(el('span', 'pill', '#' + p.ref), el('span', 'muted', (p.author && p.author.name) || 'anon'));
+    d.append(head, el('div', 'title', p.title), el('div', 'body', p.body || '—'));
+
+    // --- status ---
+    d.appendChild(el('label', null, 'STATUS'));
+    const status = el('select');
+    for (const s of meta.statuses) status.appendChild(new Option(s.label, s.key));
+    status.value = p.status || '';
+    const category = el('select');
+    category.appendChild(new Option('— no category —', ''));
+    for (const c of meta.categories) category.appendChild(new Option(c.label, c.key));
+    category.value = p.category || '';
+    const rowSel = el('div', 'row');
+    rowSel.append(status, category);
+    d.appendChild(rowSel);
+
+    d.appendChild(el('label', null, 'NOTE (shown on the status timeline; seeds the changelog draft when shipping)'));
+    const note = el('textarea');
+    note.rows = 2; note.style.width = '100%';
+    d.appendChild(note);
+
+    // --- flags ---
+    const flags = el('div', 'row');
+    flags.style.marginTop = '10px';
+    const mk = (name, on) => {
+      const w = el('label', 'row');
+      w.style.cssText = 'margin:0;font-size:12px;letter-spacing:0';
+      const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!on; cb.style.width = 'auto';
+      w.append(cb, document.createTextNode(' ' + name));
+      flags.appendChild(w);
+      return cb;
+    };
+    const pinned = mk('pinned', p.pinned);
+    const locked = mk('locked', p.locked);
+    const approved = mk('approved', p.approved);
+    d.appendChild(flags);
+
+    const save = el('button', 'primary', 'Save changes');
+    save.style.cssText = 'width:100%;margin-top:12px';
+    save.onclick = async () => {
+      save.disabled = true;
+      try {
+        // Only send what actually changed — every field here is a real mutation
+        // and `status` writes an audit row.
+        const body = {};
+        if (status.value !== (p.status || '')) body.status = status.value;
+        if (category.value !== (p.category || '')) body.category = category.value;
+        if (pinned.checked !== p.pinned) body.pinned = pinned.checked;
+        if (locked.checked !== p.locked) body.locked = locked.checked;
+        if (approved.checked !== p.approved) body.approved = approved.checked;
+        if (note.value.trim()) body.note = note.value.trim();
+
+        if (!Object.keys(body).length) { toast('Nothing changed', false); return; }
+        await api('/admin/feedback/posts/' + p.ref, { method: 'PATCH', body });
+        toast('Saved #' + p.ref);
+        await openDetail(p.ref);
+        await loadList(true);
+      } catch (e) {
+        toast(e.message, false);
+      } finally {
+        save.disabled = false;
+      }
+    };
+    d.appendChild(save);
+
+    // --- internal note ---
+    d.appendChild(el('label', null, 'INTERNAL NOTE (team only, not shown to users)'));
+    const inote = el('textarea'); inote.rows = 2; inote.style.width = '100%';
+    const ibtn = el('button', 'ghost', 'Add internal note');
+    ibtn.style.cssText = 'width:100%;margin-top:6px';
+    ibtn.onclick = async () => {
+      if (!inote.value.trim()) return;
+      try {
+        await api('/admin/feedback/posts/' + p.ref + '/notes', { method: 'POST', body: { body: inote.value.trim() } });
+        inote.value = '';
+        toast('Note added');
+      } catch (e) { toast(e.message, false); }
+    };
+    d.append(inote, ibtn);
+
+    // --- history ---
+    if (p.status_history && p.status_history.length) {
+      d.appendChild(el('label', null, 'STATUS HISTORY'));
+      const h = el('div', 'hist');
+      for (const c of p.status_history) {
+        const line = el('div', 'muted',
+          (c.from_status || '—') + ' → ' + c.to_status +
+          '  ·  ' + ((c.actor && c.actor.name) || 'system') +
+          '  ·  ' + new Date(c.created_at).toLocaleString());
+        h.appendChild(line);
+        if (c.note) h.appendChild(el('div', 'body', c.note));
+      }
+      d.appendChild(h);
+    }
+  }
+
+  // ---- wiring -------------------------------------------------------------
+  $('loginBtn').onclick = signIn;
+  $('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') signIn(); });
+  $('logoutBtn').onclick = signOut;
+  $('refreshBtn').onclick = () => loadList(true).catch((e) => toast(e.message, false));
+  $('moreBtn').onclick = () => loadList(false).catch((e) => toast(e.message, false));
+  for (const id of ['fStatus', 'fCategory', 'fSort', 'fQueue']) {
+    $(id).onchange = () => loadList(true).catch((e) => toast(e.message, false));
+  }
+  $('fQuery').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') loadList(true).catch((err) => toast(err.message, false));
+  });
+})();
+</script>
