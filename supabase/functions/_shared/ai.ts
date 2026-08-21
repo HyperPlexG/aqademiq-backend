@@ -72,7 +72,7 @@ export interface AiResult {
   usage?: AiUsage;
 }
 
-type Provider = 'gemini' | 'cerebras';
+type Provider = 'gemini' | 'cerebras' | 'groq';
 interface KeyEntry { provider: Provider; key: string; model: string; id: string }
 
 function splitKeys(v?: string): string[] {
@@ -98,6 +98,11 @@ function pool(): KeyEntry[] {
       out.push({ provider: 'gemini', key, model, id: `gemini:${key.slice(-6)}:${model}` });
     }
   }
+  for (const key of splitKeys(env('GROQ_API_KEYS'))) {
+    for (const model of groqModels()) {
+      out.push({ provider: 'groq', key, model, id: `groq:${key.slice(-6)}:${model}` });
+    }
+  }
   for (const key of splitKeys(env('CEREBRAS_API_KEYS'))) {
     for (const model of cerebrasModels()) {
       out.push({ provider: 'cerebras', key, model, id: `cerebras:${key.slice(-6)}:${model}` });
@@ -117,6 +122,30 @@ export function rotationConfigured(): boolean {
 // more than availability (the alias can change behaviour under you).
 const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-flash-latest';
 const cerebrasModel = () => env('CEREBRAS_MODEL') ?? 'gpt-oss-120b';
+/**
+ * Chosen against the live account's real limits, not the docs.
+ *
+ * Groq does not serve the llama-3.3-70b id most guides reach for. Of what it
+ * does serve, `groq/compound` looks far better on paper — 70K TPM and no daily
+ * token cap, against 8K TPM here — but it answers
+ * "`tool calling` is not supported with this model", which rules it out
+ * completely: every Ada turn is a forced tool call. Of the tool-capable models
+ * (all 30 RPM / 1K RPD / 8K TPM / 200K TPD) gpt-oss-120b is the strongest, and
+ * it was verified end to end returning a well-formed forced tool call.
+ *
+ * The 8K TPM is the number to watch. An Ada call is ~4.9K tokens of prompt plus
+ * the growing transcript, so ONE call fits comfortably but a second within the
+ * same minute on the same key will not — which is exactly why the pool rotates
+ * per key. Ten independent keys make that a non-issue today (verified: each key
+ * reports its own untouched 1K RPD, so these are separate accounts, not one org
+ * quota split ten ways).
+ *
+ * Listing a second id in GROQ_MODELS would double the buckets again, but the
+ * rotation treats every key x model entry as a peer rather than a fallback, so
+ * half of Ada's turns would land on the weaker 20b. At ~116 messages/day of
+ * headroom from 120b alone that trade is not worth making yet.
+ */
+const groqModel = () => env('GROQ_MODEL') ?? 'openai/gpt-oss-120b';
 
 /**
  * The models a provider's keys may serve, widest-quota-first is up to the
@@ -129,6 +158,7 @@ function modelsFor(listVar: string, single: () => string): string[] {
 }
 const geminiModels = () => modelsFor('GEMINI_MODELS', geminiModel);
 const cerebrasModels = () => modelsFor('CEREBRAS_MODELS', cerebrasModel);
+const groqModels = () => modelsFor('GROQ_MODELS', groqModel);
 
 /**
  * Ceiling on Gemini's internal reasoning tokens, from ADA_THINKING_BUDGET.
@@ -209,7 +239,13 @@ function rotate<T>(arr: T[]): T[] {
 // request quota that resets, whereas Cerebras returns a hard 402 once the
 // account needs billing — so Cerebras is the fallback, not the coin-flip peer a
 // flat random rotation made it.
-const PROVIDER_PRIORITY: readonly Provider[] = ['gemini', 'cerebras'];
+//
+// Groq sits BETWEEN them, and deliberately so: its free tier rate-limits and
+// then resets like Gemini's, whereas the Cerebras keys have been answering 402
+// (out of credit) — a provider that is dead until someone pays is the worst
+// fallback, not the first one. So when Gemini is exhausted the next request goes
+// to Groq, which is the behaviour this pool is for.
+const PROVIDER_PRIORITY: readonly Provider[] = ['gemini', 'groq', 'cerebras'];
 
 /// Every key in provider-priority order, rotated *within* each provider so load
 /// still spreads across that provider's own keys.
@@ -247,6 +283,28 @@ export function geminiCooldownSeconds(body: string): number {
   }
   // Only a genuinely daily quota justifies benching until it resets.
   if (/PerDay|per day|daily limit/i.test(body)) return secondsToUtcMidnight();
+  return DEFAULT_RATE_LIMIT_COOLDOWN_S;
+}
+
+/**
+ * How long to bench an OpenAI-compatible key after a 429.
+ *
+ * Prefers the provider's own `Retry-After` (Groq sends one, in seconds) over a
+ * guess, for the same reason the Gemini path prefers `retryDelay`: benching a
+ * key for a flat minute when it says four seconds throws away most of a working
+ * quota, and benching for four seconds when the limit is daily hammers it all
+ * day. Falls back to scanning the body for a daily limit, then to the default.
+ */
+export function openAiCooldownSeconds(retryAfter: string | null, body: string): number {
+  if (retryAfter) {
+    const secs = Number(retryAfter.trim());
+    if (Number.isFinite(secs) && secs >= 0) {
+      // +1s of slack: retrying on the exact boundary tends to 429 again.
+      return Math.min(MAX_RATE_LIMIT_COOLDOWN_S, Math.max(5, Math.ceil(secs) + 1));
+    }
+  }
+  // Groq words a daily exhaustion as "rate limit reached ... per day".
+  if (/per day|daily limit|per-day|requests per day/i.test(body)) return secondsToUtcMidnight();
   return DEFAULT_RATE_LIMIT_COOLDOWN_S;
 }
 
@@ -292,6 +350,8 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
     try {
       const res = c.provider === 'gemini'
         ? await geminiChat(c.key, c.model, params)
+        : c.provider === 'groq'
+        ? await groqChat(c.key, c.model, params)
         : await cerebrasChat(c.key, c.model, params);
       // Stamped here rather than inside each adapter so the key id (which only
       // the pool knows) travels with the cost.
@@ -316,7 +376,20 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
 }
 
 // ================= Cerebras (OpenAI-compatible) =================
-async function cerebrasChat(key: string, model: string, p: AiParams): Promise<AiResult> {
+/**
+ * One adapter for every OpenAI-compatible chat-completions provider.
+ *
+ * Cerebras and Groq speak byte-identical APIs, so this was generalised rather
+ * than copied: the tool-call mapping below is the fiddly part, and two copies of
+ * it would drift the moment one is fixed.
+ */
+async function openAiCompatChat(
+  endpoint: string,
+  label: string,
+  key: string,
+  model: string,
+  p: AiParams,
+): Promise<AiResult> {
   // deno-lint-ignore no-explicit-any
   const msgs: any[] = [{ role: 'system', content: p.system }];
   for (const m of p.messages) {
@@ -341,7 +414,7 @@ async function cerebrasChat(key: string, model: string, p: AiParams): Promise<Ai
     body.tools = p.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } }));
     body.tool_choice = p.toolChoice ? { type: 'function', function: { name: p.toolChoice.name } } : 'auto';
   }
-  const res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+  const res = await fetch(endpoint, {
     method: 'POST',
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -353,11 +426,15 @@ async function cerebrasChat(key: string, model: string, p: AiParams): Promise<Ai
   if (res.status === 429 || res.status === 402) {
     const body = await res.text();
     // 402 is an account out of credit — that does not fix itself in a minute, so
-    // it is benched until the day rolls over. A 429 is an ordinary rate limit.
-    const cooldown = res.status === 402 ? secondsToUtcMidnight() : DEFAULT_RATE_LIMIT_COOLDOWN_S;
-    throw new QuotaError(`cerebras ${res.status}: ${body.slice(0, 200)}`, cooldown);
+    // it is benched until the day rolls over. A 429 is an ordinary rate limit,
+    // and Groq says how long to wait in a Retry-After header, so ask rather than
+    // guess (Cerebras sends none and falls back to the default).
+    const cooldown = res.status === 402
+      ? secondsToUtcMidnight()
+      : openAiCooldownSeconds(res.headers.get('retry-after'), body);
+    throw new QuotaError(`${label} ${res.status}: ${body.slice(0, 200)}`, cooldown);
   }
-  if (!res.ok) throw new Error(`cerebras ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(`${label} ${res.status}: ${await res.text()}`);
   const json = await res.json();
   const msg = json.choices?.[0]?.message ?? {};
   // deno-lint-ignore no-explicit-any
@@ -382,6 +459,12 @@ async function cerebrasChat(key: string, model: string, p: AiParams): Promise<Ai
 }
 
 // ================= Gemini (generateContent) =================
+const cerebrasChat = (key: string, model: string, p: AiParams) =>
+  openAiCompatChat('https://api.cerebras.ai/v1/chat/completions', 'cerebras', key, model, p);
+
+const groqChat = (key: string, model: string, p: AiParams) =>
+  openAiCompatChat('https://api.groq.com/openai/v1/chat/completions', 'groq', key, model, p);
+
 async function geminiChat(key: string, model: string, p: AiParams): Promise<AiResult> {
   // Map Anthropic tool_use ids → names so tool_results become functionResponses.
   const idToName = new Map<string, string>();

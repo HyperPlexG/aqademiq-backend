@@ -23,9 +23,19 @@ readable NestJS reference, still built and tested in CI. Port behaviour *from*
 - `supabase/functions/prisma-spike/` was the phase-1 gate (Prisma driver adapter
   inside a real Edge Function); it passed and is still deployed as a smoke test.
 - **AI provider is `rotating` in production** — `_shared/ai.ts` round-robins a pool
-  of free-tier Gemini + Cerebras keys (`GEMINI_API_KEYS` / `CEREBRAS_API_KEYS`),
-  adapting both to the Anthropic Messages shape. `_shared/claude.ts` falls back to
-  Anthropic or Vertex only when those creds are set.
+  of free-tier Gemini + Groq + Cerebras keys (`GEMINI_API_KEYS` / `GROQ_API_KEYS` /
+  `CEREBRAS_API_KEYS`), adapting all three to the Anthropic Messages shape.
+  `_shared/claude.ts` falls back to Anthropic or Vertex only when those creds are set.
+  Providers are tried in `PROVIDER_PRIORITY` order — **gemini → groq → cerebras**:
+  Gemini and Groq rate-limit and reset, while Cerebras has been answering 402
+  (out of credit), so it is last. Groq and Cerebras share one OpenAI-compatible
+  adapter (`openAiCompatChat`); Groq is the only one that sends `Retry-After`, and
+  it is honoured over a guess.
+  Groq model choice is constrained: `groq/compound` has 70K TPM but **rejects tool
+  calling**, so Ada cannot use it. `openai/gpt-oss-120b` (default, 30 RPM / 1K RPD /
+  **8K TPM** / 200K TPD) is the strongest tool-capable option. 8K TPM is the number
+  to watch — one Ada call is ~4.9K tokens plus transcript, so a second call on the
+  same key within a minute will 429; the per-key rotation is what makes that fine.
 - **Free-tier quota is metered in REQUESTS, not tokens**, and per project per model
   — so turns-per-run is the binding constraint, and one key listed against two
   models in `GEMINI_MODELS` draws on two independent quotas. See
