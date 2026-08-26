@@ -86,7 +86,7 @@ export type StoppedReason = 'deadline' | 'call_budget' | 'turn_budget';
  * prevent spend — it never interrupts a call already in flight (which would pay
  * the quota and throw the result away, the exact waste this exists to stop).
  */
-class Budget {
+export class Budget {
   readonly startedAt = Date.now();
   stoppedReason: StoppedReason | null = null;
 
@@ -156,8 +156,30 @@ class Budget {
     return true;
   }
 
-  record(durationMs: number, usage: { prompt_tokens: number; completion_tokens: number; model: string }) {
+  /**
+   * Count a call the moment it is dispatched, before its result is known.
+   *
+   * Counting on *success* instead made failures free. A provider 429 or timeout
+   * threw out of `await createMessage(...)` before the tally ran, so the quota it
+   * had just consumed was never recorded — not in `remainingCalls`, and not in
+   * the `llm_calls` written to `ada_agent_runs`. Since the per-user daily cap
+   * sums that column, the user whose calls were all failing was the one charged
+   * least, and a provider having a bad minute quietly raised everybody's ceiling
+   * at the exact moment the pool could least afford it.
+   *
+   * Attempts are what the free tier meters, so attempts are what we count.
+   */
+  beginCall() {
     this.calls++;
+  }
+
+  /**
+   * Attach the outcome of a call already counted by `beginCall`.
+   *
+   * Tokens and timing only — incrementing here as well would double-count every
+   * successful call.
+   */
+  settleCall(durationMs: number, usage: { prompt_tokens: number; completion_tokens: number; model: string }) {
     this.promptTokens += usage.prompt_tokens;
     this.completionTokens += usage.completion_tokens;
     if (usage.model) this.lastModel = usage.model;
@@ -406,8 +428,11 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
 
     state.turns++;
     const startedAt = Date.now();
+    // Counted before the await, settled after: a call that throws still spent
+    // provider quota and must still be charged for it.
+    state.budget.beginCall();
     const res = await claude.createMessage({ system, messages, tools, maxTokens: MAX_TOKENS });
-    state.budget.record(Date.now() - startedAt, usageOf(res, claude.opus));
+    state.budget.settleCall(Date.now() - startedAt, usageOf(res, claude.opus));
 
     // deno-lint-ignore no-explicit-any
     const blocks = ((res.content as any[]) ?? []);

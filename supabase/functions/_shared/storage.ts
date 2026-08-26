@@ -67,9 +67,22 @@ export const storage = {
    * ownership check of its own and uses the service-role key, so a key built
    * from unvalidated input would read across tenants.
    *
-   * `maxBytes` is enforced after the fetch: Storage has no ranged HEAD here, and
-   * the point is to refuse to base64 a 200MB video into a prompt, not to save
-   * the download.
+   * `maxBytes` is checked against Content-Length BEFORE the body is read, and
+   * again after.
+   *
+   * The header check is the one that protects the isolate. Reading the body
+   * first and measuring afterwards means a 200MB object is fully materialised in
+   * memory before anyone objects — and an Edge isolate has a few hundred MB for
+   * everything, so the check never gets to run: the isolate is OOM-killed mid-
+   * `arrayBuffer()`. That kills every other request sharing the isolate too, and
+   * it presents as a random 503 rather than as the oversized file it is.
+   *
+   * Cancelling the body on rejection matters as much as the check: an abandoned
+   * ReadableStream would otherwise keep downloading in the background.
+   *
+   * The post-read check stays because Content-Length is advisory — it can be
+   * absent (chunked responses) or simply wrong, and the header check must not be
+   * the only thing standing between a bad value and the prompt.
    */
   async download(key: string, maxBytes: number): Promise<{ bytes: Uint8Array; mimeType: string }> {
     const k = serviceKey();
@@ -77,6 +90,13 @@ export const storage = {
       headers: { authorization: `Bearer ${k}`, apikey: k },
     });
     if (!res.ok) throw new Error(`storage download failed (${res.status}): ${await res.text()}`);
+
+    const declared = Number(res.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      await res.body?.cancel();
+      throw new Error(`file is ${Math.round(declared / 1024)}KB, over the ${Math.round(maxBytes / 1024)}KB limit`);
+    }
+
     const buf = new Uint8Array(await res.arrayBuffer());
     if (buf.byteLength > maxBytes) {
       throw new Error(`file is ${Math.round(buf.byteLength / 1024)}KB, over the ${Math.round(maxBytes / 1024)}KB limit`);

@@ -50,14 +50,50 @@ export async function cacheDel(key: string): Promise<void> {
   await cmd(['DEL', key]);
 }
 
+/**
+ * Add to a counter, setting its TTL on first write. Returns the new total, or
+ * null if Redis is disabled or unreachable.
+ *
+ * INCRBY creates the key at 0 when it is missing, but attaches no expiry — so
+ * the TTL is applied on the write that created it. Without that, a per-day
+ * counter would live forever and today's ceiling would follow the user into
+ * tomorrow.
+ */
+export async function cacheIncrBy(key: string, by: number, ttlSeconds: number): Promise<number | null> {
+  const total = await cmd(['INCRBY', key, by]);
+  if (typeof total !== 'number') return null;
+  if (total === by) await cmd(['EXPIRE', key, ttlSeconds]);
+  return total;
+}
+
 const WINDOW_SECONDS = 60;
 const AUTH_LIMIT = 20;
 const GENERAL_LIMIT = 200;
 
+/**
+ * Announce, once per isolate, that the limiter is not actually limiting.
+ *
+ * Failing open is the right call for a study app — Upstash being unreachable is
+ * a poor reason to lock everyone out. What was wrong is that it failed open in
+ * *silence*: with `UPSTASH_*` unset, every request sailed through and the logs
+ * looked identical to a healthy deployment enforcing limits. The first sign of
+ * trouble would have been the bill, or an outage. One line per isolate is enough
+ * to make the difference visible without flooding the log.
+ */
+let warnedDisabled = false;
+function warnOnceDisabled() {
+  if (warnedDisabled) return;
+  warnedDisabled = true;
+  console.warn('[ratelimit] UPSTASH_REDIS_REST_URL/TOKEN unset — rate limiting and idempotency are DISABLED (failing open)');
+}
+
 /** Fixed-window per-IP rate limit. Auth-ish paths get a tighter budget. */
 export function rateLimit() {
   return async (c: Context, next: Next) => {
-    if (!redisEnabled) return next();
+    if (!redisEnabled) {
+      warnOnceDisabled();
+      return next();
+    }
     const path = c.req.path;
     const isAuth = path.includes('/auth/');
     const limit = isAuth ? AUTH_LIMIT : GENERAL_LIMIT;
@@ -66,6 +102,11 @@ export function rateLimit() {
     const key = `rl:${isAuth ? 'auth' : 'gen'}:${ip}:${window}`;
 
     const count = await cmd(['INCR', key]);
+    if (typeof count !== 'number') {
+      // Configured but not answering: distinct from "never configured", and the
+      // one that tends to happen under exactly the load limits exist for.
+      console.warn(`[ratelimit] Redis unreachable — allowing ${c.req.method} ${path} unlimited`);
+    }
     if (typeof count === 'number') {
       if (count === 1) await cmd(['EXPIRE', key, WINDOW_SECONDS]);
       if (count > limit) {
@@ -78,12 +119,34 @@ export function rateLimit() {
   };
 }
 
-function clientIp(c: Context): string {
+/**
+ * The address to bucket a request under.
+ *
+ * Order matters, and it is the opposite of the usual advice. `cf-connecting-ip`
+ * and `x-real-ip` are written by the Cloudflare edge that fronts every Supabase
+ * Function; whatever a client sends under those names is overwritten, so they
+ * cannot be forged. `x-forwarded-for` is a client-supplied list that the edge
+ * only appends to, which makes its leftmost entry an attacker-chosen string —
+ * exactly the value that must NOT decide someone's rate-limit bucket, because
+ * varying it per request grants unlimited requests.
+ *
+ * Measured against 1,882 production requests: `x-real-ip` was present on every
+ * one, was never empty, held 9 distinct addresses, and equalled
+ * `cf-connecting-ip` every single time. `x-forwarded-for` was not sent at all.
+ *
+ * So `TRUST_PROXY` is now strictly an escape hatch for running behind some
+ * *other* proxy that terminates before Cloudflare. Leave it unset on Supabase:
+ * switching it on here would move the bucket key from an unforgeable header to a
+ * forgeable one, turning the rate limiter off for anyone who noticed.
+ */
+export function clientIp(c: Context): string {
+  const edge = c.req.header('cf-connecting-ip') ?? c.req.header('x-real-ip');
+  if (edge) return edge;
   if (env('TRUST_PROXY') === '1') {
     const xff = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
     if (xff) return xff;
   }
-  return c.req.header('x-real-ip') ?? 'unknown';
+  return 'unknown';
 }
 
 const IDEM_TTL_SECONDS = 24 * 60 * 60;

@@ -11,7 +11,7 @@ import './node-shims.ts'; // MUST precede the Prisma client import (polyfills pr
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from './prisma/client.ts';
 import { RequestContext } from './context.ts';
-import { databaseUrl } from './env.ts';
+import { databaseUrl, env } from './env.ts';
 
 // Models that carry a `user_id` column and are auto-scoped to the request user.
 // Mirrors TENANT_MODELS in src/infra/prisma.service.ts. `Profile` is scoped by
@@ -28,10 +28,46 @@ const TENANT_MODELS = new Set([
 
 let base: PrismaClient | undefined;
 
+/**
+ * Per-isolate connection ceiling.
+ *
+ * Postgres here allows 60 connections in total, and roughly a dozen are already
+ * spoken for by pg_cron, PostgREST, pg_net and the metrics exporter — so about
+ * 48 are actually available. node-postgres defaults to a pool of 10 per Pool
+ * instance, and each warm Edge isolate holds its own. That means ~5 concurrent
+ * isolates can exhaust the server, at which point every other isolate starts
+ * failing to connect: an outage produced by traffic, not by any single slow
+ * query.
+ *
+ * 2 is deliberately small. Requests reach Postgres through the Supavisor
+ * transaction pooler, which already multiplexes many client connections onto few
+ * server ones, so a big per-isolate pool buys nothing and only reserves scarce
+ * slots. Two lets a handler overlap a pair of queries without ever becoming the
+ * isolate that starves the others.
+ */
+const POOL_MAX = (() => {
+  const raw = env('DB_POOL_MAX');
+  if (raw === undefined || raw.trim() === '') return 2;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : 2;
+})();
+
 /** Raw client (no tenancy). Lazily constructed; reused across invocations. */
 export function prismaBase(): PrismaClient {
   if (!base) {
-    base = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl() }) });
+    base = new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: databaseUrl(),
+        max: POOL_MAX,
+        // An isolate can stay warm long after its last request. Without this it
+        // keeps holding connections it is not using, against a 60-slot budget.
+        idleTimeoutMillis: 10_000,
+        // Fail fast instead of queueing behind an exhausted pool: a request that
+        // cannot get a connection in 5s should surface an error the client can
+        // retry, not hang until the platform kills the whole invocation.
+        connectionTimeoutMillis: 5_000,
+      }),
+    });
   }
   return base;
 }

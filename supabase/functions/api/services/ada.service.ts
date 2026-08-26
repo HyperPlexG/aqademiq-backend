@@ -14,6 +14,7 @@ import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { env } from '../../_shared/env.ts';
+import { cacheGet, cacheIncrBy, cacheSet } from '../../_shared/redis.ts';
 import { claude, type ToolDef } from '../../_shared/claude.ts';
 import { storage } from '../../_shared/storage.ts';
 import { subjectsService } from './subjects.service.ts';
@@ -39,38 +40,91 @@ const MAX_DURATION_SECONDS = 24 * 60 * 60;
  * Per-user ceiling on provider calls per UTC day, from ADA_DAILY_CALL_CAP.
  *
  * The key pool is shared and free-tier, so without this one heavy user spends
- * the day's quota for everybody and every other user sees Ada fail. At the
- * default run budget this is roughly 50 messages a day per user. 0 disables it.
+ * the day's quota for everybody and every other user sees Ada fail. 0 disables it.
+ *
+ * 20, not the 200 this used to default to. 200 was never a ceiling in practice:
+ * at ~4 calls per message it allowed one user ~50 messages a day, and the whole
+ * pool sustains only a few hundred calls a day across ALL users — so a single
+ * enthusiastic user could still drain it before the cap ever bit. A cap that
+ * only triggers after the resource is gone is decoration. 20 leaves room for
+ * roughly 5 messages a day per user, which is what the free tier can actually
+ * honour, and is an env var away from being raised the day inference is paid for.
  */
+const DEFAULT_DAILY_CALL_CAP = 20;
+
 const DAILY_CALL_CAP = (() => {
   const raw = env('ADA_DAILY_CALL_CAP');
   // An empty secret means "not set", not "0" — Number('') is 0, which would
   // silently disable the cap on a deployment that merely declared the variable.
-  if (raw === undefined || raw.trim() === '') return 200;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_DAILY_CALL_CAP;
   const n = Number(raw);
-  return Number.isInteger(n) && n >= 0 ? n : 200;
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_DAILY_CALL_CAP;
 })();
+
+/** Seconds left until the UTC day rolls over — the natural TTL for a daily tally. */
+function secondsUntilUtcMidnight(now = new Date()): number {
+  const next = new Date(now);
+  next.setUTCHours(24, 0, 0, 0);
+  return Math.max(60, Math.ceil((next.getTime() - now.getTime()) / 1000));
+}
+
+/** Redis key holding today's call tally for one user. */
+function dailyCallKey(userId: string, now = new Date()): string {
+  return `ada:calls:${userId}:${now.toISOString().slice(0, 10)}`;
+}
 
 /**
  * Whether this user has already spent their day's allowance.
  *
- * Fails OPEN. If the total cannot be read, Ada answers anyway: a telemetry query
- * that is down is never a good enough reason to refuse someone their assistant.
+ * Reads the tally from Redis when it is there, and only falls back to summing
+ * `ada_agent_runs` when it is not. That ordering is the point: the aggregate ran
+ * on every single Ada message, so the check got more expensive exactly as
+ * traffic rose, and when the database was struggling it was the *cap* that
+ * failed first — handing unlimited provider calls to everyone at the moment the
+ * shared free-tier pool was least able to absorb them. A cached integer costs
+ * one round trip and cannot be knocked over by query load.
+ *
+ * Still fails OPEN if both are unavailable: a telemetry lookup being down is not
+ * a good enough reason to refuse someone their assistant. What changed is how
+ * much has to break before that happens, and that it now says so in the log.
  */
 async function dailyCallsExhausted(): Promise<boolean> {
   if (DAILY_CALL_CAP === 0) return false;
+  const userId = RequestContext.userId;
+
+  const cached = await cacheGet(dailyCallKey(userId));
+  if (cached !== null) {
+    const n = Number(cached);
+    if (Number.isFinite(n)) return n >= DAILY_CALL_CAP;
+  }
+
   try {
     const since = new Date();
     since.setUTCHours(0, 0, 0, 0);
     const agg = await prismaBase().adaAgentRun.aggregate({
-      where: { user_id: RequestContext.userId, created_at: { gte: since } },
+      where: { user_id: userId, created_at: { gte: since } },
       _sum: { llm_calls: true },
     });
-    return (agg._sum.llm_calls ?? 0) >= DAILY_CALL_CAP;
+    const used = agg._sum.llm_calls ?? 0;
+    // Seed the counter so the next message on this user skips the aggregate.
+    await cacheSet(dailyCallKey(userId), String(used), secondsUntilUtcMidnight());
+    return used >= DAILY_CALL_CAP;
   } catch (e) {
-    console.warn('[ada] daily cap check failed, allowing the run:', e instanceof Error ? e.message : String(e));
+    console.warn('[ada] daily cap check failed (Redis AND database) — allowing the run uncapped:', e instanceof Error ? e.message : String(e));
     return false;
   }
+}
+
+/**
+ * Add the calls a finished run actually spent to today's tally.
+ *
+ * Kept separate from the run row so the cap does not depend on a later read of
+ * it. Best-effort by design: if this write is lost the next check simply falls
+ * back to the aggregate and re-seeds.
+ */
+async function recordDailyCalls(userId: string, calls: number): Promise<void> {
+  if (DAILY_CALL_CAP === 0 || calls <= 0) return;
+  await cacheIncrBy(dailyCallKey(userId), calls, secondsUntilUtcMidnight());
 }
 
 // ---- DTOs (port of dto/ada.dto.ts) ---------------------------------------
@@ -207,6 +261,10 @@ export const adaService = {
         },
       },
     });
+
+    // Charge today's tally with what this run actually spent, so the next
+    // message sees it without re-summing ada_agent_runs.
+    await recordDailyCalls(RequestContext.userId, outcome.usage.llm_calls);
 
     // Proposals are created mid-run, before this message exists — attach them now
     // so reloading the conversation re-renders their cards in the right place.
@@ -653,6 +711,8 @@ async function continueRunById(runId: string, conversationId: string) {
       },
     },
   });
+
+  await recordDailyCalls(RequestContext.userId, outcome.usage.llm_calls);
 
   // A resumed run can propose follow-up changes (e.g. a corrected version of one
   // that failed), so those cards attach to this new message too.

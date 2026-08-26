@@ -343,6 +343,17 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
   // If everything is marked exhausted, still try them (limits may have reset).
   const order = fresh.length ? fresh : candidates;
 
+  // The free-tier ceiling is a capacity fact, not a bug — no code change makes
+  // these keys serve more requests. What was missing is any warning before users
+  // feel it: an empty pool only announced itself as "All AI keys failed" AFTER
+  // someone's Ada message had already died. This fires while the retry is still
+  // likely to work, and is deliberately one greppable string so it can be
+  // alerted on. Sustained hits here mean the pool needs paid inference, and it
+  // is the earliest honest signal of that.
+  if (!fresh.length) {
+    console.warn(`[ai] POOL_EXHAUSTED — all ${candidates.length} key×model slots are benched; retrying anyway in case limits reset`);
+  }
+
   // Collect every failure, not just the last one: reporting only `lastErr` meant
   // a working-but-broken Gemini key was masked by whatever the final key said.
   const errors: string[] = [];

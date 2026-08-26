@@ -12,6 +12,16 @@ interface DueReminderRow {
   device_type: string | null;
 }
 
+/**
+ * Reminders sent in parallel per batch.
+ *
+ * Bounded rather than unbounded: each delivery also runs two short queries, and
+ * the Prisma pool is 2 connections per isolate, so firing all 200 at once would
+ * queue every one of them behind the pool instead of behind FCM. 10 keeps the
+ * network calls overlapping without turning the database into the bottleneck.
+ */
+const SWEEP_CONCURRENCY = 10;
+
 export const notificationsService = {
   /** GET /me/notifications/history */
   async history() {
@@ -102,10 +112,23 @@ export const notificationsService = {
       limit ${Number(limit)}
     `);
 
+    // The sweep runs every minute and takes at most `limit` rows. Hitting that
+    // number exactly almost never means "there were exactly 200": it means there
+    // were at least 200 and the rest were left behind. Because each pass reads
+    // `reminder_at > now() - 2 days`, anything that keeps missing the cut for two
+    // days is dropped permanently and nobody is told. Saying so turns a silent
+    // data-loss mode into a line someone can alert on.
+    if (rows.length >= limit) {
+      console.warn(`[notifications] reminder sweep saturated at limit=${limit} — reminders are being deferred and may expire unsent`);
+    }
+
     let sent = 0;
     let failed = 0;
-    for (const r of rows) {
-      // Claim the delivery first (race-safe): only send if we win the insert.
+
+    /** Claim, send, and record one reminder. Safe to run concurrently: the
+     *  claim is an INSERT ... ON CONFLICT DO NOTHING on dedup_key, so exactly
+     *  one worker can ever own a given task's delivery. */
+    const deliver = async (r: DueReminderRow) => {
       const claim = await db.$queryRawUnsafe<Array<{ id: string }>>(
         `insert into notification_deliveries (user_id, kind, task_id, dedup_key, status)
          values ($1, 'before_task', $2, $3, 'pending')
@@ -115,7 +138,7 @@ export const notificationsService = {
         r.task_id,
         `before_task:${r.task_id}`,
       );
-      if (claim.length === 0) continue; // another sweep already took it
+      if (claim.length === 0) return; // another sweep already took it
       const deliveryId = claim[0].id;
 
       // Both platforms register an FCM token (iOS delivers via Firebase → APNs),
@@ -139,8 +162,27 @@ export const notificationsService = {
         result.error ?? null,
         deliveryId,
       );
+    };
+
+    // Sending one at a time made the sweep's duration the sum of every FCM round
+    // trip: at ~150ms each, 200 reminders take 30s of a 60s window, and a slow
+    // FCM turns "a few late reminders" into a backlog the next pass inherits.
+    // Batching bounds wall-clock at (rows / CONCURRENCY) round trips while
+    // keeping the DB pool (2 per isolate) from being swamped — the awaited
+    // queries inside `deliver` are short and the fetch to FCM is the long part.
+    for (let i = 0; i < rows.length; i += SWEEP_CONCURRENCY) {
+      const batch = rows.slice(i, i + SWEEP_CONCURRENCY);
+      // allSettled, not all: one token that throws must not abandon the rest of
+      // the batch, and each failure is already recorded per row.
+      const results = await Promise.allSettled(batch.map(deliver));
+      for (const res of results) {
+        if (res.status === 'rejected') {
+          failed++;
+          console.warn('[notifications] reminder delivery threw:', res.reason);
+        }
+      }
     }
 
-    return { scanned: rows.length, sent, failed };
+    return { scanned: rows.length, sent, failed, saturated: rows.length >= limit };
   },
 };
