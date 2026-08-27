@@ -7,21 +7,23 @@ export interface EmailResult {
   error?: string;
 }
 
-interface OtpTemplate {
-  subject: string;
-  intro: string;
-}
-
 /**
- * §7 transactional email via Resend. Delivers the 6-digit OTPs minted by
- * AuthService.issueOtp() (signup / login / password reset / change email).
+ * §7 transactional email via Resend. Today that means feedback-board
+ * notifications; it is NOT on the auth path.
+ *
+ * Signup verification, password reset and change-email codes are minted and
+ * delivered by Supabase Auth (GoTrue), configured under Authentication -> SMTP
+ * in the dashboard. This service used to send those OTPs, back when AuthService
+ * issued them; auth moved to Supabase on 2026-07-18 and the sender was left
+ * behind with no callers. It has been removed, because a method that looks like
+ * it delivers signup codes but never runs is worse than no method at all.
  *
  * Unconfigured-safe: when EMAIL_PROVIDER_API_KEY is absent, isConfigured() is
- * false and sendOtp() returns 'skipped_no_provider' instead of attempting a
- * send. This keeps local dev working off the console/dev_code path with no key.
+ * false and sends return 'skipped_no_provider' rather than attempting delivery,
+ * so local dev works with no key.
  *
  * Never throws — callers treat email as best-effort so a provider outage cannot
- * crash an auth flow.
+ * crash a request.
  */
 @Injectable()
 export class EmailService {
@@ -32,31 +34,6 @@ export class EmailService {
 
   isConfigured(): boolean {
     return Boolean(this.apiKey);
-  }
-
-  /** Send a one-time code email for the given purpose. Never throws. */
-  async sendOtp(email: string, purpose: string, code: string): Promise<EmailResult> {
-    if (!this.isConfigured()) return { status: 'skipped_no_provider' };
-
-    const tpl = this.template(purpose);
-    try {
-      const { data, error } = await this.resend().emails.send({
-        from: this.from,
-        to: email,
-        subject: tpl.subject,
-        html: this.html(tpl, code),
-        text: this.text(tpl, code),
-      });
-      if (error) {
-        this.logger.error(`OTP email to ${email} failed: ${error.message}`);
-        return { status: 'failed', error: error.message };
-      }
-      return { status: 'sent', provider_message_id: data?.id };
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      this.logger.error(`OTP email to ${email} threw: ${message}`);
-      return { status: 'failed', error: message };
-    }
   }
 
   /** Send a generic transactional notification (e.g. feedback board updates).
@@ -100,38 +77,5 @@ export class EmailService {
   private resend(): Resend {
     if (!this.client) this.client = new Resend(this.apiKey);
     return this.client;
-  }
-
-  private template(purpose: string): OtpTemplate {
-    switch (purpose) {
-      case 'signup':
-        return { subject: 'Verify your Aqademiq account', intro: 'Use this code to verify your email and finish creating your account.' };
-      case 'login':
-        return { subject: 'Your Aqademiq sign-in code', intro: 'Use this code to sign in to your account.' };
-      case 'password_reset':
-        return { subject: 'Reset your Aqademiq password', intro: 'Use this code to reset your password.' };
-      case 'change_email':
-        return { subject: 'Confirm your new Aqademiq email', intro: 'Use this code to confirm your new email address.' };
-      default:
-        return { subject: 'Your Aqademiq verification code', intro: 'Use this code to continue.' };
-    }
-  }
-
-  private text(tpl: OtpTemplate, code: string): string {
-    return `${tpl.intro}\n\nYour code is: ${code}\n\nThis code expires in 10 minutes. If you didn't request it, you can safely ignore this email.`;
-  }
-
-  private html(tpl: OtpTemplate, code: string): string {
-    return `<!doctype html>
-<html>
-  <body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a;">
-    <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;">
-      <h1 style="margin:0 0 16px;font-size:20px;">Aqademiq</h1>
-      <p style="margin:0 0 24px;font-size:15px;line-height:1.5;color:#444;">${tpl.intro}</p>
-      <div style="font-size:32px;font-weight:700;letter-spacing:8px;text-align:center;padding:16px;background:#f1f3f5;border-radius:8px;">${code}</div>
-      <p style="margin:24px 0 0;font-size:13px;color:#888;">This code expires in 10 minutes. If you didn't request it, you can safely ignore this email.</p>
-    </div>
-  </body>
-</html>`;
   }
 }
