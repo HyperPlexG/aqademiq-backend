@@ -77,13 +77,21 @@ async function getPostByRef(ref: number) {
 }
 
 async function assertCategory(key: string) {
-  const c = await prismaBase().feedbackCategory.findUnique({ where: { key } });
-  if (!c) throw new HttpError(400, `Unknown category: ${key}`);
+  if (!(await knownCategory(key))) throw new HttpError(400, `Unknown category: ${key}`);
 }
 
 async function assertStatus(key: string) {
-  const s = await prismaBase().feedbackStatus.findUnique({ where: { key } });
-  if (!s) throw new HttpError(400, `Unknown status: ${key}`);
+  if (!(await knownStatus(key))) throw new HttpError(400, `Unknown status: ${key}`);
+}
+
+/** Does this status exist? Used where an unknown key is reported, not rejected. */
+async function knownStatus(key: string): Promise<boolean> {
+  return Boolean(await prismaBase().feedbackStatus.findUnique({ where: { key } }));
+}
+
+/** Does this category exist? Same reasoning as [knownStatus]. */
+async function knownCategory(key: string): Promise<boolean> {
+  return Boolean(await prismaBase().feedbackCategory.findUnique({ where: { key } }));
 }
 
 function assertNotGuest(action: string) {
@@ -273,8 +281,31 @@ export const feedbackBoardService = {
   async list(q: QueryPostsDto) {
     const offset = parseCursor(q.cursor);
     const where: AnyObj = { approved: true, merged_into: null };
-    if (q.status) where.status_key = q.status;
-    if (q.category) where.category_key = q.category;
+    // An unknown filter key still matches nothing — but now it says so.
+    //
+    // A key this board has never defined produced a well-formed query and zero
+    // rows, which is indistinguishable from a board that genuinely has nothing
+    // in that state. That is exactly how a stale enum in the app went unnoticed:
+    // it filtered on `open`, a status retired long ago, and the empty result
+    // read as "nothing was ever marked shipped" while five shipped posts sat in
+    // the table.
+    //
+    // Deliberately a warning and NOT a 400. Every build already in users' hands
+    // sends those retired keys, so rejecting them would turn today's harmless
+    // empty list into an error screen for everyone who has not updated yet.
+    // Once the fixed build is widely adopted this can become `assertStatus`.
+    if (q.status) {
+      if (!(await knownStatus(q.status))) {
+        console.warn(`[feedback] list filtered by unknown status "${q.status}" — returning empty; likely an outdated client`);
+      }
+      where.status_key = q.status;
+    }
+    if (q.category) {
+      if (!(await knownCategory(q.category))) {
+        console.warn(`[feedback] list filtered by unknown category "${q.category}" — returning empty; likely an outdated client`);
+      }
+      where.category_key = q.category;
+    }
     if (q.q) {
       where.OR = [
         { title: { contains: q.q, mode: 'insensitive' } },

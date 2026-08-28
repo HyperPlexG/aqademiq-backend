@@ -66,8 +66,33 @@ export class FeedbackBoardService {
   async list(q: QueryPostsDto) {
     const offset = this.parseCursor(q.cursor);
     const where: any = { approved: true, merged_into: null };
-    if (q.status) where.status_key = q.status;
-    if (q.category) where.category_key = q.category;
+    // An unknown filter key still matches nothing — but now it says so.
+    //
+    // A key this board has never defined produced a well-formed query and zero
+    // rows, indistinguishable from a board that genuinely has nothing in that
+    // state. That is how a stale enum in the app went unnoticed: it filtered on
+    // `open`, a status retired long ago, and the empty result read as "nothing
+    // was ever marked shipped" while five shipped posts sat in the table.
+    //
+    // Deliberately a warning and NOT a 400: builds already in users' hands send
+    // those retired keys, and rejecting them would turn a harmless empty list
+    // into an error screen for anyone who has not updated.
+    if (q.status) {
+      if (!(await this.knownStatus(q.status))) {
+        this.log.warn(
+          `list filtered by unknown status "${q.status}" — returning empty; likely an outdated client`,
+        );
+      }
+      where.status_key = q.status;
+    }
+    if (q.category) {
+      if (!(await this.knownCategory(q.category))) {
+        this.log.warn(
+          `list filtered by unknown category "${q.category}" — returning empty; likely an outdated client`,
+        );
+      }
+      where.category_key = q.category;
+    }
     if (q.q) {
       where.OR = [
         { title: { contains: q.q, mode: 'insensitive' } },
@@ -479,13 +504,27 @@ export class FeedbackBoardService {
   }
 
   private async assertCategory(key: string) {
-    const c = await this.prisma.feedbackCategory.findUnique({ where: { key } });
-    if (!c) throw new BadRequestException(`Unknown category: ${key}`);
+    if (!(await this.knownCategory(key)))
+      throw new BadRequestException(`Unknown category: ${key}`);
   }
 
   private async assertStatus(key: string) {
-    const s = await this.prisma.feedbackStatus.findUnique({ where: { key } });
-    if (!s) throw new BadRequestException(`Unknown status: ${key}`);
+    if (!(await this.knownStatus(key)))
+      throw new BadRequestException(`Unknown status: ${key}`);
+  }
+
+  /** Does this status exist? Used where an unknown key is reported, not rejected. */
+  private async knownStatus(key: string): Promise<boolean> {
+    return Boolean(
+      await this.prisma.feedbackStatus.findUnique({ where: { key } }),
+    );
+  }
+
+  /** Does this category exist? Same reasoning as knownStatus. */
+  private async knownCategory(key: string): Promise<boolean> {
+    return Boolean(
+      await this.prisma.feedbackCategory.findUnique({ where: { key } }),
+    );
   }
 
   private assertNotGuest(action: string) {
