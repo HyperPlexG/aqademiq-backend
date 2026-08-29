@@ -13,6 +13,7 @@
 //   CEREBRAS_MODEL       = gpt-oss-120b            (default)
 import { env } from './env.ts';
 import { cacheGet, cacheSet } from './redis.ts';
+import { gcpAccessToken, gcpProject, isVertexConfigured, vertexHost } from './vertex.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
 
@@ -72,8 +73,8 @@ export interface AiResult {
   usage?: AiUsage;
 }
 
-type Provider = 'gemini' | 'cerebras' | 'groq';
-interface KeyEntry { provider: Provider; key: string; model: string; id: string }
+type Provider = 'vertex-gemini' | 'gemini' | 'cerebras' | 'groq';
+export interface KeyEntry { provider: Provider; key: string; model: string; id: string }
 
 function splitKeys(v?: string): string[] {
   return (v ?? '').split(',').map((k) => k.trim()).filter(Boolean);
@@ -93,6 +94,14 @@ function splitKeys(v?: string): string[] {
  */
 function pool(): KeyEntry[] {
   const out: KeyEntry[] = [];
+  // Vertex has no key to rotate — one service account serves everything — so it
+  // contributes a single entry per model rather than a key x model cross
+  // product. `key` stays empty; the transport authenticates with the SA instead.
+  if (isVertexConfigured()) {
+    for (const model of vertexGeminiModels()) {
+      out.push({ provider: 'vertex-gemini', key: '', model, id: `vertex-gemini:${model}` });
+    }
+  }
   for (const key of splitKeys(env('GEMINI_API_KEYS'))) {
     for (const model of geminiModels()) {
       out.push({ provider: 'gemini', key, model, id: `gemini:${key.slice(-6)}:${model}` });
@@ -121,6 +130,30 @@ export function rotationConfigured(): boolean {
 // Pin a dated model id via the GEMINI_MODEL secret if reproducibility ever matters
 // more than availability (the alias can change behaviour under you).
 const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-flash-latest';
+
+/**
+ * Region for Gemini on Vertex. Separate from VERTEX_REGION, which the Claude
+ * path uses: the two model families are not served from the same set of
+ * regions, so sharing one variable would break whichever was configured second.
+ *
+ * `global` by default — Google routes it to wherever the model is available,
+ * which avoids the "model not found in this region" failure that a specific
+ * region invites. Override with VERTEX_GEMINI_REGION if data residency matters.
+ */
+const vertexGeminiRegion = () => env('VERTEX_GEMINI_REGION') ?? 'global';
+
+/**
+ * Model for Gemini on Vertex.
+ *
+ * 2.5 Flash by default. It is the cheapest model that is still reliable at
+ * multi-step tool calling, which is all Ada does: at $0.30/$2.50 per 1M it costs
+ * ~$0.008 per Ada message against ~$0.017 for 3.x Flash, for a task that is
+ * structured tool selection rather than hard reasoning. Flash-Lite is a quarter
+ * of the price again but gets shaky across a 3-call tool loop, and a wrong tool
+ * call costs an extra turn — which is not a saving.
+ */
+const vertexGeminiModel = () => env('VERTEX_GEMINI_MODEL') ?? 'gemini-2.5-flash';
+const vertexGeminiModels = () => modelsFor('VERTEX_GEMINI_MODELS', vertexGeminiModel);
 const cerebrasModel = () => env('CEREBRAS_MODEL') ?? 'gpt-oss-120b';
 /**
  * Chosen against the live account's real limits, not the docs.
@@ -245,11 +278,20 @@ function rotate<T>(arr: T[]): T[] {
 // (out of credit) — a provider that is dead until someone pays is the worst
 // fallback, not the first one. So when Gemini is exhausted the next request goes
 // to Groq, which is the behaviour this pool is for.
-const PROVIDER_PRIORITY: readonly Provider[] = ['gemini', 'groq', 'cerebras'];
+// Vertex leads when it is configured: it is paid, has no free-tier request cap,
+// and is what the GCP credits are there to spend. The free keys stay behind it
+// as a genuine safety net — if the credits run dry or billing breaks, Vertex
+// starts erroring and the pool falls through to them automatically rather than
+// Ada going down. That failover is the reason this is one pool and not a
+// hard cutover.
+const PROVIDER_PRIORITY: readonly Provider[] = ['vertex-gemini', 'gemini', 'groq', 'cerebras'];
 
 /// Every key in provider-priority order, rotated *within* each provider so load
 /// still spreads across that provider's own keys.
-function orderedCandidates(): KeyEntry[] {
+///
+/// Exported for tests: which provider sits at the head of this list decides
+/// which account pays for Ada, so it is worth asserting rather than assuming.
+export function orderedCandidates(): KeyEntry[] {
   const all = pool();
   const out: KeyEntry[] = [];
   for (const provider of PROVIDER_PRIORITY) {
@@ -359,7 +401,9 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
   const errors: string[] = [];
   for (const c of order) {
     try {
-      const res = c.provider === 'gemini'
+      const res = c.provider === 'vertex-gemini'
+        ? await vertexGeminiChat(c.model, params)
+        : c.provider === 'gemini'
         ? await geminiChat(c.key, c.model, params)
         : c.provider === 'groq'
         ? await groqChat(c.key, c.model, params)
@@ -476,7 +520,18 @@ const cerebrasChat = (key: string, model: string, p: AiParams) =>
 const groqChat = (key: string, model: string, p: AiParams) =>
   openAiCompatChat('https://api.groq.com/openai/v1/chat/completions', 'groq', key, model, p);
 
-async function geminiChat(key: string, model: string, p: AiParams): Promise<AiResult> {
+/**
+ * Anthropic Messages -> Gemini `generateContent` request body.
+ *
+ * Shared by both Gemini transports. AI Studio and Vertex speak the SAME request
+ * and response schema; they differ only in the URL and how the caller proves who
+ * it is (an API key header vs an OAuth bearer). Keeping one builder means the
+ * fiddly parts — thought-signature replay, tool declarations, inline files —
+ * cannot drift between the paid path and the free fallback, which would be a
+ * miserable class of bug to chase: it would only show up once quota ran out.
+ */
+// deno-lint-ignore no-explicit-any
+function buildGeminiBody(p: AiParams): any {
   // Map Anthropic tool_use ids → names so tool_results become functionResponses.
   const idToName = new Map<string, string>();
   for (const m of p.messages) {
@@ -559,27 +614,73 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
     body.tools = [{ functionDeclarations: p.tools.map(geminiFunctionDeclaration) }];
     body.toolConfig = { functionCallingConfig: p.toolChoice ? { mode: 'ANY', allowedFunctionNames: [p.toolChoice.name] } : { mode: 'AUTO' } };
   }
+  return body;
+}
+
+/** Free-tier / paid AI Studio transport, authenticated with an API key. */
+async function geminiChat(key: string, model: string, p: AiParams): Promise<AiResult> {
   // The key goes in the `x-goog-api-key` header rather than a `?key=` query
   // param (both are supported) so it can't leak into URL logging along the way.
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-    body: JSON.stringify(body),
+    body: JSON.stringify(buildGeminiBody(p)),
   });
+  return parseGeminiResponse(await readGeminiResponse(res, 'gemini'), model);
+}
+
+/**
+ * Gemini on Vertex AI, authenticated with the service account.
+ *
+ * `publishers/google` — NOT `publishers/anthropic` like `_shared/vertex.ts`.
+ * That distinction is the whole reason this exists: Claude on Vertex is a
+ * third-party Model Garden model billed through Marketplace, which GCP
+ * promotional credits commonly exclude, while Gemini is first-party and is what
+ * those credits are meant to pay for.
+ */
+async function vertexGeminiChat(model: string, p: AiParams): Promise<AiResult> {
+  const region = vertexGeminiRegion();
+  const url = `${vertexHost(region)}/v1/projects/${gcpProject()}/locations/${region}` +
+    `/publishers/google/models/${model}:generateContent`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${await gcpAccessToken()}` },
+    body: JSON.stringify(buildGeminiBody(p)),
+  });
+  return parseGeminiResponse(await readGeminiResponse(res, 'vertex-gemini'), model);
+}
+
+/**
+ * Turn a non-2xx Gemini response into the right kind of error, or return the
+ * parsed JSON.
+ *
+ * A QuotaError benches this candidate and moves to the next one; a plain Error
+ * does too, but without the cooldown. The distinction matters most on Vertex,
+ * where a 429 means real quota and a 403 usually means the service account is
+ * missing `roles/aiplatform.user` — one is worth retrying later, the other never
+ * is, and silently benching a permissions failure for a day would hide it.
+ */
+// deno-lint-ignore no-explicit-any
+async function readGeminiResponse(res: Response, label: string): Promise<any> {
   if (res.status === 429) {
     // The body is read rather than discarded: it is the only thing that says
     // whether this key is unusable for 30 seconds or for the rest of the day.
     const body = await res.text();
-    throw new QuotaError(`gemini 429: ${body.slice(0, 300)}`, geminiCooldownSeconds(body));
+    throw new QuotaError(`${label} 429: ${body.slice(0, 300)}`, geminiCooldownSeconds(body));
   }
   if (res.status === 403) {
     const t = await res.text();
-    if (/quota|RESOURCE_EXHAUSTED/i.test(t)) throw new QuotaError('gemini quota', geminiCooldownSeconds(t));
-    throw new Error(`gemini 403: ${t}`);
+    if (/quota|RESOURCE_EXHAUSTED/i.test(t)) throw new QuotaError(`${label} quota`, geminiCooldownSeconds(t));
+    throw new Error(`${label} 403: ${t}`);
   }
-  if (!res.ok) throw new Error(`gemini ${res.status}: ${await res.text()}`);
-  const json = await res.json();
+  if (!res.ok) throw new Error(`${label} ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+/** Gemini `generateContent` response -> the Anthropic-shaped result Ada expects. */
+// deno-lint-ignore no-explicit-any
+function parseGeminiResponse(json: any, model: string): AiResult {
   const parts = json.candidates?.[0]?.content?.parts ?? [];
   // deno-lint-ignore no-explicit-any
   const content: any[] = [];

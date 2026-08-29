@@ -23,10 +23,22 @@ readable NestJS reference, still built and tested in CI. Port behaviour *from*
 - `supabase/functions/prisma-spike/` was the phase-1 gate (Prisma driver adapter
   inside a real Edge Function); it passed and is still deployed as a smoke test.
 - **AI provider is `rotating` in production** — `_shared/ai.ts` round-robins a pool
-  of free-tier Gemini + Groq + Cerebras keys (`GEMINI_API_KEYS` / `GROQ_API_KEYS` /
-  `CEREBRAS_API_KEYS`), adapting all three to the Anthropic Messages shape.
-  `_shared/claude.ts` falls back to Anthropic or Vertex only when those creds are set.
-  Providers are tried in `PROVIDER_PRIORITY` order — **gemini → groq → cerebras**:
+  of Gemini-on-Vertex plus free-tier Gemini + Groq + Cerebras keys
+  (`GEMINI_API_KEYS` / `GROQ_API_KEYS` / `CEREBRAS_API_KEYS`), adapting all of them
+  to the Anthropic Messages shape.
+  Providers are tried in `PROVIDER_PRIORITY` order — **vertex-gemini → gemini →
+  groq → cerebras**.
+- **Gemini on Vertex is the paid head of that pool**, present only when the
+  `GCP_*` secrets are set (`VERTEX_GEMINI_MODEL`, default `gemini-2.5-flash`;
+  `VERTEX_GEMINI_REGION`, default `global`). It exists to spend GCP credits, and
+  the free keys stay behind it so an exhausted balance or broken billing fails
+  over instead of taking Ada down.
+  **`AI_PROVIDER=vertex` is a different thing** — it selects *Claude* on Vertex
+  (`publishers/anthropic`, `_shared/vertex.ts`), a Marketplace-billed third-party
+  model that GCP promotional credits commonly exclude. Leave `AI_PROVIDER` unset
+  to get the pool. Gemini on Vertex is `publishers/google` and shares the request
+  builder with the free AI Studio path (`buildGeminiBody`), so the two cannot drift.
+- Remaining notes on the free tier:
   Gemini and Groq rate-limit and reset, while Cerebras has been answering 402
   (out of credit), so it is last. Groq and Cerebras share one OpenAI-compatible
   adapter (`openAiCompatChat`); Groq is the only one that sends `Retry-After`, and

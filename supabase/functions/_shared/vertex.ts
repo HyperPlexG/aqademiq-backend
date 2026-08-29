@@ -25,6 +25,31 @@ export function isVertexConfigured(): boolean {
   );
 }
 
+/**
+ * OAuth2 access token for the service account, cached until a minute before it
+ * expires.
+ *
+ * Exported because Gemini on Vertex (`_shared/ai.ts`) authenticates exactly the
+ * same way — same service account, same scope, same token. Minting a second one
+ * would double the token-exchange round trips for no benefit, and each is a full
+ * RSA sign plus an HTTP call on a cold isolate.
+ */
+export async function gcpAccessToken(): Promise<string> {
+  return accessToken();
+}
+
+/** GCP project id, or throws with the name of the secret that is missing. */
+export function gcpProject(): string {
+  const project = Deno.env.get('GCP_PROJECT_ID');
+  if (!project) throw new Error('Vertex is not configured (GCP_PROJECT_ID)');
+  return project;
+}
+
+/** `https://<host>` for a Vertex region, handling the special `global` case. */
+export function vertexHost(region: string): string {
+  return region === 'global' ? 'https://aiplatform.googleapis.com' : `https://${region}-aiplatform.googleapis.com`;
+}
+
 async function accessToken(): Promise<string> {
   if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;
 

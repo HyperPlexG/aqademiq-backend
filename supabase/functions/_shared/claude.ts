@@ -61,8 +61,22 @@ function resolveProvider(): Provider {
       console.warn('AI_PROVIDER="anthropic" but ANTHROPIC_API_KEY is not set; AI will use fallbacks.');
       return 'none';
     }
+    // NOTE: "vertex" here means CLAUDE on Vertex (publishers/anthropic), not
+    // Gemini on Vertex. They are different products with different billing:
+    // Claude is a third-party Model Garden model sold through Marketplace, which
+    // GCP promotional credits commonly exclude, while Gemini is first-party and
+    // is what those credits pay for.
+    //
+    // Gemini on Vertex is served by the ROTATING provider — `_shared/ai.ts` puts
+    // it at the head of the pool whenever the GCP_* secrets are set, with the
+    // free keys behind it as fallback. So to spend GCP credits, leave AI_PROVIDER
+    // unset (or "rotating"); setting it to "vertex" here opts out of that pool
+    // and bills Claude instead.
     if (explicit === 'vertex') {
-      if (isVertexConfigured()) return 'vertex';
+      if (isVertexConfigured()) {
+        console.warn('AI_PROVIDER="vertex" selects CLAUDE on Vertex (Marketplace-billed), not Gemini. Unset it to use the rotating pool, which prefers Gemini on Vertex.');
+        return 'vertex';
+      }
       console.warn('AI_PROVIDER="vertex" but the Vertex GCP_* secrets are incomplete; AI will use fallbacks.');
       return 'none';
     }
