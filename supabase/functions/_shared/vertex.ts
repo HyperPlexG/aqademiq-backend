@@ -50,12 +50,55 @@ export function vertexHost(region: string): string {
   return region === 'global' ? 'https://aiplatform.googleapis.com' : `https://${region}-aiplatform.googleapis.com`;
 }
 
+const PEM_HEADER = '-----BEGIN PRIVATE KEY-----';
+const PEM_FOOTER = '-----END PRIVATE KEY-----';
+
+/**
+ * Rebuild a PKCS#8 PEM from however the secret store mangled it.
+ *
+ * `importPKCS8` wants the canonical form — header, base64 wrapped at 64
+ * columns, footer — and rejects anything else with the unhelpful
+ * `"pkcs8" must be PKCS#8 formatted string`. A service-account key has to
+ * survive being copied out of JSON, through a shell or a web form, and into a
+ * secret store, and each of those can change it in a different way:
+ *
+ *   - a dashboard textarea can flatten it to a single line, losing every newline
+ *   - a JSON copy keeps the two-character escape `\n` rather than a real newline
+ *   - a shell can leave the surrounding quotes attached to the value
+ *
+ * All three produce the same failure, and it took a silent fallback and a
+ * deployed logging fix to see it at all. So rather than demand one exact
+ * encoding, strip the body down to its base64 and re-wrap it. Every variant
+ * above converges on the same key, and a genuinely wrong value still fails —
+ * just in `importPKCS8`, where the message is about the key rather than about
+ * whitespace.
+ */
+export function normalizePrivateKey(raw: string): string {
+  let pem = raw.replace(/\\n/g, '\n').trim();
+  // A quoted value stored verbatim, e.g. from `KEY="-----BEGIN..."`.
+  if ((pem.startsWith('"') && pem.endsWith('"')) || (pem.startsWith("'") && pem.endsWith("'"))) {
+    pem = pem.slice(1, -1).trim();
+  }
+  const start = pem.indexOf(PEM_HEADER);
+  const end = pem.indexOf(PEM_FOOTER);
+  if (start === -1 || end === -1) {
+    throw new Error('GCP_SA_PRIVATE_KEY is not a PEM private key (no BEGIN/END PRIVATE KEY markers)');
+  }
+  // Everything between the markers, with ALL whitespace removed — that is the
+  // base64 body regardless of how it was wrapped, or whether it was wrapped.
+  const body = pem.slice(start + PEM_HEADER.length, end).replace(/\s+/g, '');
+  if (!body) throw new Error('GCP_SA_PRIVATE_KEY has empty PEM body');
+  const wrapped = body.match(/.{1,64}/g)!.join('\n');
+  return `${PEM_HEADER}\n${wrapped}\n${PEM_FOOTER}\n`;
+}
+
 async function accessToken(): Promise<string> {
   if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;
 
   const saEmail = Deno.env.get('GCP_SA_EMAIL');
-  const pem = Deno.env.get('GCP_SA_PRIVATE_KEY')?.replace(/\\n/g, '\n');
-  if (!saEmail || !pem) throw new Error('Vertex is not configured (GCP_SA_EMAIL / GCP_SA_PRIVATE_KEY)');
+  const rawPem = Deno.env.get('GCP_SA_PRIVATE_KEY');
+  if (!saEmail || !rawPem) throw new Error('Vertex is not configured (GCP_SA_EMAIL / GCP_SA_PRIVATE_KEY)');
+  const pem = normalizePrivateKey(rawPem);
 
   const key = await importPKCS8(pem, 'RS256');
   const assertion = await new SignJWT({ scope: SCOPE })
