@@ -419,14 +419,22 @@ export const tasksService = {
   async create(dto: CreateTaskDto) {
     const db = tenantDb();
 
-    let courseId = dto.subject_id;
+    // A subject is optional. `tasks.course_id` is nullable in both the database
+    // and the Prisma model, and 8 rows already carry null — the requirement was
+    // only ever this guard.
+    //
+    // It made the very first thing a new user tries impossible. Someone who
+    // signs up and adds a task before creating a subject got a 422 on every
+    // attempt, and the app rendered it as "Couldn't save task. Try again." —
+    // advice that could not work no matter how many times they followed it.
+    // A task with no subject is a perfectly ordinary thing to want.
+    //
+    // An explicitly-supplied subject is still validated: passing an id that is
+    // not yours must fail rather than silently attach the task to nothing.
+    let courseId = dto.subject_id ?? null;
     if (courseId) {
       const course = await db.course.findFirst({ where: { id: courseId } });
       if (!course) throw new HttpError(422, 'Unknown subject_id');
-    } else {
-      const first = await db.course.findFirst({ orderBy: { name: 'asc' } });
-      if (!first) throw new HttpError(422, 'No subject available — create a subject first');
-      courseId = first.id;
     }
 
     const anchorStr = dto.date ?? (dto.scheduled_at ? ymd(dto.scheduled_at) : today());

@@ -497,7 +497,7 @@ const writeTools: AgentTool[] = [
       properties: {
         title: { type: 'string', description: 'What the user will do. Specific and short.' },
         date: { type: 'string', description: 'The day it is scheduled for, YYYY-MM-DD. Must not be in the past.' },
-        subject_id: { type: 'string', description: 'Subject id from list_subjects. Defaults to the user\'s first subject.' },
+        subject_id: { type: 'string', description: 'Optional subject id from list_subjects. Omit it when the task belongs to no subject, or when the user has none — a task without a subject is valid.' },
         duration_minutes: { type: 'integer', description: 'Estimated minutes, 5–1440.' },
         scheduled_at: { type: 'string', description: 'Optional clock start time, 24-hour "HH:MM".' },
         part_of_day: { type: 'string', description: 'anytime | morning | afternoon | evening. Use when there is no exact time.' },
