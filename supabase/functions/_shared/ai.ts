@@ -416,13 +416,22 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
       }
       return res;
     } catch (e) {
-      errors.push(`${c.id} → ${e instanceof Error ? e.message : String(e)}`);
+      const message = e instanceof Error ? e.message : String(e);
+      errors.push(`${c.id} → ${message}`);
       if (e instanceof QuotaError) {
         await markExhausted(c.id, e.cooldownSeconds);
         // Logged so a pool that keeps emptying can be diagnosed from the length
         // of the cooldowns, which distinguishes "bursty traffic" from "the free
         // tier is genuinely used up for today".
         console.warn(`[ai] benched ${c.id} for ${Math.ceil(e.cooldownSeconds)}s`);
+      } else {
+        // Every other failure used to be collected here and then thrown away the
+        // moment a later candidate succeeded — `errors` is only ever read when
+        // ALL of them fail. That made a permanently broken provider completely
+        // invisible: Vertex could fail on every single call, the free keys would
+        // quietly answer instead, and the only symptom was latency nobody could
+        // explain. Fallback is meant to hide an outage from the USER, not from us.
+        console.warn(`[ai] ${c.id} failed, falling through: ${message.slice(0, 300)}`);
       }
       // Any failure (quota, network, 5xx) falls through to the next key.
     }
