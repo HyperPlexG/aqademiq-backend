@@ -82,7 +82,19 @@ export function normalizePrivateKey(raw: string): string {
   const start = pem.indexOf(PEM_HEADER);
   const end = pem.indexOf(PEM_FOOTER);
   if (start === -1 || end === -1) {
-    throw new Error('GCP_SA_PRIVATE_KEY is not a PEM private key (no BEGIN/END PRIVATE KEY markers)');
+    // Describe the SHAPE of what was stored, never its content. Without this
+    // the message is true but useless — "not a PEM" is equally consistent with
+    // the whole credentials JSON, the wrong field (private_key_id is a hex
+    // string with no markers and sits directly above private_key in that file),
+    // a file path, or a truncated paste. Each needs a different fix, and none
+    // of these facts reveal key material.
+    throw new Error(
+      'GCP_SA_PRIVATE_KEY is not a PEM private key (no BEGIN/END PRIVATE KEY markers). ' +
+        `Stored value: ${pem.length} chars, starts with ${JSON.stringify(pem.slice(0, 12))}` +
+        `${pem.startsWith('{') ? ' — looks like the whole credentials JSON; use only its private_key field' : ''}` +
+        `${/^[0-9a-f]{20,}$/i.test(pem) ? ' — looks like private_key_id, not private_key' : ''}` +
+        `${pem.includes('BEGIN RSA PRIVATE KEY') ? ' — PKCS#1 key; convert to PKCS#8 with openssl pkcs8 -topk8' : ''}`,
+    );
   }
   // Everything between the markers, with ALL whitespace removed — that is the
   // base64 body regardless of how it was wrapped, or whether it was wrapped.
