@@ -74,6 +74,29 @@ function dailyCallKey(userId: string, now = new Date()): string {
 }
 
 /**
+ * Accounts the daily cap does not apply to, from ADA_DAILY_CALL_UNLIMITED_IDS.
+ *
+ * Server-side allowlist of `auth.users.id`, exactly like FEEDBACK_ADMIN_IDS —
+ * never a claim in the token and never anything the client can assert, so an
+ * exemption cannot be granted by the app.
+ *
+ * This exists because the cap is deliberately tight (20 calls ≈ 5 messages a
+ * day), which is right for the shared free-tier pool and useless for whoever has
+ * to test Ada end to end. Without it the only way to test past lunchtime is to
+ * raise the cap for everybody, which is exactly what the cap is for.
+ *
+ * Keep this list short. Every id on it is an account that can spend the pool
+ * without limit.
+ */
+export function dailyCapExempt(userId: string): boolean {
+  return (env('ADA_DAILY_CALL_UNLIMITED_IDS') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .includes(userId);
+}
+
+/**
  * Whether this user has already spent their day's allowance.
  *
  * Reads the tally from Redis when it is there, and only falls back to summing
@@ -91,6 +114,7 @@ function dailyCallKey(userId: string, now = new Date()): string {
 async function dailyCallsExhausted(): Promise<boolean> {
   if (DAILY_CALL_CAP === 0) return false;
   const userId = RequestContext.userId;
+  if (dailyCapExempt(userId)) return false;
 
   const cached = await cacheGet(dailyCallKey(userId));
   if (cached !== null) {

@@ -13,3 +13,11 @@ cloud-sql-proxy.exe
 
 # Firebase service-account key (secret — never commit)
 *firebase-adminsdk*.json
+
+# Service-account credentials. These are created in the repo root while wiring
+# Vertex up (gcloud writes the key here) and a `git add -A` will happily stage
+# them — GitHub's secret scanning caught exactly that once. Never committed.
+ada-vertex.json
+vertex.env
+pk.txt
+*-sa-key.json
