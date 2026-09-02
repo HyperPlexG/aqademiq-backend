@@ -2,8 +2,21 @@
 import { Hono } from 'hono';
 import { focusService, type StartFocusDto, type CheckpointFocusDto, type CompleteFocusDto } from '../services/focus.service.ts';
 import { jsonBody, str, num } from '../../_shared/validate.ts';
+import { HttpError } from '../../_shared/http.ts';
 
 export const focusRouter = new Hono();
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+function ymdQuery(c: { req: { query: (k: string) => string | undefined } }, key: string): string | undefined {
+  const v = c.req.query(key);
+  if (v === undefined || v === '') return undefined;
+  if (!YMD.test(v)) throw new HttpError(422, `\`${key}\` must be YYYY-MM-DD`);
+  return v;
+}
+
+// GET /focus-sessions?from=&to= — read-only window over completed sessions.
+focusRouter.get('/', async (c) => c.json(await focusService.range(ymdQuery(c, 'from'), ymdQuery(c, 'to'))));
 
 focusRouter.post('/', async (c) => {
   const b = await jsonBody(c.req);

@@ -87,16 +87,24 @@ export class ProfileService {
     const [streak, completedTasks, focus, subjectsCount] = await Promise.all([
       this.streaks.current(),
       db.task.count({ where: { status: 'completed' } }),
-      db.focusSession.findMany({ where: { status: 'completed' }, select: { actual_duration_mins: true } }),
+      // Aggregated in Postgres rather than pulled row-by-row. This used to load
+      // every completed session a user has ever run into memory purely to sum
+      // one column — unbounded by construction, on an endpoint the Stats tab
+      // hits on every open.
+      db.focusSession.aggregate({
+        where: { status: 'completed' },
+        _sum: { actual_duration_mins: true },
+        _count: { _all: true },
+      }),
       db.course.count(),
     ]);
-    const focusMinutes = focus.reduce((sum, f) => sum + (f.actual_duration_mins ?? 0), 0);
+    const focusMinutes = focus._sum.actual_duration_mins ?? 0;
     return {
       current_streak: streak.current_streak,
       total_active_days: streak.total_active_days,
       completed_tasks: completedTasks,
       focus_minutes: focusMinutes,
-      focus_sessions: focus.length,
+      focus_sessions: focus._count._all,
       subjects_count: subjectsCount,
     };
   }

@@ -1128,6 +1128,38 @@
             "description": ""
           }
         }
+      },
+      "get": {
+        "operationId": "FocusController_range",
+        "summary": "Completed focus sessions in a date window (max 92 days, 500 rows).",
+        "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "YYYY-MM-DD. Defaults to six days before `to`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "YYYY-MM-DD. Defaults to today.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{ from, to, sessions: FocusSession[] }"
+          },
+          "422": {
+            "description": "Malformed date, `from` after `to`, or a window wider than 92 days."
+          }
+        }
       }
     },
     "/v1/focus-sessions/{id}": {
@@ -2532,6 +2564,28 @@
         "responses": {
           "200": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/weekly-report": {
+      "get": {
+        "operationId": "StatsController_weeklyReport",
+        "summary": "Every fact the weekly report draws, in one read. Facts only - no prose crosses the wire.",
+        "parameters": [
+          {
+            "name": "week_start",
+            "required": false,
+            "in": "query",
+            "description": "Any date inside the week (YYYY-MM-DD); the server snaps to Monday. Defaults to the current week.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "See FRONTEND_INTEGRATION_CONTRACT.md - weekly report."
           }
         }
       }

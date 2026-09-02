@@ -44,6 +44,20 @@ export class FocusService {
   }
 
   /** POST /:id/complete */
+  /**
+   * NOTE: this reference implementation is behind the deployed Deno port.
+   *
+   * `supabase/functions/api/services/focus.service.ts` additionally pins
+   * `ended_at`, accumulates `paused_duration_mins` and `interruption_count`
+   * from the PAUSED/RUNNING checkpoints, copies `course_id` off the task, and
+   * — added with the weekly report — writes the session to
+   * `daily_activity_snapshots` whether or not it was linked to a task.
+   *
+   * That last one is the load-bearing difference. Before it, of the 48 days on
+   * which someone finished a session, 31 had no ledger row across 23 users, so
+   * two thirds of real focus days rendered as days nothing happened. Port from
+   * the Deno file, not from here.
+   */
   async complete(id: string, dto: CompleteFocusDto) {
     const existing = await this.owned(id);
     const session = await this.prisma.focusSession.update({

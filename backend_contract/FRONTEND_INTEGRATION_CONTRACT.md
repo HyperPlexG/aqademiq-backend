@@ -1543,4 +1543,79 @@ Every client data-source operation mapped to its endpoint(s)/event. State: ✅ l
 | `POST /v1/telemetry/events`, `/ratings`, `/feedback` | 🟡 | accepted but not persisted to a store |
 | edit-whole-series (task) | ⛔ | only per-occurrence overrides exist |
 
+---
 
+## 16. Weekly report ("the Core") — ✅
+
+Two endpoints added with the weekly report. Both are reads; neither changes any
+existing shape, so nothing already wired needs to move.
+
+### 16.A `GET /v1/focus-sessions?from=&to=`
+
+The focus-session table was write-only over the wire — every duration, time of
+day, Prism mode and end mood went in and nothing could read them back. This is
+the read.
+
+| | |
+|---|---|
+| Query | `from`, `to` — `YYYY-MM-DD`, both optional. Defaults to the last seven days. |
+| Returns | `{ from, to, sessions: [...] }` — completed sessions only, newest first. |
+| Session shape | The same object `POST /v1/focus-sessions` returns, plus `started_at`. |
+| Limits | Window capped at 92 days and 500 rows; a wider window is a `422`, not a truncation. |
+| Errors | `422` on a malformed date, on `from` after `to`, or on too wide a window. |
+
+### 16.B `GET /v1/me/weekly-report?week_start=`
+
+Every fact the report draws, in one read. `week_start` may be any date inside
+the week — the server snaps to Monday — and defaults to the current week.
+
+**The endpoint returns facts only.** No sentence, label or adjective crosses the
+wire; all copy is templated client-side in `features/report/report_copy.dart`,
+where a banned-vocabulary lint can see it as a string literal. A server that
+shipped prose would move that copy somewhere the lint cannot reach.
+
+```jsonc
+{
+  "week_start": "2026-08-31", "week_end": "2026-09-06",
+  "days": [                          // always 7, Monday first
+    { "date": "2026-08-31", "weekday": 1,   // 1 = Mon … 7 = Sun
+      "mood_index": 3,                      // 0-4 on the shipped ramp, or null
+      "has_activity": true,                 // see below - this is a union
+      "tasks_completed": 2, "focus_minutes": 45, "focus_sessions": 1 }
+  ],
+  "shape": "clustered",              // empty|single|steady|front_loaded|back_loaded|clustered|scattered
+  "active_days": 4,
+  "days_on_board": 23,               // LIFETIME. The hero numeral; only goes up.
+  "subjects": [ { "subject_id": "…", "name": "Machine Learning" | null,
+                  "color": "#6B5CF0" | null, "focus_minutes": 130,
+                  "tasks_completed": 4, "share": 0.48 } ],
+  "subject_basis": "focus_minutes",  // or "tasks_completed" when no session ran
+  "unattributed_focus_minutes": 0, "unattributed_tasks_completed": 0,
+  "moment":   { "kind": "task_completed", "date": "…", "title": "…", "subject_id": null } | null,
+  "recovery": { "sessions": 3, "before_avg": 2.1, "after_avg": 3.4, "lift": 1.3 } | null,
+  "longest_session": { "minutes": 52, "date": "…", "task_title": "…" | null } | null,
+  "held_minutes": 18,
+  "prism_mix": [ { "preset_id": "…", "name": "Rain", "sessions": 5, "share": 0.56 } ],
+  "rhythm_weekdays": [2, 3, 5],      // often empty - needs 3+ weeks of history
+  "focus_minutes": 195, "focus_sessions": 7, "tasks_completed": 9
+}
+```
+
+Three things a client must not get wrong:
+
+- **`has_activity` is a union, not the activity ledger.** It is true if the day
+  carries a ledger row *or* a completed task *or* a focus session *or* a mood
+  check-in. Reading the ledger alone was measured on production to miss 31 of
+  the 48 days on which someone finished a focus session, across 23 users — two
+  thirds of real focus days, every one of which would have rendered as a day
+  nothing happened. (`focus.service.ts` now writes sessions to the ledger, and
+  migration `20260902000000` backfilled the history, but the union stands.)
+- **`mood_index: 0` is a real mood, not a missing one.** It is falsy. Any
+  truthiness check on this path turns the worst day someone logged into a day
+  they did not log.
+- **`recovery` is null rather than negative.** The card is positive-only and the
+  enforcement is server-side, so the number simply does not exist when it points
+  the wrong way. Do not synthesise one from `before_avg`/`after_avg`.
+
+A day with `has_activity: true` and `mood_index: null` is work with no check-in.
+It is neither an empty day nor a low mood, and it must be drawn as a third state.

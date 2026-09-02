@@ -2,6 +2,7 @@
 import { Hono } from 'hono';
 import { profileService, type UpdateProfileDto } from '../services/profile.service.ts';
 import { jsonBody, str, num } from '../../_shared/validate.ts';
+import { weeklyReportService } from '../services/weekly-report.service.ts';
 
 export const profileRouter = new Hono();
 
@@ -25,3 +26,7 @@ profileRouter.delete('/account', async (c) => c.json(await profileService.delete
 // Mounted separately at /me
 export const meRouter = new Hono();
 meRouter.get('/stats', async (c) => c.json(await profileService.stats()));
+
+// GET /me/weekly-report?week_start= — every fact the weekly Core draws, in one
+// read. Any date inside the week is accepted; the service snaps to Monday.
+meRouter.get('/weekly-report', async (c) => c.json(await weeklyReportService.get(c.req.query('week_start'))));
