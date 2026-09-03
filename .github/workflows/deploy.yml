@@ -113,8 +113,16 @@ jobs:
           version: latest
       # --no-verify-jwt: the FUNCTION owns auth (Supabase JWKS guard) and keeps
       # /healthz + /readyz public. Mirrors docs/DEPLOY_EDGE_INDIA.md.
+      # --use-api bundles server-side through the Management API instead of the
+      # local Docker edge-runtime image. The Docker bundler embeds the source
+      # maps of every npm dependency it pulls, and @prisma/client's runtime maps
+      # alone are ~1 MB; that pushed the script past the 20 MiB ceiling at
+      # "21 MB" on a change of ~25 KB of source, because the previous deploy was
+      # already sitting at ~19.9 MiB. The graph itself has no slack left to cut:
+      # it resolves exactly one query compiler (postgresql), one driver, hono
+      # and jose.
       - name: Deploy api
-        run: supabase functions deploy api --project-ref "$PROJECT_REF" --no-verify-jwt
+        run: supabase functions deploy api --project-ref "$PROJECT_REF" --no-verify-jwt --use-api
 
 # prisma-spike is unchanged and intentionally not deployed here; deploy it with the
 # CLI if it ever needs updating — see docs/DEPLOY_EDGE_INDIA.md.
