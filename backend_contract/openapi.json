@@ -1131,7 +1131,8 @@
       },
       "get": {
         "operationId": "FocusController_range",
-        "summary": "Completed focus sessions in a date window (max 92 days, 500 rows).",
+        "summary": "Completed focus sessions in a date window",
+        "description": "The table was write-only over the wire: every duration, time of day, Prism mode and end mood went in and nothing came back. Completed sessions only, newest first - which is the shape of focus_sessions_user_completed_started_idx, so this is an index scan rather than the seq scan an unfiltered read would be.",
         "parameters": [
           {
             "name": "from",
@@ -1154,10 +1155,32 @@
         ],
         "responses": {
           "200": {
-            "description": "{ from, to, sessions: FocusSession[] }"
+            "description": "Completed sessions in the window, newest first. Capped at 500 rows.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "The object POST /v1/focus-sessions returns, plus started_at."
+                      }
+                    }
+                  }
+                }
+              }
+            }
           },
           "422": {
-            "description": "Malformed date, `from` after `to`, or a window wider than 92 days."
+            "description": "Malformed date, `from` after `to`, or a window wider than 92 days. A wide window is refused rather than silently truncated."
           }
         }
       }
@@ -1450,6 +1473,36 @@
         "responses": {
           "200": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/me/weekly-report": {
+      "get": {
+        "operationId": "StatsController_weeklyReport",
+        "summary": "Every fact the weekly report draws, in one read",
+        "description": "One endpoint rather than five composed client-side: the report is a single screen that must appear all at once, and has_activity has to be decided from the union of every kind of evidence in one place - split across endpoints, any disagreement between the two draws a day someone worked as empty.",
+        "parameters": [
+          {
+            "name": "week_start",
+            "required": false,
+            "in": "query",
+            "description": "Any date inside the week (YYYY-MM-DD); the server snaps to Monday. Defaults to the current week.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The facts for the week.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeeklyReportDto"
+                }
+              }
+            }
           }
         }
       }
@@ -2564,28 +2617,6 @@
         "responses": {
           "200": {
             "description": ""
-          }
-        }
-      }
-    },
-    "/v1/me/weekly-report": {
-      "get": {
-        "operationId": "StatsController_weeklyReport",
-        "summary": "Every fact the weekly report draws, in one read. Facts only - no prose crosses the wire.",
-        "parameters": [
-          {
-            "name": "week_start",
-            "required": false,
-            "in": "query",
-            "description": "Any date inside the week (YYYY-MM-DD); the server snaps to Monday. Defaults to the current week.",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "See FRONTEND_INTEGRATION_CONTRACT.md - weekly report."
           }
         }
       }
@@ -3945,6 +3976,220 @@
           "text",
           "created_at"
         ]
+      },
+      "WeeklyReportDayDto": {
+        "type": "object",
+        "description": "One band of the core. Always seven of these, Monday first.",
+        "properties": {
+          "date": {
+            "type": "string",
+            "example": "2026-08-31"
+          },
+          "weekday": {
+            "type": "integer",
+            "description": "1 = Monday to 7 = Sunday.",
+            "minimum": 1,
+            "maximum": 7
+          },
+          "mood_index": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0,
+            "maximum": 4,
+            "description": "0-4 on the shipped ramp, or null when nothing was logged. NOTE: 0 is a real mood and is falsy - a truthiness check here turns the worst day someone logged into a day they did not log."
+          },
+          "has_activity": {
+            "type": "boolean",
+            "description": "A UNION, not an activity-ledger lookup: true if the day carries a ledger row OR a completed task OR a focus session OR a mood check-in. Reading the ledger alone was measured to miss 31 of the 48 days on which someone finished a focus session, across 23 users."
+          },
+          "tasks_completed": {
+            "type": "integer"
+          },
+          "focus_minutes": {
+            "type": "integer"
+          },
+          "focus_sessions": {
+            "type": "integer"
+          }
+        }
+      },
+      "WeeklyReportDto": {
+        "type": "object",
+        "description": "Facts only. No sentence, label or adjective crosses the wire - all copy is templated client-side where a banned-vocabulary lint can see it as a string literal.",
+        "properties": {
+          "week_start": {
+            "type": "string",
+            "example": "2026-08-31"
+          },
+          "week_end": {
+            "type": "string",
+            "example": "2026-09-06"
+          },
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WeeklyReportDayDto"
+            }
+          },
+          "shape": {
+            "type": "string",
+            "enum": [
+              "empty",
+              "single",
+              "steady",
+              "front_loaded",
+              "back_loaded",
+              "clustered",
+              "scattered"
+            ],
+            "description": "The shape of the week, classified from WHICH days carried work and never from how much. A shape drawn from volume ranks days against each other, so one thin day would drag the whole description down."
+          },
+          "active_days": {
+            "type": "integer"
+          },
+          "days_on_board": {
+            "type": "integer",
+            "description": "LIFETIME days on the board. The hero numeral, and the only count here that cannot go down."
+          },
+          "subjects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "subject_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "Null when the subject was deleted after the work happened. It keeps its share; the client draws an unlabelled outline and never names it in copy."
+                },
+                "color": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "focus_minutes": {
+                  "type": "integer"
+                },
+                "tasks_completed": {
+                  "type": "integer"
+                },
+                "share": {
+                  "type": "number",
+                  "description": "0-1, in whichever unit subject_basis names."
+                }
+              }
+            }
+          },
+          "subject_basis": {
+            "type": "string",
+            "enum": [
+              "focus_minutes",
+              "tasks_completed"
+            ]
+          },
+          "unattributed_focus_minutes": {
+            "type": "integer"
+          },
+          "unattributed_tasks_completed": {
+            "type": "integer"
+          },
+          "moment": {
+            "type": "object",
+            "nullable": true,
+            "description": "One concrete thing that happened - a named task on a named day, never an aggregate.",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "date": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "subject_id": {
+                "type": "string",
+                "nullable": true
+              }
+            }
+          },
+          "recovery": {
+            "type": "object",
+            "nullable": true,
+            "description": "Null rather than negative. The card is positive-only and the enforcement is server-side, so the number simply does not exist when it points the wrong way. Do not synthesise one from before_avg/after_avg.",
+            "properties": {
+              "sessions": {
+                "type": "integer"
+              },
+              "before_avg": {
+                "type": "number"
+              },
+              "after_avg": {
+                "type": "number"
+              },
+              "lift": {
+                "type": "number"
+              }
+            }
+          },
+          "longest_session": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "minutes": {
+                "type": "integer"
+              },
+              "date": {
+                "type": "string"
+              },
+              "task_title": {
+                "type": "string",
+                "nullable": true
+              }
+            }
+          },
+          "held_minutes": {
+            "type": "integer",
+            "description": "Paused minutes, reported as a kept quantity."
+          },
+          "prism_mix": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "preset_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "sessions": {
+                  "type": "integer"
+                },
+                "share": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "rhythm_weekdays": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Weekdays (1-7) that reliably carry work. Empty until there are 3+ weeks of history, which is most accounts."
+          },
+          "focus_minutes": {
+            "type": "integer"
+          },
+          "focus_sessions": {
+            "type": "integer"
+          },
+          "tasks_completed": {
+            "type": "integer"
+          }
+        }
       }
     }
   }
