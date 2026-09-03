@@ -121,8 +121,13 @@ jobs:
       # already sitting at ~19.9 MiB. The graph itself has no slack left to cut:
       # it resolves exactly one query compiler (postgresql), one driver, hono
       # and jose.
+      #
+      # --import-map has to be explicit with --use-api: the Docker path finds
+      # supabase/functions/deno.json on its own, the API path does not, and
+      # without it every bare specifier ("hono", "@prisma/client") fails to
+      # resolve server-side.
       - name: Deploy api
-        run: supabase functions deploy api --project-ref "$PROJECT_REF" --no-verify-jwt --use-api
+        run: supabase functions deploy api --project-ref "$PROJECT_REF" --no-verify-jwt --use-api --import-map supabase/functions/deno.json
 
 # prisma-spike is unchanged and intentionally not deployed here; deploy it with the
 # CLI if it ever needs updating — see docs/DEPLOY_EDGE_INDIA.md.
