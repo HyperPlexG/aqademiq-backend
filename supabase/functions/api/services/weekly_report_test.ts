@@ -74,6 +74,28 @@ Deno.test('six or seven days read as steady', () => {
   assertEquals(shape('xxxxxxx'), 'steady');
 });
 
+Deno.test('a mid-week report is judged against the days that have happened', () => {
+  // The whole reason classifyShape takes a variable-length array. Opened on a
+  // Thursday the week has four days in it, and four-out-of-four is a week that
+  // held — not a thin seven-day week with three days "missing" that have not
+  // arrived yet.
+  assertEquals(shape('xxxx'), 'steady');
+  assertEquals(shape('xxx'), 'steady');
+  assertEquals(shape('xx'), 'steady');
+});
+
+Deno.test('the same days read worse if future days are counted as gaps', () => {
+  // Pinning the bug this replaced: passing the full seven with Fri-Sun padded
+  // as false describes a Thursday exactly the same as a finished week where
+  // the student genuinely stopped after Thursday. They are not the same week.
+  assertEquals(shape('xxxx'), 'steady');
+  assertEquals(shape('xxxx---'), 'clustered');
+});
+
+Deno.test('an empty array is empty, not a crash', () => {
+  assertEquals(classifyShape([]), 'empty');
+});
+
 Deno.test('a consecutive run is clustered, not scattered', () => {
   assertEquals(shape('-xxx---'), 'clustered');
   assertEquals(shape('xxx----'), 'clustered');

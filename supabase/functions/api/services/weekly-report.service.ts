@@ -61,6 +61,13 @@ export interface WeeklyReportDay {
   mood_index: number | null;
   /** The union read — see `hasActivity` below. */
   has_activity: boolean;
+  /**
+   * A day later in the week than today. It has not happened yet, so it is
+   * neither active nor a gap, and the client must not draw it as a day with
+   * nothing logged — that would tell someone on Thursday that they had missed
+   * Friday, Saturday and Sunday.
+   */
+  is_future: boolean;
   tasks_completed: number;
   focus_minutes: number;
   focus_sessions: number;
@@ -75,16 +82,24 @@ export function mondayOf(ref: Date): Date {
 /**
  * Classify the week's shape from which days carried work.
  *
+ * Takes **only the days that have already happened**. On a Thursday the week
+ * has four days in it, not seven, and judging a four-day week against a
+ * seven-day scale is how a report tells someone on Thursday morning that their
+ * week is thin. Every threshold below is proportional to `active.length` for
+ * that reason.
+ *
  * Deliberately ignores *how much* happened on each day. A shape drawn from
- * volume is a ranking of days against each other, and one bad day would drag
+ * volume is a ranking of days against each other, and one quiet day would drag
  * the whole description down — which is how a report starts commenting on the
  * person instead of the week.
  */
 export function classifyShape(active: boolean[]): WeekShape {
+  const total = active.length;
   const n = active.filter(Boolean).length;
-  if (n === 0) return 'empty';
+  if (total === 0 || n === 0) return 'empty';
   if (n === 1) return 'single';
-  if (n >= 6) return 'steady';
+  // Every day so far, or all but one.
+  if (n >= total - 1) return 'steady';
 
   // Longest consecutive run.
   let run = 0;
@@ -95,11 +110,13 @@ export function classifyShape(active: boolean[]): WeekShape {
   }
   if (best >= 3 && best === n) return 'clustered';
 
-  const first = active.slice(0, 3).filter(Boolean).length;
-  const last = active.slice(4).filter(Boolean).length;
+  const half = Math.ceil(total / 2);
+  const first = active.slice(0, half).filter(Boolean).length;
+  const last = active.slice(total - half).filter(Boolean).length;
   if (first > last && first >= 2) return 'front_loaded';
   if (last > first && last >= 2) return 'back_loaded';
-  if (n >= 4) return 'steady';
+  // More than half the elapsed days.
+  if (n >= Math.ceil(total * 0.55)) return 'steady';
   return 'scattered';
 }
 
@@ -224,6 +241,11 @@ export const weeklyReportService = {
       tasksByDay.set(k, (tasksByDay.get(k) ?? 0) + 1);
     }
 
+    // A day later than today has not happened yet. It is neither active nor a
+    // gap, and every derived figure below excludes it: a report opened on
+    // Thursday must not count Friday, Saturday and Sunday against the student.
+    const todayStr = ymd(new Date());
+
     const days: WeeklyReportDay[] = [];
     for (let i = 0; i < 7; i++) {
       const date = ymd(new Date(monday.getTime() + i * MS_PER_DAY));
@@ -235,8 +257,15 @@ export const weeklyReportService = {
         focus_minutes: focusMinByDay.get(date) ?? 0,
         focus_sessions: focusCountByDay.get(date) ?? 0,
       };
-      days.push({ ...day, has_activity: hasActivity({ ...day, ledger: ledgerDays.has(date) }) });
+      days.push({
+        ...day,
+        is_future: date > todayStr,
+        has_activity: hasActivity({ ...day, ledger: ledgerDays.has(date) }),
+      });
     }
+
+    /** The days the week actually has in it so far. */
+    const elapsed = days.filter((d) => !d.is_future);
 
     // ---- where attention went ---------------------------------------------
     // Focus minutes are the honest unit when they exist. A student who has never
@@ -356,10 +385,18 @@ export const weeklyReportService = {
       week_start: weekStart,
       week_end: ymd(sunday),
       days,
-      shape: classifyShape(days.map((d) => d.has_activity)),
-      active_days: days.filter((d) => d.has_activity).length,
-      // The hero numeral. Lifetime, from the ledger, and the only count in this
-      // payload that cannot go down.
+      shape: classifyShape(elapsed.map((d) => d.has_activity)),
+      /**
+       * The hero numeral, and it is a count of *this week* — a weekly report
+       * whose headline number is a lifetime total is not a weekly report, and a
+       * figure above 7 in a seven-band core reads as a mistake because it is
+       * one.
+       */
+      active_days: elapsed.filter((d) => d.has_activity).length,
+      /** Days the week has had so far: 4 on a Thursday, 7 once it is over. */
+      elapsed_days: elapsed.length,
+      // Lifetime, from the ledger. Kept on the wire because it is the only
+      // count here that cannot go down, but the report does not headline it.
       days_on_board: lifetime.total_active_days,
       subjects,
       subject_basis: basis,

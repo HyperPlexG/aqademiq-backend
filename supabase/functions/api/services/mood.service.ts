@@ -4,6 +4,7 @@ import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { cacheDel } from '../../_shared/redis.ts';
 import { revision } from '../../_shared/revision.ts';
+import { HttpError } from '../../_shared/http.ts';
 import { toUtcDate, ymd } from '../../_shared/occurs-on.ts';
 
 const MS_PER_DAY = 86_400_000;
@@ -18,10 +19,31 @@ export interface ReflectionDto {
   reflection: string;
 }
 
+/**
+ * Refuse a check-in dated after today.
+ *
+ * The mood strip on the Stats tab offered every weekday as a tappable slot,
+ * so on a Thursday you could log how Saturday went. That is not a harmless
+ * spare feature: the weekly report draws its bands from these rows, so a mood
+ * logged into the future puts a tinted band on a day that has not happened,
+ * and the check-in the student actually makes on Saturday then silently
+ * overwrites a record they no longer remember creating.
+ *
+ * Enforced here rather than only in the UI because the UI is one of several
+ * ways in — Ada has mood tools, and a client can always be older than the
+ * server.
+ */
+function assertNotFuture(date: Date): void {
+  if (ymd(date) > ymd(new Date())) {
+    throw new HttpError(422, 'That day has not happened yet');
+  }
+}
+
 export const moodService = {
   /** POST /mood-entries — morning check-in; preserves any existing reflection. */
   async log(dto: LogMoodDto) {
     const date = toUtcDate(dto.date);
+    assertNotFuture(date);
     const score = dto.mood_index + 1;
     const existing = await tenantDb().moodCheckin.findFirst({
       where: { checkin_type: 'morning', checkin_date: date },
@@ -50,6 +72,7 @@ export const moodService = {
   /** POST /mood-entries/:date/reflection — evening reflection; preserves mood. */
   async reflect(dateStr: string, dto: ReflectionDto) {
     const date = toUtcDate(dateStr);
+    assertNotFuture(date);
     const existing = await tenantDb().moodCheckin.findFirst({
       where: { checkin_type: 'evening', checkin_date: date },
     });

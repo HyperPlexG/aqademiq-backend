@@ -4010,6 +4010,10 @@
           },
           "focus_sessions": {
             "type": "integer"
+          },
+          "is_future": {
+            "type": "boolean",
+            "description": "A day later in the week than today. Not active and NOT a gap - drawing it as \"nothing logged\" tells someone on Thursday that they already missed Friday, Saturday and Sunday."
           }
         }
       },
@@ -4045,11 +4049,12 @@
             "description": "The shape of the week, classified from WHICH days carried work and never from how much. A shape drawn from volume ranks days against each other, so one thin day would drag the whole description down."
           },
           "active_days": {
-            "type": "integer"
+            "type": "integer",
+            "description": "The hero numeral: days THIS WEEK that carried work, 0-7. A weekly report whose headline is a lifetime total is not a weekly report."
           },
           "days_on_board": {
             "type": "integer",
-            "description": "LIFETIME days on the board. The hero numeral, and the only count here that cannot go down."
+            "description": "Lifetime days on the board. Kept because it is the only count here that cannot go down; deliberately not headlined."
           },
           "subjects": {
             "type": "array",
@@ -4188,6 +4193,10 @@
           },
           "tasks_completed": {
             "type": "integer"
+          },
+          "elapsed_days": {
+            "type": "integer",
+            "description": "Days the week has had so far - 4 on a Thursday, 7 once it is over. `shape` is classified against these, not against seven."
           }
         }
       }
