@@ -19,7 +19,26 @@ cd tools && python -m http.server 5173   # → http://localhost:5173/feedback-ad
 
 Sign in with your own Aqademiq account. Then: filter the board, pick a post, set
 its status/category, flip pinned/locked/approved, leave a note, add an internal
-note, and read the status history.
+note, read the status history, and delete it.
+
+### Deleting a post
+
+For spam and off-topic submissions. Unapproving only *hides* a post — it stays in
+the moderation queue forever — so deleting is the way to actually clear it.
+
+It is permanent: there is no soft-delete column and no recycle bin. What protects
+you is the confirmation, which names the post and counts what goes with it
+("Also removes 2 comments and 3 votes") before the second click, and the fact
+that the button sits below its own divider well clear of *Save changes*.
+
+Two things do not simply vanish with the post:
+
+- **A published changelog entry is kept**, detached from the post. "What's new"
+  is a public record of what shipped and should not disappear because the board
+  was tidied months later. The toast tells you when this happened. An
+  *unpublished* draft — the one `shipped` auto-creates — goes with the post.
+- **A post that others were merged into is refused** (409), rather than orphaning
+  them or quietly returning them to the board.
 
 ### Why a local page and not a screen in the app
 

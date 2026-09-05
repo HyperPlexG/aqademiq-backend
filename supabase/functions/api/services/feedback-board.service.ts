@@ -108,12 +108,49 @@ async function assertPostRateLimit() {
   }
 }
 
-function isAdmin(): boolean {
-  const ids = (env('FEEDBACK_ADMIN_IDS') ?? '')
+/**
+ * Whether `userId` is on the admin allowlist.
+ *
+ * Server-side only, read from the `FEEDBACK_ADMIN_IDS` function secret. It is
+ * never a token claim and never anything the client sends, so no app build can
+ * grant itself the admin surface — same shape as ADA_DAILY_CALL_UNLIMITED_IDS.
+ *
+ * Exported for its tests: a list that silently matches nobody looks exactly
+ * like a list that works, right up until someone needs to delete a spam post.
+ */
+export function isFeedbackAdmin(userId: string): boolean {
+  return (env('FEEDBACK_ADMIN_IDS') ?? '')
     .split(',')
     .map((s) => s.trim())
-    .filter(Boolean);
-  return ids.includes(RequestContext.userId);
+    .filter(Boolean)
+    .includes(userId);
+}
+
+function isAdmin(): boolean {
+  return isFeedbackAdmin(RequestContext.userId);
+}
+
+/**
+ * Split a deleted post's changelog entries into the ones to detach and the ones
+ * to delete with it.
+ *
+ * A **published** entry is a public record of what shipped and must survive the
+ * post being tidied off the board months later — it is detached
+ * (`source_post = null`), not destroyed. An **unpublished draft** is the one
+ * `adminPatchPost` auto-creates when a post ships; it has no existence apart
+ * from that post, so it goes too.
+ *
+ * Pure and exported because the failure is silent and permanent: getting it
+ * backwards deletes a live "What's new" entry, and nothing in the response
+ * would look wrong.
+ */
+export function splitChangelogForDelete<T extends { published_at: Date | null }>(
+  entries: T[],
+): { detach: T[]; remove: T[] } {
+  return {
+    detach: entries.filter((e) => e.published_at !== null),
+    remove: entries.filter((e) => e.published_at === null),
+  };
 }
 
 function requireAdmin() {
@@ -647,6 +684,85 @@ export const feedbackBoardService = {
 
     const authors = await authorMap([updated.author_id]);
     return serializePost(updated, false, authors);
+  },
+
+  /**
+   * DELETE /admin/feedback/posts/:ref — remove a post and everything under it.
+   *
+   * For spam and off-topic submissions. Unapproving already hides a post from
+   * the board, but it stays in the moderation queue forever, so the queue fills
+   * with things nobody will ever action; this is the way out of that.
+   *
+   * Irreversible by design — there is no soft-delete column and adding one
+   * would mean every read on the board grows a filter that a future query can
+   * forget. What protects the operator is the confirmation in the console and
+   * the returned counts, not a recycle bin.
+   *
+   * Votes, comments, comment reactions, status changes, subscriptions and admin
+   * notes all carry `onDelete: Cascade`, so Postgres removes them. Two relations
+   * do NOT cascade, and each needs a decision rather than a foreign-key error:
+   *
+   *  * **A published changelog entry is detached, never destroyed.** "What's
+   *    new" is a public record of what shipped; it must not disappear because
+   *    someone tidied the board months later. An *unpublished* draft is a
+   *    different thing — `adminPatchPost` auto-creates it when a post ships and
+   *    it has no existence apart from that post, so it goes too.
+   *  * **A post with others merged into it is refused.** Deleting it would
+   *    either orphan them or silently return them to the board, and quietly
+   *    resurfacing a suggestion someone thought was handled is worse than an
+   *    error message. (Nothing writes `merged_into` today — there is no merge
+   *    endpoint — but the column exists and a raw FK violation is a poor way to
+   *    find that out.)
+   */
+  async adminDeletePost(ref: number) {
+    requireAdmin();
+    const post = await getPostByRef(ref);
+
+    const mergedIn = await prismaBase().feedbackPost.count({ where: { merged_into: post.id } });
+    if (mergedIn > 0) {
+      throw new HttpError(
+        409,
+        `${mergedIn} post(s) are merged into #${ref}. Un-merge them before deleting it.`,
+      );
+    }
+
+    const [votes, comments, notes, entries] = await Promise.all([
+      prismaBase().feedbackVote.count({ where: { post_id: post.id } }),
+      prismaBase().feedbackComment.count({ where: { post_id: post.id } }),
+      prismaBase().feedbackAdminNote.count({ where: { post_id: post.id } }),
+      prismaBase().changelogEntry.findMany({ where: { source_post: post.id } }),
+    ]);
+
+    const { detach: published, remove: drafts } = splitChangelogForDelete(
+      entries as Array<{ id: bigint; published_at: Date | null }>,
+    );
+
+    await prismaBase().$transaction(async (tx: AnyObj) => {
+      if (published.length) {
+        await tx.changelogEntry.updateMany({
+          where: { id: { in: published.map((e) => e.id) } },
+          data: { source_post: null },
+        });
+      }
+      if (drafts.length) {
+        await tx.changelogEntry.deleteMany({ where: { id: { in: drafts.map((e) => e.id) } } });
+      }
+      await tx.feedbackPost.delete({ where: { id: post.id } });
+    });
+
+    // Subscribers are deliberately not notified. They followed a suggestion,
+    // and "the thing you were following has been deleted" is a worse email than
+    // silence for the case this exists to serve.
+    return {
+      deleted: true,
+      ref,
+      title: post.title,
+      votes,
+      comments,
+      admin_notes: notes,
+      changelog_drafts_deleted: drafts.length,
+      changelog_entries_detached: published.length,
+    };
   },
 
   /** POST /admin/feedback/posts/:ref/notes — private, never serialized to users. */

@@ -446,6 +446,67 @@ export class FeedbackBoardService {
     return { id: Number(note.id), post_ref: ref, body: note.body, created_at: note.created_at };
   }
 
+  /**
+   * DELETE /admin/feedback/posts/:ref — remove a post and everything under it.
+   *
+   * For spam and off-topic submissions: unapproving hides a post but leaves it
+   * in the moderation queue forever, so the queue fills with things nobody will
+   * ever action.
+   *
+   * Cascades take the votes, comments, reactions, status changes, subscriptions
+   * and admin notes. Two relations do not cascade and each needs a decision:
+   * a *published* changelog entry is detached rather than destroyed (it is a
+   * public record of what shipped), an unpublished draft auto-created by
+   * `adminPatchPost` goes with the post, and a post that others were merged
+   * into is refused rather than silently returning them to the board.
+   */
+  async adminDeletePost(ref: number) {
+    this.requireAdmin();
+    const post = await this.getPostByRef(ref);
+
+    const mergedIn = await this.prisma.feedbackPost.count({ where: { merged_into: post.id } });
+    if (mergedIn > 0) {
+      throw new ConflictException(
+        `${mergedIn} post(s) are merged into #${ref}. Un-merge them before deleting it.`,
+      );
+    }
+
+    const [votes, comments, notes, entries] = await Promise.all([
+      this.prisma.feedbackVote.count({ where: { post_id: post.id } }),
+      this.prisma.feedbackComment.count({ where: { post_id: post.id } }),
+      this.prisma.feedbackAdminNote.count({ where: { post_id: post.id } }),
+      this.prisma.changelogEntry.findMany({ where: { source_post: post.id } }),
+    ]);
+
+    const published = entries.filter((e) => e.published_at !== null);
+    const drafts = entries.filter((e) => e.published_at === null);
+
+    await this.prisma.$transaction(async (tx) => {
+      if (published.length) {
+        await tx.changelogEntry.updateMany({
+          where: { id: { in: published.map((e) => e.id) } },
+          data: { source_post: null },
+        });
+      }
+      if (drafts.length) {
+        await tx.changelogEntry.deleteMany({ where: { id: { in: drafts.map((e) => e.id) } } });
+      }
+      await tx.feedbackPost.delete({ where: { id: post.id } });
+    });
+
+    // Subscribers are deliberately not notified.
+    return {
+      deleted: true,
+      ref,
+      title: post.title,
+      votes,
+      comments,
+      admin_notes: notes,
+      changelog_drafts_deleted: drafts.length,
+      changelog_entries_detached: published.length,
+    };
+  }
+
   /** GET /admin/feedback/queue — unapproved posts awaiting moderation. */
   async adminQueue() {
     this.requireAdmin();

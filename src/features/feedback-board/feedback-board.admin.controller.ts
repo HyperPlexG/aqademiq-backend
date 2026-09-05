@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post } from '@nestjs/common';
 import { FeedbackBoardService } from './feedback-board.service';
 import {
   AdminNoteDto,
@@ -20,6 +20,12 @@ export class FeedbackBoardAdminController {
   @Patch('feedback/posts/:ref')
   patchPost(@Param('ref', ParseIntPipe) ref: number, @Body() dto: AdminPatchPostDto) {
     return this.svc.adminPatchPost(ref, dto);
+  }
+
+  /** Removes the post and everything under it — see `adminDeletePost`. */
+  @Delete('feedback/posts/:ref')
+  deletePost(@Param('ref', ParseIntPipe) ref: number) {
+    return this.svc.adminDeletePost(ref);
   }
 
   @Post('feedback/posts/:ref/notes')

@@ -131,6 +131,7 @@ posts sort first.
 |---|---|---|
 | PATCH | `/v1/admin/feedback/posts/{ref}` | any of `{ status?, category?, pinned?, locked?, approved?, note? }` |
 | POST | `/v1/admin/feedback/posts/{ref}/notes` | `{ body }` (private, never shown to users) |
+| DELETE | `/v1/admin/feedback/posts/{ref}` | — → `{ deleted, ref, title, votes, comments, admin_notes, changelog_drafts_deleted, changelog_entries_detached }` |
 | GET | `/v1/admin/feedback/queue` | — → `{ posts:[Post] }` (unapproved) |
 | POST | `/v1/admin/changelog` | `{ title, body, source_ref?, publish? }` |
 | PATCH | `/v1/admin/changelog/{id}` | `{ title?, body?, publish? }` |
@@ -138,6 +139,23 @@ posts sort first.
 A `status` change writes an attributed entry to the post's `status_history`,
 emails subscribers, and — when moved to `shipped` — auto-drafts a changelog entry
 (publish it later via `PATCH /v1/admin/changelog/{id}` with `publish:true`).
+
+`DELETE` is for spam and off-topic submissions, and it is permanent — there is no
+soft-delete column and no recycle bin. Unapproving only *hides* a post, and it
+then sits in the moderation queue forever, which is what this is the way out of.
+Votes, comments, comment reactions, status changes, subscriptions and admin notes
+all cascade. Two things do not, and each is a deliberate choice rather than a
+foreign-key error:
+
+- **A published changelog entry survives**, detached (`source_post` → null).
+  "What's new" is a public record of what shipped and must not vanish because
+  someone tidied the board months later. An *unpublished* draft — the one
+  `shipped` auto-creates — has no existence apart from the post and goes with it.
+- **A post that others were merged into is refused with `409`.** Deleting it
+  would either orphan them or quietly return them to the board, and silently
+  resurfacing a suggestion someone thought was handled is worse than an error.
+
+Subscribers are **not** emailed on delete.
 
 ---
 

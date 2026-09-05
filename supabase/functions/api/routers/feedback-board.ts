@@ -124,6 +124,13 @@ feedbackBoardAdminRouter.patch('/feedback/posts/:ref', async (c) => {
   return c.json(await feedbackBoardService.adminPatchPost(ref, dto));
 });
 
+// Removes the post and everything under it. See `adminDeletePost` for what
+// happens to a changelog entry that came from it.
+feedbackBoardAdminRouter.delete('/feedback/posts/:ref', async (c) => {
+  const ref = parseIntParam(c.req.param('ref'), 'ref');
+  return c.json(await feedbackBoardService.adminDeletePost(ref));
+});
+
 feedbackBoardAdminRouter.post('/feedback/posts/:ref/notes', async (c) => {
   const ref = parseIntParam(c.req.param('ref'), 'ref');
   const b = await jsonBody(c.req);
