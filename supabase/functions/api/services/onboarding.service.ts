@@ -5,6 +5,7 @@ import { prismaBase } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { revision } from '../../_shared/revision.ts';
+import { lookupUsableCode } from './referrals.service.ts';
 
 const DEFAULT_PALETTE = ['#4F8DFD', '#7C5CFC', '#FF5C7C', '#FFA53C', '#34C759', '#00B8D9', '#8E8E93', '#FF6633'];
 
@@ -109,16 +110,14 @@ export const onboardingService = {
 
     // Validate the referral code up front (if one was entered) so a typo is
     // rejected before we provision anything, rather than silently ignored.
+    // Through the same helper the referral step's `POST /referrals/validate`
+    // uses, so the step that exists to catch typos cannot pass a code this
+    // final submit will then reject.
     const referralCodeInput = dto.referral_code?.trim();
     let referralCodeRow: { id: string; user_id: string } | null = null;
     if (referralCodeInput) {
-      referralCodeRow = await prismaBase().referralCode.findUnique({
-        where: { code: referralCodeInput.toUpperCase() },
-      });
+      referralCodeRow = await lookupUsableCode(referralCodeInput, userId);
       if (!referralCodeRow) throw new HttpError(422, 'Invalid referral code');
-      if (referralCodeRow.user_id === userId) {
-        throw new HttpError(400, 'You cannot use your own referral code');
-      }
     }
 
     const sem = dto.semester ?? { name: 'My Semester', start: todayYmd(), end: plusMonthsYmd(6) };
