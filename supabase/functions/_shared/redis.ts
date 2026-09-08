@@ -34,6 +34,38 @@ async function cmd(args: (string | number)[]): Promise<unknown | null> {
   }
 }
 
+/**
+ * Run several commands in ONE HTTP round trip via the Upstash pipeline endpoint.
+ *
+ * The rate limiter now checks two budgets per request. Issued as separate calls
+ * that would double the limiter's latency on every single request; pipelined it
+ * costs the same as the one call it replaces. Returns one result per command,
+ * with `null` in the slot of any that errored, or `null` overall on transport
+ * failure — so callers fail open exactly as they do with `cmd`.
+ */
+async function pipeline(cmds: (string | number)[][]): Promise<(unknown | null)[] | null> {
+  if (!redisEnabled || cmds.length === 0) return null;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), OP_TIMEOUT_MS);
+    const res = await fetch(`${REST_URL!.replace(/\/+$/, '')}/pipeline`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${REST_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify(cmds),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!Array.isArray(json)) return null;
+    return json.map((r) =>
+      r && typeof r === 'object' && 'result' in r ? (r as { result: unknown }).result : null
+    );
+  } catch {
+    return null;
+  }
+}
+
 /** Generic cache read. Returns null if disabled/missing/error. */
 export async function cacheGet(key: string): Promise<string | null> {
   const v = await cmd(['GET', key]);
@@ -67,8 +99,71 @@ export async function cacheIncrBy(key: string, by: number, ttlSeconds: number): 
 }
 
 const WINDOW_SECONDS = 60;
-const AUTH_LIMIT = 20;
-const GENERAL_LIMIT = 200;
+
+function intEnv(name: string, fallback: number): number {
+  const raw = env(name);
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+/**
+ * What a rate limit is actually protecting, and why the bucket key changed.
+ *
+ * This used to key solely on the client address, which is the textbook answer
+ * and was wrong here. Students arrive in rooms. Every phone on one venue's WiFi
+ * leaves through a single NAT address, so a per-address budget is not a budget
+ * per person — it is a budget per building, split among everyone in it. Measured
+ * on production, one ordinary user peaked at 46 requests a minute, so a 200/min
+ * address budget was exhausted by about four active people, after which everyone
+ * else on that network was refused. An event would have rate-limited itself.
+ *
+ * So the budget that matters is now per *caller*: keyed on the bearer token, and
+ * only falling back to the address when there is no token to key on. A room full
+ * of signups is a room full of separate budgets.
+ *
+ * The address bucket does not go away, it becomes a backstop, because a token is
+ * not scarce. Anyone can mint an unlimited supply of syntactically valid junk
+ * tokens, and each one would open its own budget — so an address ceiling, set
+ * far above what any real room generates, is what bounds that. Unauthenticated
+ * traffic keeps a much tighter address budget: almost nothing here is public
+ * (`/healthz`, `/readyz`, the cron sweep), so legitimate anonymous volume is low.
+ *
+ * All three are env-tunable, deliberately: raising a ceiling mid-event should be
+ * a `supabase secrets set`, not a deploy.
+ */
+const USER_LIMIT = intEnv('RATE_LIMIT_USER', 200);
+const IP_LIMIT = intEnv('RATE_LIMIT_IP', 4000);
+const ANON_LIMIT = intEnv('RATE_LIMIT_ANON', 120);
+
+/** Which budgets a request is charged against. Pure, so it can be tested. */
+export interface RateBucket {
+  key: string;
+  limit: number;
+  /** Named in logs and in the 429, so it is obvious which ceiling was hit. */
+  scope: 'user' | 'ip' | 'anon';
+}
+
+/**
+ * `tokenHash` is a digest of the Authorization header, or null when absent.
+ * Returns the address bucket first so its INCR result is always at index 0.
+ */
+export function rateBuckets(
+  tokenHash: string | null,
+  ip: string,
+  window: number,
+): RateBucket[] {
+  const authed = tokenHash !== null;
+  const buckets: RateBucket[] = [{
+    key: `rl:ip:${ip}:${window}`,
+    limit: authed ? IP_LIMIT : ANON_LIMIT,
+    scope: authed ? 'ip' : 'anon',
+  }];
+  if (authed) {
+    buckets.push({ key: `rl:u:${tokenHash}:${window}`, limit: USER_LIMIT, scope: 'user' });
+  }
+  return buckets;
+}
 
 /**
  * Announce, once per isolate, that the limiter is not actually limiting.
@@ -87,7 +182,16 @@ function warnOnceDisabled() {
   console.warn('[ratelimit] UPSTASH_REDIS_REST_URL/TOKEN unset — rate limiting and idempotency are DISABLED (failing open)');
 }
 
-/** Fixed-window per-IP rate limit. Auth-ish paths get a tighter budget. */
+/**
+ * Fixed-window rate limit, charged against every bucket in `rateBuckets`.
+ *
+ * The old `/auth/` special case is gone: identity moved to Supabase Auth some
+ * time ago and this app serves no `/auth/*` route, so that branch had been dead
+ * for a while and only made the key harder to read.
+ *
+ * Fails open, unchanged: if Redis cannot be reached the request proceeds, and
+ * says so once per isolate rather than silently.
+ */
 export function rateLimit() {
   return async (c: Context, next: Next) => {
     if (!redisEnabled) {
@@ -95,25 +199,40 @@ export function rateLimit() {
       return next();
     }
     const path = c.req.path;
-    const isAuth = path.includes('/auth/');
-    const limit = isAuth ? AUTH_LIMIT : GENERAL_LIMIT;
-    const ip = clientIp(c);
+    const auth = c.req.header('authorization');
+    // The whole header, not the bare token: a caller sending a malformed
+    // Authorization still gets a stable bucket rather than escaping into none.
+    const tokenHash = auth ? (await sha256Hex(auth)).slice(0, 32) : null;
     const window = Math.floor(Date.now() / 1000 / WINDOW_SECONDS);
-    const key = `rl:${isAuth ? 'auth' : 'gen'}:${ip}:${window}`;
+    const buckets = rateBuckets(tokenHash, clientIp(c), window);
 
-    const count = await cmd(['INCR', key]);
-    if (typeof count !== 'number') {
-      // Configured but not answering: distinct from "never configured", and the
+    const counts = await pipeline(buckets.map((b) => ['INCR', b.key]));
+    if (counts === null) {
+      // Configured but not answering — distinct from "never configured", and the
       // one that tends to happen under exactly the load limits exist for.
       console.warn(`[ratelimit] Redis unreachable — allowing ${c.req.method} ${path} unlimited`);
+      return next();
     }
-    if (typeof count === 'number') {
-      if (count === 1) await cmd(['EXPIRE', key, WINDOW_SECONDS]);
-      if (count > limit) {
-        const ttl = await cmd(['TTL', key]);
-        c.header('Retry-After', String(typeof ttl === 'number' && ttl > 0 ? ttl : WINDOW_SECONDS));
-        return c.json({ status_code: 429, error: 'TOO_MANY_REQUESTS', message: 'Too many requests', path, timestamp: new Date().toISOString() }, 429);
-      }
+
+    // A counter is created by INCR without an expiry, so the write that created
+    // it is the one that must attach the window. The window is part of the key,
+    // so a lost EXPIRE leaks a key rather than locking anyone out of the next
+    // minute — which is why this stays best-effort and unawaited-on-failure.
+    const fresh = buckets.filter((_, i) => counts[i] === 1);
+    if (fresh.length) await pipeline(fresh.map((b) => ['EXPIRE', b.key, WINDOW_SECONDS]));
+
+    const hit = buckets.find((b, i) => typeof counts[i] === 'number' && (counts[i] as number) > b.limit);
+    if (hit) {
+      const ttl = await cmd(['TTL', hit.key]);
+      c.header('Retry-After', String(typeof ttl === 'number' && ttl > 0 ? ttl : WINDOW_SECONDS));
+      c.header('X-RateLimit-Scope', hit.scope);
+      return c.json({
+        status_code: 429,
+        error: 'TOO_MANY_REQUESTS',
+        message: 'Too many requests',
+        path,
+        timestamp: new Date().toISOString(),
+      }, 429);
     }
     return next();
   };
