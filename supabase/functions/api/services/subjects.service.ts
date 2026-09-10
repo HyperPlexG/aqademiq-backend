@@ -1,5 +1,6 @@
 // §2.3 — subjects (Course) CRUD + reorder + files. Port of src/features/subjects/subjects.service.ts.
 import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
+import { moodIndexToScore, moodScoreToIndex } from '../../_shared/mood.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { occursOn, taskRowToSeries, toUtcDate, ymd, type TaskRowLike } from '../../_shared/occurs-on.ts';
@@ -119,7 +120,7 @@ function toDto(course: any, series: any[]) {
     credits: course.credits ? Number(course.credits) : null,
     prof: course.professor,
     target_grade: course.target_grade_text,
-    mood: course.subject_feeling,
+    mood: moodScoreToIndex(course.subject_feeling),
     files_count: materials.length,
     sort_order: course.sort_order,
     next_label,
@@ -177,7 +178,7 @@ export const subjectsService = {
         sort_order: sortOrder,
         professor: dto.prof ?? '',
         target_grade_text: dto.target_grade ?? '',
-        subject_feeling: dto.mood ?? 2,
+        subject_feeling: moodIndexToScore(dto.mood ?? 2),
       // deno-lint-ignore no-explicit-any
       } as any,
       include: { subject_materials: true },
@@ -209,7 +210,7 @@ export const subjectsService = {
     if (dto.credits !== undefined) data.credits = dto.credits ? Number(dto.credits) : null;
     if (dto.prof !== undefined) data.professor = dto.prof;
     if (dto.target_grade !== undefined) data.target_grade_text = dto.target_grade;
-    if (dto.mood !== undefined) data.subject_feeling = dto.mood;
+    if (dto.mood !== undefined) data.subject_feeling = moodIndexToScore(dto.mood);
     if (dto.semester_id !== undefined) data.term_id = await resolveSemester(dto.semester_id);
 
     await tenantDb().course.update({ where: { id }, data });

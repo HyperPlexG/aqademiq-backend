@@ -13,6 +13,7 @@
 // anything new — the one exception being the optional ratings, which nothing
 // collects yet.
 import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
+import { moodIndexToScore, moodScoreToIndex } from '../../_shared/mood.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { cacheDel } from '../../_shared/redis.ts';
@@ -38,10 +39,6 @@ function normFocusStatus(wire?: string): string | undefined {
   if (s === 'complete') s = 'completed';
   return FOCUS_STATUSES.has(s) ? s : undefined;
 }
-function moodIndexToScore(idx: number): number {
-  return Math.min(5, Math.max(1, Math.round(idx) + 1));
-}
-
 /**
  * `focus_sessions.task_id` is a real FK, but the app's task ids are *occurrence*
  * ids — `<uuid>@<YYYY-MM-DD>` for anything repeating. Passing one straight
@@ -139,7 +136,7 @@ function dto(s: any) {
     prism_mode: s.prism_preset_id ? 'Preset' : null,
     task_id: s.task_id,
     task_date: null,
-    mood_index: s.mood_after != null ? s.mood_after - 1 : null,
+    mood_index: moodScoreToIndex(s.mood_after),
     // Surfaced so the client (and anyone debugging the analytics) can see that
     // these are now actually being recorded.
     ended_at: s.ended_at ?? null,

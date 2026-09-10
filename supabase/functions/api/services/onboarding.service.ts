@@ -2,6 +2,7 @@
 // Uses the raw client (prismaBase) exactly like the Nest source, which passes
 // user_id explicitly on every write.
 import { prismaBase } from '../../_shared/prisma.ts';
+import { moodIndexToScore } from '../../_shared/mood.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { revision } from '../../_shared/revision.ts';
@@ -173,7 +174,7 @@ export const onboardingService = {
             name: s.name,
             color: s.color_hex ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
             sort_order: i,
-            subject_feeling: s.mood ?? 3,
+            subject_feeling: moodIndexToScore(s.mood ?? 2),
             professor: '',
             grade_system: 'letter',
           },
