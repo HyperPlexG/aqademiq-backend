@@ -25,4 +25,4 @@ update public.courses
 set subject_feeling = subject_feeling + 1
 where subject_feeling is not null
   and subject_feeling between 1 and 4
-  and created_at < '2026-09-10T15:30:00Z';
+  and created_at < '2026-09-10T15:00:32Z';
