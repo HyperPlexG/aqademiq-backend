@@ -2,15 +2,27 @@
 // src/features/notifications/notifications.service.ts.
 import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { HttpError } from '../../_shared/http.ts';
-import { push } from '../../_shared/push.ts';
+import { isTokenDead, push } from '../../_shared/push.ts';
 
 interface DueReminderRow {
   task_id: string;
   user_id: string;
   title: string;
+  device_id: string;
   push_token: string;
   device_type: string | null;
 }
+
+/**
+ * Extra tokens to try for one reminder when the newest turns out to be dead.
+ *
+ * Each dead token is deleted before the next is tried, so the candidate list
+ * strictly shrinks and this cannot loop. Retrying in-tick rather than leaving it
+ * to the next minute is what keeps a reminder punctual for someone who has
+ * reinstalled a few times — otherwise a stack of n dead tokens delays them by n
+ * minutes, and a task reminder that lands late has already failed at its job.
+ */
+const MAX_TOKEN_RETRIES = 2;
 
 /**
  * Reminders sent in parallel per batch.
@@ -43,26 +55,34 @@ export const notificationsService = {
     // only ever gets the test on whichever registered last — so tapping "test"
     // on Android could deliver to their iPhone and look broken on Android.
     const devices = await tenantDb().deviceProfile.findMany({});
-    const tokens = devices
-      .map((d: { push_token: string | null }) => d.push_token)
-      .filter((t: string | null): t is string => !!t && t.length > 0);
-    if (tokens.length === 0) {
+    const targets = devices
+      .filter((d: { push_token: string | null }) => !!d.push_token && d.push_token.length > 0)
+      .map((d: { id: string; push_token: string | null }) => ({ id: d.id, token: d.push_token! }));
+    if (targets.length === 0) {
       throw new HttpError(400, 'No registered device to send a test push to');
     }
 
     // Always FCM — iOS registers an FCM token too (Firebase → APNs).
     let sent = 0;
     let lastError: string | undefined;
-    for (const token of tokens) {
+    for (const target of targets) {
       const r = await push.send(
         'fcm',
-        token,
+        target.token,
         'Aqademiq',
         'This is a test notification 🎓',
         { channel_key: 'test' },
       );
       if (r.status === 'sent') sent++;
       else lastError = r.error ?? r.status;
+      // Sending to every device is right for a test button (see above), but it
+      // also means this is where dead tokens surface first. Prune them here too,
+      // or "0 of 7 sent" is the answer forever and the button looks broken while
+      // the one live phone is sitting right there.
+      if (isTokenDead(r.error)) {
+        await tenantDb().deviceProfile.deleteMany({ where: { id: target.id } });
+        console.warn(`[notifications] pruned dead token on test push: device=${target.id}`);
+      }
     }
 
     return {
@@ -73,7 +93,7 @@ export const notificationsService = {
       created_at: new Date(),
       provider: 'fcm',
       error: sent > 0 ? undefined : lastError,
-      devices: tokens.length,
+      devices: targets.length,
       sent,
     };
   },
@@ -92,12 +112,32 @@ export const notificationsService = {
   async runReminderSweep(limit = 200) {
     const db = prismaBase();
 
+    // `distinct on` is load-bearing, not tidiness. Joining device_profiles
+    // directly fans one due task out to one row PER REGISTERED DEVICE, and since
+    // every FCM token rotates on reinstall, a user who has reinstalled six times
+    // has seven rows — six of them permanently dead. All seven then race to claim
+    // the same dedup_key and exactly one wins, chosen by whichever INSERT reaches
+    // Postgres first: a 6-in-7 chance of spending the reminder on a corpse and
+    // then having the claim block any retry. Observed in production — an account
+    // with seven tokens got nothing from 2026-08-16 onward while the database
+    // reported a registered device and enabled preferences.
+    //
+    // Newest device wins (product decision, 2026-09-28): one reminder, one phone,
+    // the one most recently seen. It also makes `limit` mean what it says —
+    // reminders, not task×device pairs.
     const rows = await db.$queryRawUnsafe<DueReminderRow[]>(`
-      select t.id as task_id, t.user_id, t.title, d.push_token, d.device_type
+      with newest_device as (
+        select distinct on (user_id)
+               user_id, id as device_id, push_token, device_type
+        from device_profiles
+        where push_token is not null and push_token <> ''
+        order by user_id, updated_at desc, id desc
+      )
+      select t.id as task_id, t.user_id, t.title,
+             d.device_id, d.push_token, d.device_type
       from tasks t
       join notification_preferences np on np.user_id = t.user_id
-      join device_profiles d
-        on d.user_id = t.user_id and d.push_token is not null and d.push_token <> ''
+      join newest_device d on d.user_id = t.user_id
       left join notification_deliveries nd
         on nd.dedup_key = 'before_task:' || t.id::text
       where t.reminder_at is not null
@@ -130,36 +170,73 @@ export const notificationsService = {
      *  one worker can ever own a given task's delivery. */
     const deliver = async (r: DueReminderRow) => {
       const claim = await db.$queryRawUnsafe<Array<{ id: string }>>(
-        `insert into notification_deliveries (user_id, kind, task_id, dedup_key, status)
-         values ($1, 'before_task', $2, $3, 'pending')
+        `insert into notification_deliveries (user_id, kind, task_id, dedup_key, status, device_id, device_type)
+         values ($1, 'before_task', $2, $3, 'pending', $4, $5)
          on conflict (dedup_key) do nothing
          returning id`,
         r.user_id,
         r.task_id,
         `before_task:${r.task_id}`,
+        r.device_id,
+        r.device_type,
       );
       if (claim.length === 0) return; // another sweep already took it
       const deliveryId = claim[0].id;
 
-      // Both platforms register an FCM token (iOS delivers via Firebase → APNs),
-      // so always send through FCM — the backend has no direct-APNs path.
-      const result = await push.send(
-        'fcm',
-        r.push_token,
-        'Task reminder',
-        r.title,
-        { channel_key: 'before_task', task_id: r.task_id },
-      );
+      let deviceId = r.device_id;
+      let deviceType = r.device_type;
+      let token = r.push_token;
+      let result;
+
+      for (let attempt = 0; ; attempt++) {
+        // Both platforms register an FCM token (iOS delivers via Firebase → APNs),
+        // so always send through FCM — the backend has no direct-APNs path.
+        result = await push.send(
+          'fcm',
+          token,
+          'Task reminder',
+          r.title,
+          { channel_key: 'before_task', task_id: r.task_id },
+        );
+        if (result.status === 'sent' || !isTokenDead(result.error)) break;
+
+        // FCM has told us this token is gone for good. Deleting it is the only
+        // thing that stops it being chosen again — nothing else in the system
+        // ever removed a dead token, which is how seven accumulated on one
+        // account. The delete is also what bounds this loop.
+        await db.$executeRawUnsafe('delete from device_profiles where id = $1', deviceId);
+        console.warn(`[notifications] pruned dead token: device=${deviceId} user=${r.user_id}`);
+        if (attempt >= MAX_TOKEN_RETRIES) break;
+
+        const next = await db.$queryRawUnsafe<Array<{ id: string; push_token: string; device_type: string | null }>>(
+          `select id, push_token, device_type from device_profiles
+           where user_id = $1 and push_token is not null and push_token <> ''
+           order by updated_at desc, id desc
+           limit 1`,
+          r.user_id,
+        );
+        if (next.length === 0) break; // no devices left to try
+        deviceId = next[0].id;
+        deviceType = next[0].device_type;
+        token = next[0].push_token;
+      }
+
       if (result.status === 'sent') sent++;
       else failed++;
 
+      // Record which device the attempt finally landed on, not which one it
+      // started with. Without this the table could not say whether a failure was
+      // an iOS or an Android problem — the reason a platform breakdown was
+      // impossible for every delivery before today.
       await db.$executeRawUnsafe(
         `update notification_deliveries
-         set status = $1, provider_message_id = $2, error = $3
-         where id = $4`,
+         set status = $1, provider_message_id = $2, error = $3, device_id = $4, device_type = $5
+         where id = $6`,
         result.status,
         result.provider_message_id ?? null,
         result.error ?? null,
+        deviceId,
+        deviceType,
         deliveryId,
       );
     };

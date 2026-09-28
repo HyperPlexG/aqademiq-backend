@@ -98,6 +98,26 @@ async function sendFcm(token: string, title: string, body: string, data?: Record
   }
 }
 
+/**
+ * Whether a failed send means this token will never work again.
+ *
+ * FCM answers a token belonging to an app that was uninstalled, reinstalled or
+ * had its data cleared with 404 `UNREGISTERED`, and its contract is that the
+ * token is permanently dead — retrying can only ever fail. That is the one
+ * error worth deleting a device row over.
+ *
+ * Deliberately narrow. 400 `INVALID_ARGUMENT` is tempting to include, but it is
+ * also what a malformed *payload* returns, so treating it as fatal would let one
+ * of our own bugs quietly unsubscribe every device it touched. 401/403 are our
+ * credentials and 429/5xx are transient — never the device's fault.
+ */
+export function isTokenDead(error?: string): boolean {
+  if (!error) return false;
+  // Both spellings appear: `errorCode: UNREGISTERED` in FCM v1's error details,
+  // `NotRegistered` in the message field it inherits from the legacy API.
+  return /\bUNREGISTERED\b/.test(error) || /\bNotRegistered\b/.test(error);
+}
+
 export const push = {
   /** Send to one device token, routed by provider. Never throws. */
   async send(provider: string, token: string, title: string, body: string, data?: Record<string, string>): Promise<PushResult> {
