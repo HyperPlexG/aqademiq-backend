@@ -84,13 +84,20 @@ app.post('/cron/notifications', async (c) => {
   // Ada's proactive check-ins (agent/proactive.ts, off unless ADA_NUDGES_ENABLED).
   // Settled rather than awaited together so a failure in one never suppresses
   // the other — a broken nudge must not stop reminders going out.
-  const [reminders, nudges] = await Promise.allSettled([
+  // Announcements ride the same tick as a third independent pass. Settled with
+  // the others for the same reason: a broadcast in flight must never be able to
+  // hold up a task reminder, which is the one notification with a deadline.
+  const [reminders, nudges, announcements] = await Promise.allSettled([
     notificationsService.runReminderSweep(),
     runNudgeSweep(),
+    notificationsService.runAnnouncementSweep(),
   ]);
   return c.json({
     reminders: reminders.status === 'fulfilled' ? reminders.value : { error: String(reminders.reason) },
     nudges: nudges.status === 'fulfilled' ? nudges.value : { error: String(nudges.reason) },
+    announcements: announcements.status === 'fulfilled'
+      ? announcements.value
+      : { error: String(announcements.reason) },
   });
 });
 
