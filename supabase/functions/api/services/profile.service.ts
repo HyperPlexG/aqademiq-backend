@@ -15,11 +15,21 @@ export interface UpdateProfileDto {
 }
 
 // deno-lint-ignore no-explicit-any
-function toDto(user: any, profile: any) {
+export function toDto(user: any, profile: any, isGuest: boolean) {
   return {
     name: user?.full_name ?? user?.display_name ?? null,
     email: user?.email ?? null,
-    is_guest: user?.is_guest ?? true,
+    // From the session's token, not from the profiles row.
+    //
+    // `profiles.is_guest` defaults to false and nothing sets it for a Supabase
+    // anonymous sign-up, so every guest came back `is_guest: false`. The client
+    // gates onboarding on `is_guest || onboarding_complete`, which sent a
+    // student who chose "Jump right in" to "How old are you?" on every launch
+    // after the first. The JWT's `is_anonymous` claim is the authority — it is
+    // what this API already uses to decide what a guest may do — and it also
+    // stays right when a guest upgrades to a real account, where a column would
+    // have to be remembered and rewritten.
+    is_guest: isGuest,
     // Drives the post-auth "skip onboarding?" gate — without it the client
     // re-runs onboarding on every launch.
     onboarding_complete: user?.onboarding_complete ?? false,
@@ -43,7 +53,7 @@ export const profileService = {
       prismaBase().profile.findUnique({ where: { id: RequestContext.userId }, select: USER_SELECT }),
       prismaBase().userProfile.findUnique({ where: { user_id: RequestContext.userId } }),
     ]);
-    return toDto(user, profile);
+    return toDto(user, profile, RequestContext.isGuest);
   },
 
   async update(dto: UpdateProfileDto) {
@@ -79,7 +89,7 @@ export const profileService = {
     }
 
     const user = await prismaBase().profile.findUnique({ where: { id: userId }, select: USER_SELECT });
-    return toDto(user, profile);
+    return toDto(user, profile, RequestContext.isGuest);
   },
 
   /**
