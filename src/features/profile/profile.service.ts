@@ -167,7 +167,9 @@ export class ProfileService {
     return {
       name: user?.full_name ?? user?.display_name ?? null,
       email: user?.email ?? null,
-      is_guest: user?.is_guest ?? true,
+      // From the JWT, not the column — see the edge function's toDto. The
+      // column is false for every Supabase anonymous user.
+      is_guest: this.rc.isGuest,
       gender: user?.gender ?? null,
       date_of_birth: user?.date_of_birth ? new Date(user.date_of_birth).toISOString().slice(0, 10) : null,
       university: profile?.university ?? null,
