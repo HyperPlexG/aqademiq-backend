@@ -134,7 +134,11 @@ begin
     update auth.users
        set email = p_new_email, updated_at = now()
      where id = p_user
-       and lower(email) = lower(v_old_email);
+       and lower(email) = lower(v_old_email)
+       -- Someone who chose to share their real address this time may already
+       -- have another account under it; leave the email as it was then.
+       and not exists (select 1 from auth.users o
+                        where lower(o.email) = lower(p_new_email) and o.id <> p_user);
   end if;
 
   update public.apple_team_transfer

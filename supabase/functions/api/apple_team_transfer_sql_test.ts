@@ -120,6 +120,15 @@ Deno.test('a Hide My Email user moves to the new id, and the relay address follo
   assertEquals(row, { relinked_by: 'device', new_sub: 'new-1' });
 });
 
+Deno.test('sharing a real address that another account already uses leaves the email alone', async () => {
+  // The re-link itself still happens: it is the Apple id that matters.
+  const db = await database();
+  assertEquals(await relink(db, U_RELAY, 'new-1', 'person@example.com'), 'linked');
+  assertEquals((await identity(db, U_RELAY)).provider_id, 'new-1');
+  assertEquals(await userEmail(db, U_RELAY), 'old1@privaterelay.appleid.com');
+  assertEquals(await userEmail(db, U_REAL), 'person@example.com');
+});
+
 Deno.test('a real email the person chose is never overwritten', async () => {
   const db = await database();
   assertEquals(await relink(db, U_REAL, 'new-2', 'person@example.com'), 'linked');
