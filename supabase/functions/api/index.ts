@@ -17,6 +17,7 @@ import { rateLimit, idempotency } from '../_shared/redis.ts';
 import { prismaBase } from '../_shared/prisma.ts';
 import { notificationsService } from './services/notifications.service.ts';
 import { runNudgeSweep } from './agent/proactive.ts';
+import { failStaleRuns } from './agent/runtime.ts';
 
 // ---- feature routers ----
 import { profileRouter, meRouter } from './routers/profile.ts';
@@ -87,12 +88,16 @@ app.post('/cron/notifications', async (c) => {
   // Announcements ride the same tick as a third independent pass. Settled with
   // the others for the same reason: a broadcast in flight must never be able to
   // hold up a task reminder, which is the one notification with a deadline.
-  const [reminders, nudges, announcements] = await Promise.allSettled([
+  const [reminders, nudges, announcements, staleRuns] = await Promise.allSettled([
     notificationsService.runReminderSweep(),
     runNudgeSweep(),
     notificationsService.runAnnouncementSweep(),
+    // Ada runs whose isolate died cannot mark themselves failed; without this
+    // the app spins for ever on a reply that is never coming.
+    failStaleRuns(),
   ]);
   return c.json({
+    stale_runs: staleRuns.status === 'fulfilled' ? staleRuns.value : { error: String(staleRuns.reason) },
     reminders: reminders.status === 'fulfilled' ? reminders.value : { error: String(reminders.reason) },
     nudges: nudges.status === 'fulfilled' ? nudges.value : { error: String(nudges.reason) },
     announcements: announcements.status === 'fulfilled'

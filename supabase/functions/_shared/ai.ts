@@ -41,6 +41,36 @@ export interface AiParams {
    * file must never get an answer produced without it.
    */
   files?: AiFile[];
+
+  /**
+   * How long this ONE call may take, from the caller's remaining time.
+   * Clamped by AI_CALL_TIMEOUT_MS; see callSignal.
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * Hard ceiling on a single provider call, from AI_CALL_TIMEOUT_MS.
+ *
+ * Nothing could interrupt a call in flight before this existed. The agent's
+ * budget is predictive — it refuses to START a call it does not think it can
+ * finish — so one slow provider sailed straight past the run deadline AND the
+ * client, and the run row was left reading `running` for ever. A measured run
+ * took 82s under a 24s deadline.
+ *
+ * A timed-out call throws, which the rotation already treats as a failed
+ * candidate, so the next key is tried rather than the turn being lost.
+ */
+function callTimeoutCeiling(): number {
+  const raw = Number(env('AI_CALL_TIMEOUT_MS'));
+  return Number.isFinite(raw) && raw > 0 ? raw : 28_000;
+}
+
+/** Whichever is sooner: the ceiling, or the time the caller actually has left. */
+function callSignal(p: AiParams): AbortSignal {
+  const ceiling = callTimeoutCeiling();
+  const ms = p.timeoutMs && p.timeoutMs > 0 ? Math.min(p.timeoutMs, ceiling) : ceiling;
+  return AbortSignal.timeout(ms);
 }
 
 /**
@@ -482,6 +512,7 @@ async function openAiCompatChat(
     method: 'POST',
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: callSignal(p),
   });
   // 402 = "Payment required … visit your billing tab": the account is out of
   // credit, so this key is dead for the rest of the day exactly like a 429. It
@@ -635,6 +666,7 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify(buildGeminiBody(p)),
+    signal: callSignal(p),
   });
   return parseGeminiResponse(await readGeminiResponse(res, 'gemini'), model);
 }
@@ -656,6 +688,7 @@ async function vertexGeminiChat(model: string, p: AiParams): Promise<AiResult> {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${await gcpAccessToken()}` },
     body: JSON.stringify(buildGeminiBody(p)),
+    signal: callSignal(p),
   });
   return parseGeminiResponse(await readGeminiResponse(res, 'vertex-gemini'), model);
 }

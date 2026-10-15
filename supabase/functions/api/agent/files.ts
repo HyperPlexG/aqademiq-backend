@@ -61,7 +61,7 @@ const READABLE = [
   'video/quicktime',
 ];
 
-function isReadable(mime: string): boolean {
+export function isReadable(mime: string): boolean {
   const m = mime.toLowerCase().split(';')[0].trim();
   return READABLE.includes(m) ||
     m.startsWith('image/') || m.startsWith('audio/') || m.startsWith('video/') || m.startsWith('text/');

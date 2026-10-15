@@ -60,8 +60,16 @@ function intEnv(name: string, fallback: number): number {
 // to stop first, banks the work it has (pending actions are already durable),
 // and answers. Nothing is ever spent on a response no one is waiting for.
 
-/** Wall-clock ceiling for one user turn. Must stay below the client timeout. */
-const RUN_DEADLINE_MS = intEnv('ADA_RUN_DEADLINE_MS', 24_000);
+/**
+ * Wall-clock ceiling for one user turn. Must stay below the client timeout.
+ *
+ * This was 24s, chosen against "Dio's receiveTimeout is 30s" — which is wrong
+ * for this endpoint. `ada_source.dart` overrides it to TWO MINUTES for the agent
+ * routes precisely because an Ada turn is several provider calls. So the server
+ * was cutting runs short to respect a limit the client does not impose, and a
+ * student got "Stopped early (deadline)" instead of their plan.
+ */
+const RUN_DEADLINE_MS = intEnv('ADA_RUN_DEADLINE_MS', 90_000);
 /** Resume runs after an approval — the user is watching a spinner, keep it short. */
 const RESUME_DEADLINE_MS = intEnv('ADA_RESUME_DEADLINE_MS', 15_000);
 /** Hard cap on provider calls per run, independent of the clock. */
@@ -116,6 +124,11 @@ export class Budget {
   get totalCalls() { return this.carryCalls + this.calls; }
   get totalPromptTokens() { return this.carryPromptTokens + this.promptTokens; }
   get totalCompletionTokens() { return this.carryCompletionTokens + this.completionTokens; }
+
+  /** Milliseconds left before the turn's wall-clock deadline. Never negative. */
+  msRemaining(): number {
+    return Math.max(0, this.deadlineMs - (Date.now() - this.startedAt));
+  }
 
   /** Calls still affordable in this phase, which the loop reports to the model. */
   get remainingCalls() { return Math.max(0, this.maxCalls - this.calls); }
@@ -431,7 +444,15 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
     // Counted before the await, settled after: a call that throws still spent
     // provider quota and must still be charged for it.
     state.budget.beginCall();
-    const res = await claude.createMessage({ system, messages, tools, maxTokens: MAX_TOKENS });
+    // Hand the call the time the turn actually has left, so a hung provider is
+    // aborted by the deadline rather than outliving it.
+    const res = await claude.createMessage({
+      system,
+      messages,
+      tools,
+      maxTokens: MAX_TOKENS,
+      timeoutMs: state.budget.msRemaining(),
+    });
     state.budget.settleCall(Date.now() - startedAt, usageOf(res, claude.opus));
 
     // deno-lint-ignore no-explicit-any
@@ -627,6 +648,39 @@ export interface RunAgentInput {
    * the caller can shrink the budget rather than inheriting the chat defaults.
    */
   budget?: { deadlineMs: number; maxCalls: number };
+}
+
+/**
+ * How long a run may sit in `running` before it is declared dead.
+ *
+ * Nothing resumes an abandoned run. When the edge isolate is killed mid-flight
+ * — wall-clock limit, redeploy, a client that vanished — no catch block runs,
+ * so the row keeps saying `running` for ever and the app spins on a reply that
+ * is never coming. Six runs were in that state before this existed, four of
+ * them having made no provider call at all, and not one had an error recorded.
+ *
+ * Comfortably above RUN_DEADLINE_MS so a healthy slow run is never swept.
+ */
+const STALE_RUN_MS = intEnv('ADA_STALE_RUN_MS', 300_000);
+
+/**
+ * Mark abandoned runs failed. Called from the minute cron, system-wide.
+ *
+ * Deliberately not tenanted: it runs with no user context, so it scopes by
+ * status and age alone.
+ */
+export async function failStaleRuns(): Promise<{ failed: number }> {
+  const cutoff = new Date(Date.now() - STALE_RUN_MS);
+  const res = await prismaBase().adaAgentRun.updateMany({
+    where: { status: 'running', updated_at: { lt: cutoff } },
+    data: {
+      status: 'failed',
+      error: 'Abandoned: the run was still marked running long after its deadline, so the worker it was on is gone.',
+      updated_at: new Date(),
+    },
+  });
+  if (res.count > 0) console.warn(`[ada-agent] swept ${res.count} abandoned run(s)`);
+  return { failed: res.count };
 }
 
 /** Run the agent for one user turn. */

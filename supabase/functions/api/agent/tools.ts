@@ -22,7 +22,7 @@ import { settingsService } from '../services/settings.service.ts';
 import { streaksService } from '../services/streaks.service.ts';
 import { type ActionPreview, type AgentTool, type ToolKind, ToolInputError } from './types.ts';
 import { forget, MAX_MEMORY_CHARS, MEMORY_KINDS, remember } from './memory.ts';
-import { listReadableFiles, readFile } from './files.ts';
+import { isReadable, listReadableFiles, readFile } from './files.ts';
 import {
   busyBlocks,
   conflictsFor,
@@ -358,7 +358,21 @@ const readTools: AgentTool[] = [
     resource: 'file',
     input_schema: { type: 'object', properties: {} },
     parse: () => Promise.resolve({}),
-    run: (_a, ctx) => listReadableFiles(ctx.sessionId).then((files) => ({ files })),
+    run: (_a, ctx) =>
+      listReadableFiles(ctx.sessionId).then((files) => {
+        // Only list what read_file can actually open. Listing a .docx and then
+        // refusing it costs a whole turn for nothing — measured on a real run
+        // that spent its last call discovering a Word file was unreadable and
+        // ran out of budget before producing any plan.
+        const readable = files.filter((f) => isReadable(f.mime_type ?? ''));
+        const skipped = files.length - readable.length;
+        return skipped === 0 ? { files: readable } : {
+          files: readable,
+          unreadable_skipped: skipped,
+          note:
+            'Files in formats I cannot open (Word, PowerPoint) are left out. If the user needs one, ask them to export it as PDF.',
+        };
+      }),
   },
   {
     name: 'read_file',

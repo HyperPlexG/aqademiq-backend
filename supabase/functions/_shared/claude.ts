@@ -19,6 +19,8 @@ export interface CreateMessageParams {
   maxTokens?: number;
   /** Inline files for the final user turn. Requires the `rotating` provider. */
   files?: AiFile[];
+  /** Time this call may take, from the caller's remaining budget. */
+  timeoutMs?: number;
 }
 export interface BreakdownStep { title: string; detail?: string; duration_seconds: number; }
 
@@ -165,6 +167,7 @@ export const claude = {
         tools: params.tools,
         toolChoice: params.toolChoice,
         maxTokens: params.maxTokens ?? 2048,
+        timeoutMs: params.timeoutMs,
         files: params.files,
       });
     }
