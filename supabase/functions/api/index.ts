@@ -26,6 +26,7 @@ import { tagsRouter } from './routers/tags.ts';
 import { prismRouter } from './routers/prism.ts';
 import { devicesRouter } from './routers/devices.ts';
 import { notificationsRouter } from './routers/notifications.ts';
+import { appleRelinkRouter } from './routers/apple-relink.ts';
 import { subjectsRouter } from './routers/subjects.ts';
 import { semestersRouter } from './routers/semesters.ts';
 import { adaRouter } from './routers/ada.ts';
@@ -104,6 +105,8 @@ app.post('/cron/notifications', async (c) => {
 // ---- feature routers (mounted under basePath /api/v1) ----
 // More specific /me subpaths first so they aren't shadowed by the /me mounts.
 app.route('/me/notifications', notificationsRouter);
+// Before '/me': the more specific path has to be mounted first.
+app.route('/me/apple-relink', appleRelinkRouter);
 app.route('/me', meRouter);
 app.route('/me', settingsRouter);
 

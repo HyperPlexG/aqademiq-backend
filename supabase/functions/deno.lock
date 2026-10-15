@@ -3,6 +3,7 @@
   "specifiers": {
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.14",
+    "npm:@electric-sql/pglite@0.2.17": "0.2.17",
     "npm:@prisma/adapter-pg@6": "6.19.3",
     "npm:@prisma/adapter-pg@6.19.3": "6.19.3",
     "npm:@prisma/client@6.19.3": "6.19.3",
@@ -22,6 +23,9 @@
     }
   },
   "npm": {
+    "@electric-sql/pglite@0.2.17": {
+      "integrity": "sha512-qEpKRT2oUaWDH6tjRxLHjdzMqRUGYDnGZlKrnL4dJ77JVMcP2Hpo3NYnOSPKdZdeec57B6QPprCUFg0picx5Pw=="
+    },
     "@prisma/adapter-pg@6.19.3": {
       "integrity": "sha512-ocbvVIP/wX2uJWWLvo1/UK0nH8L5dv4MlE1DddVPID0/VRiEZDguWmAgKLVuPM6BuWTH3wGluZR40VgXb4WjiQ==",
       "dependencies": [

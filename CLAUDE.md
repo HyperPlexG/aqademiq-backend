@@ -62,6 +62,33 @@ The sections below describe the NestJS reference (`src/`). The Hono port mirrors
 its structure one-for-one: `routers/<feature>.ts` ≈ controller,
 `services/<feature>.service.ts` ≈ service, `_shared/` ≈ `infra/` + `common/`.
 
+## Sign in with Apple after the October 2026 team transfer
+
+The iOS app moved Apple developer teams (`SXN54W6F6T` → `R6YW5K2YSP`). Apple
+issues each user a different id (`sub`) per team, so a returning Apple user no
+longer matches their own `auth.identities` row and Supabase creates a new,
+empty account; Hide My Email users get a new relay address too, so nothing can
+match them by email. Their data is untouched — the risk is being cut off from it.
+
+- `supabase/migrations/20261015120000_apple_team_transfer.sql` snapshots every
+  Apple identity into `public.apple_team_transfer` (server-only) and adds
+  `apple_relink()` / `apple_relink_needed()`. **The snapshot's `old_sub` column
+  is the only record of the old ids once anything is re-linked** — it is also the
+  input Apple's own transfer-identifier process needs. Never truncate it.
+- `/v1/me/apple-relink` (GET `{needed}`, POST `{identity_token, nonce}` →
+  `{status}`): a still-signed-in device proves ownership with its session, and a
+  fresh Apple token (signature, audience, nonce checked) supplies the new id.
+  Statuses: `linked`, `already`, `conflict`, `no_apple_identity`.
+- `conflict` means the new id already has its own (post-transfer) account. The
+  function never takes it over; `conflict_user_id` records it for a **hand
+  merge** — move that account's rows (every table keyed by `user_id`) into the
+  old account, then move the identity. Do not automate this.
+- If Apple supplies transfer identifiers later, apply them through the same
+  table with `relinked_by = 'apple_transfer'`.
+- Tests: `api/apple_team_transfer_sql_test.ts` runs the migration against a real
+  Postgres (PGlite) with a stand-in `auth` schema; `api/apple_relink_test.ts`
+  covers the token checks.
+
 ## Commands
 
 ```bash
