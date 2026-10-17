@@ -114,10 +114,14 @@ tasksRouter.delete('/:occ/steps', async (c) => {
 // PATCH /tasks/:occ
 tasksRouter.patch('/:occ', async (c) => {
   const b = await jsonBody(c.req);
+  // `subject_id: null` (or "") is "no subject", which str() would read as
+  // "not sent" — so the clear is picked out before it gets there.
+  const rawSubject = (b as Record<string, unknown>).subject_id;
   const dto: PatchTaskDto = {
     scheduled_at: str(b, 'scheduled_at', false),
     status: str(b, 'status', false, { enum: ['PENDING', 'COMPLETE'] }),
     title: str(b, 'title', false),
+    subject_id: rawSubject === null || rawSubject === '' ? null : str(b, 'subject_id', false),
     category: str(b, 'category', false),
     note: str(b, 'note', false),
     duration_seconds: num(b, 'duration_seconds', false, { int: true, min: 0 }),
