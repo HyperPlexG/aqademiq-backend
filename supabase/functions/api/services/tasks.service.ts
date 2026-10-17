@@ -84,11 +84,27 @@ export interface PatchTaskDto {
   scheduled_at?: string;
   status?: string;
   title?: string;
+  // Absent leaves the subject alone; null clears it; an id moves the task to
+  // that subject. Without this field an edited subject was silently dropped.
+  subject_id?: string | null;
   category?: string;
   note?: string;
   duration_seconds?: number;
   part_of_day?: string;
 }
+/**
+ * A task has to be called something. `{"title": ""}` (or only spaces) used to
+ * be accepted and made a blank row nobody could pick out to edit (TSK-2).
+ * Checked here rather than in the router so Ada, sync and the plan import are
+ * held to it too.
+ */
+export function cleanTitle(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const title = String(raw).trim();
+  if (!title) throw new HttpError(422, 'title cannot be empty');
+  return title;
+}
+
 export interface ToggleTaskDto {
   date?: string;
 }
@@ -418,6 +434,7 @@ export const tasksService = {
   /** POST /tasks */
   async create(dto: CreateTaskDto) {
     const db = tenantDb();
+    const title = cleanTitle(dto.title)!;
 
     // A subject is optional. `tasks.course_id` is nullable in both the database
     // and the Prisma model, and 8 rows already carry null — the requirement was
@@ -452,7 +469,7 @@ export const tasksService = {
     const created = await db.task.create({
       data: {
         course_id: courseId,
-        title: dto.title,
+        title,
         estimated_duration_mins: estimatedMins,
         scheduled_start_at: dto.scheduled_at ? scheduledStart : null,
         scheduled_end_at: dto.scheduled_at ? new Date(scheduledStart.getTime() + estimatedMins * 60 * 1000) : null,
@@ -505,8 +522,16 @@ export const tasksService = {
         dbData.completed_at = null;
       }
     }
-    // Editable fields (title / study-tag / note / duration / time-of-day).
-    if (dto.title !== undefined) dbData.title = dto.title;
+    // Editable fields (title / subject / study-tag / note / duration / time-of-day).
+    if (dto.title !== undefined) dbData.title = cleanTitle(dto.title);
+    if (dto.subject_id !== undefined) {
+      // Same rule as create: someone else's subject id must fail, not attach.
+      if (dto.subject_id) {
+        const course = await tenantDb().course.findFirst({ where: { id: dto.subject_id } });
+        if (!course) throw new HttpError(422, 'Unknown subject_id');
+      }
+      dbData.course_id = dto.subject_id || null;
+    }
     if (dto.category !== undefined) dbData.task_type = await resolveTaskCategory(dto.category);
     if (dto.note !== undefined) dbData.description = dto.note || null;
     if (dto.part_of_day !== undefined) dbData.planner_section = dto.part_of_day || 'anytime';
@@ -516,7 +541,7 @@ export const tasksService = {
 
     if (isVirtual) {
       // Materialize virtual task as a concrete instance override, carrying any
-      // edited fields (title / tag / note / duration) from dbData.
+      // edited fields (title / subject / tag / note / duration) from dbData.
       const mins = dbData.estimated_duration_mins ?? task.estimated_duration_mins ?? 5;
       const start = dbData.scheduled_start_at !== undefined
         ? dbData.scheduled_start_at
@@ -527,7 +552,7 @@ export const tasksService = {
       const materialized = await prismaBase().task.create({
         data: {
           user_id: RequestContext.userId,
-          course_id: task.course_id,
+          course_id: dbData.course_id !== undefined ? dbData.course_id : task.course_id,
           title: dbData.title ?? task.title,
           parent_task_id: task.id,
           estimated_duration_mins: mins,
