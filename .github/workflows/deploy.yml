@@ -75,9 +75,11 @@ jobs:
       # the NestJS reference in src/, so without this the edge tree has no test
       # gate at all. Currently the free/busy arithmetic, where a wrong answer is
       # silent: it reports a slot as free that is already booked.
+      # --allow-read: the Apple team-transfer migration is tested against a real
+      # in-process Postgres (PGlite), which loads its data files from the npm cache.
       - name: Test edge functions
         working-directory: supabase/functions
-        run: deno test --allow-env api/
+        run: deno test --allow-env --allow-read api/
 
   # ---- Deploy the api edge function ----
   # Runs on every push to main once `backend` + `edge` are green (a `needs` job
