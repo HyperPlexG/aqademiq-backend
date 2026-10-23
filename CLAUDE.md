@@ -195,3 +195,18 @@ Invariants to preserve when extending it:
 | Ada / AI | `ANTHROPIC_API_KEY` or `GCP_PROJECT_ID` (Vertex) |
 | File upload | `GCS_USER_BUCKET` + service account |
 | Push | `FCM_SERVICE_ACCOUNT_PATH` / APNs keys |
+
+## Sign in with Apple after the October 2026 team transfer
+
+The app moved Apple developer teams (SXN54W6F6T → R6YW5K2YSP). Apple ids are
+team-scoped, so every pre-transfer Apple user gets a new id (and Hide My Email
+users a new relay address). `supabase/migrations/20261023120000_apple_team_transfer.sql`
+snapshots the old identities into `public.apple_team_transfer` and adds
+`apple_transfer_relink(old_sub, new_sub, new_email)`, which moves one account to
+the id Apple's user-migration API issued for it (`apple_user_migration.py` in the
+workspace root, run with the new team's Sign in with Apple key).
+- Never truncate `apple_team_transfer`: it is the only record of the old ids and
+  the way back if a move has to be undone.
+- A `conflict` row means the new id already had its own account (someone signed
+  in fresh before being moved). Merge those by hand; do not automate it.
+- Tests run the real SQL in PGlite: `api/apple_team_transfer_sql_test.ts`.
