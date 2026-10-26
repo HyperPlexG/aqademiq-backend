@@ -29,7 +29,8 @@ readable NestJS reference, still built and tested in CI. Port behaviour *from*
   Providers are tried in `PROVIDER_PRIORITY` order — **vertex-gemini → gemini →
   groq → cerebras**.
 - **Gemini on Vertex is the paid head of that pool**, present only when the
-  `GCP_*` secrets are set (`VERTEX_GEMINI_MODEL`, default `gemini-2.5-flash`;
+  `GCP_*` secrets are set (`VERTEX_GEMINI_MODEL`, default `gemini-3.8-flash` —
+  2.5 Flash was retired on Vertex on 20 Oct 2026;
   `VERTEX_GEMINI_REGION`, default `global`). It exists to spend GCP credits, and
   the free keys stay behind it so an exhausted balance or broken billing fails
   over instead of taking Ada down.
@@ -213,9 +214,19 @@ tier, model, calls, ms, proposed, rejected and escalated.
 | Secret | Default | Meaning |
 |---|---|---|
 | `ADA_HARD_MODEL` | `gemini` | `gemini`, `claude`, or `split` (half the users each, stable per user — for comparing the two) |
-| `VERTEX_GEMINI_PRO_MODEL` | `gemini-2.5-pro` | hard-tier Gemini on Vertex |
-| `VERTEX_CLAUDE_MODEL` | `claude-sonnet-5-5` | hard-tier Claude on Vertex (Marketplace-billed; credits may not cover it). Use the id Model Garden lists. |
+| `VERTEX_GEMINI_PRO_MODEL` | `gemini-3.1-pro-preview` | hard-tier Gemini on Vertex (a preview; `global` only) |
+| `VERTEX_CLAUDE_MODEL` | `claude-opus-5-5` | hard-tier Claude on Vertex; `claude-sonnet-5-5` is about half the price. Plain id, no date suffix. Enable it in Model Garden first (Marketplace-billed; credits may not cover it). |
+| `VERTEX_CLAUDE_EFFORT` | `medium` | how hard Claude thinks: `low`, `medium`, `high`, `xhigh`, `max` |
+| `VERTEX_REGION` | `global` | region for Claude on Vertex (Gemini uses `VERTEX_GEMINI_REGION`) |
 | `ADA_HARD_DAILY_CAP` | `40` | hard-tier runs per user per UTC day before falling back to middle (Redis; fails open) |
+
+Claude Opus 5.5 / Sonnet 5.5 always think, thinking counts toward
+`max_tokens`, and forcing a tool is a 400 — so `vertexClaudeChat` reserves
+`CLAUDE_MIN_MAX_TOKENS` (16,000), turns a forced tool into `auto` plus an
+instruction, and throws on a refusal, a cut-off reply, an empty reply or a
+skipped forced tool, which moves the pool to the next model. It drops thinking
+blocks rather than replaying them: the runtime edits earlier turns, and a
+replayed block after an edit is a 400 on newer accounts.
 
 `chooseTier()` is plain rules on purpose: it is the seam a decision model (Jev
 or another System One API) replaces later, same inputs and output.
