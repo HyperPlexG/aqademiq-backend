@@ -79,6 +79,7 @@ export const FIXTURE: AgentContext = {
   ],
   open_task_count: 23,
   awaiting_confirmation_count: 0,
+  waiting: [],
   memories: [
     { id: 'm-01', kind: 'preference', content: 'Prefers deep work in the morning, before 11am', subject_id: null, source: 'user', confidence: 5 },
     { id: 'm-02', kind: 'constraint', content: 'Has lab every Tuesday 2-5pm', subject_id: null, source: 'user', confidence: 5 },

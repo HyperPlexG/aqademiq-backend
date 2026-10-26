@@ -26,6 +26,7 @@ import { env } from '../../_shared/env.ts';
 import { buildContext, clockLine, renderContext } from './context.ts';
 import { isCallableName, kindOfCall, resolveCall, toolDefs } from './tools.ts';
 import { createPendingAction, listForRun } from './pending.ts';
+import { chooseTier, claimHardRun, type HardVariant, nextTier, pickHardVariant, type Tier } from './tiers.ts';
 import { type AgentOutcome, type AgentUsage, type PlanStep, type ToolContext, ToolInputError } from './types.ts';
 
 // Turn ceilings. These are the single biggest lever on free-tier quota: a 429 is
@@ -34,7 +35,10 @@ import { type AgentOutcome, type AgentUsage, type PlanStep, type ToolContext, To
 // number is a measurement (see ada_agent_runs.turns), not a constant.
 const MAX_TURNS = intEnv('ADA_MAX_TURNS', 4);
 const MAX_RESUME_TURNS = intEnv('ADA_MAX_RESUME_TURNS', 2);
-const HISTORY_LIMIT = intEnv('ADA_HISTORY_LIMIT', 8);
+// 16, not 8: at 8 a list of tasks the user gave four messages ago had already
+// scrolled out, and the model filled the gap from memories — proposing tasks
+// nobody asked for (26 Oct 2026).
+const HISTORY_LIMIT = intEnv('ADA_HISTORY_LIMIT', 16);
 /** A single run may not queue more than this many confirmations. */
 const MAX_PENDING_PER_RUN = 25;
 /** Observations are truncated so one huge list can't crowd out the conversation. */
@@ -118,7 +122,17 @@ export class Budget {
   /** Model that served the most recent call, for per-message attribution. */
   lastModel: string | null = null;
 
-  constructor(private readonly deadlineMs: number, private readonly maxCalls: number) {}
+  constructor(private readonly deadlineMs: number, private maxCalls: number) {}
+
+  /**
+   * More calls for an escalation retry on a stronger tier. The wall-clock
+   * deadline is unchanged: the retry has to fit in the time the user is
+   * already waiting.
+   */
+  allowMoreCalls(n: number) {
+    this.maxCalls = this.calls + n;
+    this.stoppedReason = null;
+  }
 
   /** Lifetime totals for the run row. */
   get totalCalls() { return this.carryCalls + this.calls; }
@@ -300,6 +314,8 @@ export function systemPrompt(contextBlock: string): string {
     '   (task_write with action "create", "update", "move", and so on).',
     '3. Call `finish` with your reply — in the SAME turn as those writes whenever',
     '   you can, since a proposed change needs no follow-up read to confirm it.',
+    '   If any proposal comes back with an error, that change was NOT proposed:',
+    '   fix it and propose it again, or tell the user plainly it could not be made.',
     '',
     '## Work in as few turns as you can',
     'Every turn is a full round trip against a rate limit, you only get a few, and',
@@ -320,6 +336,11 @@ export function systemPrompt(contextBlock: string): string {
     'user taps approve on the card they are shown. So:',
     '- Never say you have done, added, moved, changed or deleted something. Say what',
     '  you are proposing and that it is waiting for their confirmation.',
+    '- Only say a change is proposed if its tool answered awaiting_user_confirmation.',
+    '  A tool that answered with an error proposed nothing.',
+    '- Proposals still waiting for a decision are listed below. Do not propose them',
+    '  again. To change one (say, a different tag), propose it again with the new',
+    '  details — it replaces the waiting card instead of adding a second one.',
     '- Call each proposing tool ONCE per intended change. Calling it twice creates two',
     '  duplicate cards for the same thing.',
     '- Do not ask "shall I?" in text and then wait — propose the change; the card IS',
@@ -350,6 +371,15 @@ export function systemPrompt(contextBlock: string): string {
     '  correction. Do not argue from memory.',
     '- Use what you remember silently. Acting on it is the point; announcing that',
     '  you remembered is not.',
+    '',
+    '## Only what they asked for',
+    '- Create only the tasks the user named, with their wording for titles. Never add',
+    '  tasks of your own, even ones suggested by memories or their history.',
+    '- Set a subject, tag (category), time or part of day only when the user gave it.',
+    '  Otherwise leave the field out — an empty field is correct, a guessed one is not.',
+    '- A subject is a course (e.g. "Generative AI"). A tag is a label (e.g. "R13',
+    '  Labs"). Put tags in `category`, never in `subject_id`.',
+    '- Write to the user as "you", never about "the user".',
     '',
     '## Judgement',
     '- Never schedule anything in the past. Use the real dates below.',
@@ -408,6 +438,18 @@ async function recentHistory(sessionId: string, excludeMessageId: string | null)
 }
 
 interface LoopState {
+  /** Model tier for this run, and the one model it is pinned to (see tiers.ts). */
+  tier: Tier;
+  hardVariant: HardVariant;
+  pin: { id?: string };
+  /** Every proposal a tool refused this run, as the tool said it. */
+  rejections: string[];
+  /**
+   * Refusals from the most recent turn that proposed anything. A refusal the
+   * model then fixed in a later turn is not worth telling the user about; one
+   * from its last attempt is.
+   */
+  lastWriteRejections: string[];
   runId: string;
   sessionId: string;
   messageId: string | null;
@@ -462,6 +504,9 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
       tools,
       maxTokens: MAX_TOKENS,
       timeoutMs: state.budget.msRemaining(),
+      tier: state.tier,
+      hardVariant: state.hardVariant,
+      pin: state.pin,
     });
     state.budget.settleCall(Date.now() - startedAt, usageOf(res, claude.opus));
 
@@ -482,6 +527,9 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
     const observations: unknown[] = new Array(toolUses.length);
     const reads: Array<Promise<void>> = [];
     let finished = false;
+    /** Proposals refused in THIS turn — see the finish gate below. */
+    let rejectedThisTurn = 0;
+    let wroteThisTurn = false;
 
     for (let i = 0; i < toolUses.length; i++) {
       const tu = toolUses[i];
@@ -514,10 +562,16 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
         reads.push(runTool(state, tu.name, input).then((o) => { observations[i] = o; }));
         continue;
       }
+      const before = state.rejections.length;
       observations[i] = await runTool(state, tu.name, input);
+      rejectedThisTurn += state.rejections.length - before;
+      wroteThisTurn = true;
     }
 
     if (reads.length) await Promise.all(reads);
+    if (wroteThisTurn) {
+      state.lastWriteRejections = rejectedThisTurn > 0 ? state.rejections.slice(-rejectedThisTurn) : [];
+    }
 
     const contents = toolUses.map((_, i) => truncate(observations[i]));
 
@@ -529,6 +583,22 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
     // block because a text block in a user turn is silently dropped by both the
     // Gemini and Cerebras adapters — they map only `tool_result` blocks — and a
     // second consecutive user message is rejected outright by Anthropic.
+    // The finish gate. The prompt asks for `finish` in the same turn as the
+    // writes, so its reply is written before any write has answered — and on
+    // 26 Oct 2026 a run whose five proposals were ALL rejected told the user
+    // "I have proposed 5 tasks", four times running. A turn that had a write
+    // refused does not get to end: the model sees the errors and must fix them
+    // or say so. If the budget runs out first, truthfulReply() corrects the text.
+    if (finished && rejectedThisTurn > 0) {
+      finished = false;
+      if (contents.length) {
+        contents[contents.length - 1] +=
+          `\n\n[NOT FINISHED: ${rejectedThisTurn} of your proposals in this turn were rejected — ` +
+          'read the errors above. Fix them and propose again, then finish. Never tell the user ' +
+          'something was proposed unless its tool returned awaiting_user_confirmation.]';
+      }
+    }
+
     if (!finished && contents.length) {
       const left = state.budget.remainingCalls;
       contents[contents.length - 1] += left <= 1
@@ -602,22 +672,36 @@ async function runTool(state: LoopState, name: string, input: Record<string, unk
       args,
       preview,
     });
-    state.pendingIds.push(action.id);
-    state.scratchpad.push(`Proposed ${tool.name}: ${preview.title}`);
+    if (!state.pendingIds.includes(action.id)) state.pendingIds.push(action.id);
+    if (action.reused) {
+      state.scratchpad.push(`Already waiting ${tool.name}: ${preview.title}`);
+      return {
+        status: 'awaiting_user_confirmation',
+        action_id: action.id,
+        summary: preview.title,
+        note: 'This exact change was already waiting for the user, so no second card was made. Do not propose it again.',
+      };
+    }
+    state.scratchpad.push(`${action.replaced ? 'Replaced' : 'Proposed'} ${tool.name}: ${preview.title}`);
 
     return {
       status: 'awaiting_user_confirmation',
       action_id: action.id,
       summary: preview.title,
-      note: 'Queued for the user to confirm. It has NOT been applied. Do not propose this same change again.',
+      note: action.replaced
+        ? 'Queued for the user to confirm, replacing the earlier card for the same change. It has NOT been applied.'
+        : 'Queued for the user to confirm. It has NOT been applied. Do not propose this same change again.',
     };
   } catch (e) {
+    const isWrite = kindOfCall(name) === 'write';
     if (e instanceof ToolInputError) {
       state.scratchpad.push(`${name} rejected: ${e.message}`);
+      if (isWrite) state.rejections.push(e.message);
       return { error: e.message, ...(e.hint ? { hint: e.hint } : {}) };
     }
     const message = e instanceof Error ? e.message : String(e);
     state.scratchpad.push(`${name} failed: ${message}`);
+    if (isWrite) state.rejections.push(message);
     return { error: message, hint: 'Adjust your approach or tell the user what went wrong.' };
   }
 }
@@ -658,6 +742,8 @@ export interface RunAgentInput {
    * the caller can shrink the budget rather than inheriting the chat defaults.
    */
   budget?: { deadlineMs: number; maxCalls: number };
+  /** Skip the tier rules and use this one (proactive check-ins). */
+  tier?: Tier;
 }
 
 /**
@@ -705,13 +791,32 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
     },
   });
 
+  const choice = input.tier
+    ? { tier: input.tier, reason: 'set by caller' }
+    : chooseTier({
+      goal: input.goal,
+      hasAttachments: input.goal.includes('[Attached file(s)'),
+      previousRunFailed: await previousRunFailed(input.sessionId, run.id),
+    });
+  let tier = choice.tier;
+  let reason = choice.reason;
+  if (tier === 'hard' && !(await claimHardRun(RequestContext.userId))) {
+    tier = 'middle';
+    reason += '; daily hard-tier cap reached';
+  }
+
   const state: LoopState = {
+    tier,
+    hardVariant: pickHardVariant(RequestContext.userId),
+    pin: {},
+    rejections: [],
+    lastWriteRejections: [],
     runId: run.id,
     sessionId: input.sessionId,
     messageId: input.messageId,
     plan: [],
     pendingIds: [],
-    scratchpad: [],
+    scratchpad: [`Tier: ${tier} (${reason})`],
     finalText: '',
     turns: 0,
     budget: new Budget(
@@ -740,6 +845,33 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
 
     await loop(state, system, messages, MAX_TURNS);
 
+    // Escalation: the run tried to change something and every attempt was
+    // refused. Rather than answer "I couldn't", the next tier up gets one go at
+    // the same transcript — errors included — while the user is still waiting.
+    let escalated = false;
+    const up = nextTier(state.tier);
+    if (
+      state.pendingIds.length === 0 && state.rejections.length > 0 && up &&
+      state.budget.msRemaining() > ESCALATE_MIN_MS &&
+      (up !== 'hard' || await claimHardRun(RequestContext.userId))
+    ) {
+      escalated = true;
+      state.scratchpad.push(`Escalated ${state.tier} → ${up}: ${state.rejections.length} proposal(s) rejected`);
+      state.tier = up;
+      state.pin = {};
+      state.rejections = [];
+      state.lastWriteRejections = [];
+      state.finalText = '';
+      state.budget.allowMoreCalls(MAX_LLM_CALLS);
+      appendToLastUser(
+        messages,
+        '[RETRY: every change proposed so far was rejected — read the errors above. Fix the inputs ' +
+          'and propose again, then finish. Do not tell the user anything was proposed unless its ' +
+          'tool returned awaiting_user_confirmation.]',
+      );
+      await loop(state, system, messages, MAX_TURNS);
+    }
+
     // deno-lint-ignore no-explicit-any
     await prismaBase().adaAgentRun.update({
       where: { id: run.id },
@@ -749,18 +881,23 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
 
     const status = state.pendingIds.length > 0 ? 'awaiting_confirmation' : 'completed';
     await persistRun(state, status);
+    logRun(state, escalated);
 
     return {
       run_id: run.id,
       status: status === 'awaiting_confirmation' ? 'awaiting_confirmation' : 'completed',
-      text: state.finalText || fallbackText(state),
+      text: truthfulReply(
+        state.finalText || fallbackText(state),
+        state.pendingIds.length,
+        state.pendingIds.length > 0 ? state.lastWriteRejections : state.rejections,
+      ),
       plan: state.plan,
       pending_action_ids: state.pendingIds,
       usage: state.budget.phaseUsage,
     };
   } catch (e) {
     const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    console.error('[ada-agent] run failed', JSON.stringify({ provider: claude.provider, error: message }));
+    console.error('[ada-agent] run failed', JSON.stringify({ provider: claude.provider, tier: state.tier, error: message }));
     await persistRun(state, 'failed', message);
     return {
       run_id: run.id,
@@ -771,6 +908,107 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
       usage: state.budget.phaseUsage,
     };
   }
+}
+
+/** Below this much time left, an escalation retry would only be cut off. */
+const ESCALATE_MIN_MS = 15_000;
+
+/**
+ * Did the last run in this conversation try to change something and fail at
+ * all of it? The user asking again after that is the moment a cheap model has
+ * already let them down once — so the next run starts on the hard tier.
+ */
+async function previousRunFailed(sessionId: string, excludeRunId: string): Promise<boolean> {
+  try {
+    const prev = await tenantDb().adaAgentRun.findFirst({
+      where: { ada_session_id: sessionId, id: { not: excludeRunId } },
+      orderBy: { created_at: 'desc' },
+      select: { id: true, scratchpad: true },
+    });
+    if (!prev) return false;
+    const pad = Array.isArray(prev.scratchpad) ? (prev.scratchpad as unknown as string[]) : [];
+    if (!pad.some((l) => typeof l === 'string' && /\b(rejected|failed): /.test(l))) return false;
+    const proposed = await tenantDb().adaPendingAction.count({ where: { run_id: prev.id } });
+    return proposed === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Add a note to the last user turn, which is always the newest message here
+ * (the loop only ever leaves a user turn last). Notes ride an existing turn
+ * because a second consecutive user message is rejected by Anthropic and a
+ * bare text block in a tool-result turn is dropped by the Gemini adapter.
+ */
+// deno-lint-ignore no-explicit-any
+function appendToLastUser(messages: any[], note: string) {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'user') {
+    messages.push({ role: 'user', content: note });
+    return;
+  }
+  if (typeof last.content === 'string') {
+    last.content += `\n\n${note}`;
+    return;
+  }
+  // deno-lint-ignore no-explicit-any
+  const results = (last.content as any[]).filter((b) => b.type === 'tool_result');
+  const target = results[results.length - 1];
+  if (target) target.content = `${target.content ?? ''}\n\n${note}`;
+  else last.content.push({ type: 'text', text: note });
+}
+
+/** One greppable line per run: what tier and model served it, and how it went. */
+function logRun(state: LoopState, escalated: boolean) {
+  console.log(`[ada-run] ${JSON.stringify({
+    run: state.runId,
+    tier: state.tier,
+    model: state.budget.lastModel,
+    calls: state.budget.totalCalls,
+    ms: Date.now() - state.budget.startedAt,
+    proposed: state.pendingIds.length,
+    rejected: state.rejections.length,
+    escalated,
+    stopped: state.budget.stoppedReason,
+  })}`);
+}
+
+/** Phrasings that tell the user something is waiting for their approval. */
+const CLAIMS_PROPOSAL =
+  /\b(i(?:'ve| have)?(?: now| just)? (?:proposed|added|created|queued|scheduled|put together|set up|lined up)|(?:please )?approve (?:them|it|these|those|the cards?)|awaiting your (?:confirmation|approval)|waiting for your (?:confirmation|approval)|successfully added)\b/i;
+const UUID_IN_TEXT = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/**
+ * The reply, checked against what the run actually proposed.
+ *
+ * The model writes its reply before its proposals have answered (see the finish
+ * gate in `loop`), and nothing compared the two: on 26 Oct 2026 a run with zero
+ * proposals told the user "I have proposed 5 tasks… please approve them", and
+ * the user spent four messages looking for cards that did not exist. The count
+ * of proposals is a fact the server has; the text has to agree with it.
+ *
+ * Exported for tests.
+ */
+export function truthfulReply(text: string, proposed: number, rejections: string[]): string {
+  const reason = (rejections[0] ?? '').replace(UUID_IN_TEXT, '…').replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '');
+  if (proposed === 0 && rejections.length > 0) {
+    return `I couldn't set that up — ${lowerFirst(reason)}. Nothing has been added, so tell me what ` +
+      "to change and I'll try again.";
+  }
+  if (proposed === 0 && CLAIMS_PROPOSAL.test(text)) {
+    return "I didn't manage to put those changes together, so there's nothing waiting for you to " +
+      'approve yet. Could you tell me once more what you need?';
+  }
+  if (proposed > 0 && rejections.length > 0) {
+    const n = rejections.length;
+    return `${text}\n\n(${n} more change${n === 1 ? '' : 's'} couldn't be prepared: ${lowerFirst(reason)}.)`;
+  }
+  return text;
+}
+
+function lowerFirst(s: string): string {
+  return s ? s[0].toLowerCase() + s.slice(1) : 'something went wrong';
 }
 
 /**
@@ -802,8 +1040,12 @@ function fallbackText(state: LoopState): string {
  *
  * The agent is handed the real outcome of each decision — including failures —
  * so it can verify, adapt, or propose a correction rather than assuming success.
+ *
+ * `alsoRunIds`: when one "Decline all"/"Approve all" settles several runs, the
+ * newest run answers for all of them. It used to be one follow-up message per
+ * run — three Ada messages in a row for one tap.
  */
-export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
+export async function resumeRun(runId: string, opts: { alsoRunIds?: string[] } = {}): Promise<AgentOutcome | null> {
   // Claim the run atomically. Approving two cards in quick succession means two
   // requests can each see "nothing pending" and both try to resume; the
   // conditional update lets exactly one of them win, so the user gets one
@@ -817,7 +1059,11 @@ export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
   const run = await tenantDb().adaAgentRun.findFirst({ where: { id: runId } });
   if (!run) return null;
 
-  const actions = await listForRun(runId);
+  const others = opts.alsoRunIds?.filter((id) => id !== runId) ?? [];
+  const actions = [
+    ...(await Promise.all(others.map((id) => listForRun(id)))).flat(),
+    ...(await listForRun(runId)),
+  ];
   const decided = actions.filter((a) => a.status !== 'pending');
   if (decided.length === 0) {
     // Nothing actually happened — hand the claim back rather than stranding the
@@ -829,11 +1075,39 @@ export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
     return null;
   }
 
+  const plan = Array.isArray(run.plan) ? (run.plan as unknown as PlanStep[]) : [];
+
+  // Everything turned down: there is nothing to continue toward, so no model
+  // call — a short acknowledgement is the whole reply. This used to spend a
+  // call per run to produce paragraphs like "It seems all of my previous
+  // suggestions were declined…".
+  const kept = actions.filter((a) => a.status !== 'rejected' && a.status !== 'superseded');
+  if (kept.length === 0) {
+    await prismaBase().adaAgentRun.update({
+      where: { id: runId },
+      data: { status: 'completed', updated_at: new Date() },
+    });
+    return {
+      run_id: runId,
+      status: 'completed',
+      text: "Okay — I've left those out. Tell me if you'd like something different instead.",
+      plan,
+      pending_action_ids: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, llm_calls: 0, model: null },
+    };
+  }
+
   const state: LoopState = {
+    // Short follow-ups after a decision: the default model, pinned as usual.
+    tier: 'middle',
+    hardVariant: pickHardVariant(RequestContext.userId),
+    pin: {},
+    rejections: [],
+    lastWriteRejections: [],
     runId,
     sessionId: run.ada_session_id,
     messageId: run.trigger_message_id,
-    plan: Array.isArray(run.plan) ? (run.plan as unknown as PlanStep[]) : [],
+    plan,
     pendingIds: [],
     scratchpad: Array.isArray(run.scratchpad) ? (run.scratchpad as unknown as string[]) : [],
     finalText: '',
@@ -851,43 +1125,48 @@ export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
     state.timezone = ctx.timezone;
     const system = systemPrompt(renderContext(ctx));
 
-    const outcomeLines = actions.map((a) => {
+    const outcomeLines = actions.flatMap((a) => {
       switch (a.status) {
         case 'executed':
-          return `- APPLIED: ${a.title}`;
+          return [`- APPLIED: ${a.title}`];
         case 'rejected':
-          return `- DECLINED by the user: ${a.title}`;
+          return [`- DECLINED: ${a.title}`];
         case 'failed':
-          return `- FAILED: ${a.title} — ${a.error ?? 'unknown error'}`;
+          return [`- FAILED: ${a.title} — ${a.error ?? 'unknown error'}`];
         case 'pending':
-          return `- still waiting for confirmation: ${a.title}`;
+          return [`- still waiting for my decision: ${a.title}`];
+        case 'superseded':
+          return [];
         default:
-          return `- ${a.status}: ${a.title}`;
+          return [`- ${a.status}: ${a.title}`];
       }
     });
 
     const planLine = state.plan.length
-      ? `Your plan was: ${state.plan.map((s) => s.step).join(' → ')}.`
+      ? `My plan was: ${state.plan.map((s) => s.step).join(' → ')}.`
       : '';
 
+    // Written in the user's voice, to Ada. It used to say "The user has now
+    // decided…", and Ada answered in kind: "I also see that the user previously
+    // stated…", to the user.
     // deno-lint-ignore no-explicit-any
     const messages: any[] = [
       { role: 'user', content: run.goal },
       {
         role: 'assistant',
-        content: `${planLine} I proposed the changes below and asked the user to confirm them.`,
+        content: `${planLine} I proposed the changes below for you to confirm.`.trim(),
       },
       {
         role: 'user',
         content: [
-          'The user has now decided on your proposals:',
+          "Here's what I decided on your proposals:",
           ...outcomeLines,
           '',
-          'Continue toward the original goal.',
+          'Carry on with what I asked for.',
           'If something FAILED, work out why and propose a corrected version.',
-          'If something was DECLINED, respect that and adapt — do not re-propose it.',
-          'If everything is done, verify with a read tool where it matters, then call',
-          'finish with a short, warm confirmation of what is now true.',
+          'If I DECLINED something, leave it out — do not propose it again.',
+          "If everything's done, give me a short, warm confirmation of what is now true,",
+          'checking with a read tool only where it matters, then finish. Talk to me as "you".',
           '',
           clockLine(ctx),
         ].join('\n'),
@@ -898,11 +1177,16 @@ export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
 
     const status = state.pendingIds.length > 0 ? 'awaiting_confirmation' : 'completed';
     await persistRun(state, status);
+    logRun(state, false);
 
     return {
       run_id: runId,
       status: status === 'awaiting_confirmation' ? 'awaiting_confirmation' : 'completed',
-      text: state.finalText || summariseOutcomes(actions),
+      text: truthfulReply(
+        state.finalText || summariseOutcomes(actions),
+        state.pendingIds.length,
+        state.pendingIds.length > 0 ? state.lastWriteRejections : state.rejections,
+      ),
       plan: state.plan,
       pending_action_ids: state.pendingIds,
       usage: state.budget.phaseUsage,
@@ -917,7 +1201,9 @@ export async function resumeRun(runId: string): Promise<AgentOutcome | null> {
       status: 'completed',
       text: summariseOutcomes(actions),
       plan: state.plan,
-      pending_action_ids: [],
+      // Anything it did propose before failing is real and pending; returning
+      // [] left those cards attached to no message the app would ever show.
+      pending_action_ids: state.pendingIds,
       usage: state.budget.phaseUsage,
     };
   }

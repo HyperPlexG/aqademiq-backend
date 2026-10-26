@@ -138,17 +138,85 @@ async function ownedTask(occId: string) {
   return row;
 }
 
-/** Resolve a category the model gave us into a study-tag id when we can. */
+/**
+ * Resolve a category the model gave us into one of the user's study tags.
+ *
+ * A name that matched no tag used to be stored as raw text — a tag nobody has
+ * — and a subject's id in this slot just failed as "no study tag". Both now
+ * fail with what to do instead, naming the user's real tags.
+ */
 async function resolveCategory(raw?: string): Promise<string | undefined> {
   if (!raw) return undefined;
   if (UUID.test(raw)) {
     const byId = await tenantDb().studyTag.findFirst({ where: { id: raw } });
-    if (!byId) throw new ToolInputError(`No study tag with id ${raw} belongs to this user.`, 'Call get_reference with what="study_tags" first.');
-    return byId.id;
+    if (byId) return byId.id;
+    const course = await tenantDb().course.findFirst({ where: { id: raw } });
+    if (course) {
+      throw new ToolInputError(
+        `${raw} is the subject "${course.name}", not a study tag.`,
+        'Pass it as `subject_id`, and put a study tag (or nothing) in `category`.',
+      );
+    }
+    throw new ToolInputError(`No study tag with id ${raw} belongs to this user.`, 'Call get_reference with what="study_tags" first.');
   }
   const byName = await tenantDb().studyTag.findFirst({ where: { name: { equals: raw, mode: 'insensitive' } } });
-  return byName?.id ?? raw;
+  if (byName) return byName.id;
+  const names = (await tenantDb().studyTag.findMany({ select: { name: true }, take: 40 }))
+    // deno-lint-ignore no-explicit-any
+    .map((t: any) => t.name);
+  throw new ToolInputError(
+    `The user has no study tag called "${raw}".`,
+    names.length ? `Use one of: ${names.join(', ')} — or leave \`category\` out.` : 'They have no study tags; leave `category` out.',
+  );
 }
+
+/**
+ * Subject and tag together, catching the mix-up models make most: one of the
+ * user's study tags given as `subject_id`.
+ *
+ * On 26 Oct 2026 a run put the "R13 Labs" tag's id in `subject_id` for all
+ * five tasks the user listed. Every one was rejected, the model told the user
+ * it had proposed them, and the same thing happened on the next three turns.
+ * When the value is unmistakably one of the user's tags, it is used as the tag.
+ * Subjects may also be named rather than given by id.
+ */
+async function resolveSubjectAndTag(subjectRaw?: string, categoryRaw?: string): Promise<{ subjectId?: string; category?: string }> {
+  let category = await resolveCategory(categoryRaw);
+  if (!subjectRaw) return { category };
+
+  const course = UUID.test(subjectRaw)
+    ? await tenantDb().course.findFirst({ where: { id: subjectRaw } })
+    : await tenantDb().course.findFirst({ where: { name: { equals: subjectRaw, mode: 'insensitive' } } });
+  if (course) return { subjectId: course.id, category };
+
+  const tag = UUID.test(subjectRaw)
+    ? await tenantDb().studyTag.findFirst({ where: { id: subjectRaw } })
+    : await tenantDb().studyTag.findFirst({ where: { name: { equals: subjectRaw, mode: 'insensitive' } } });
+  if (tag && (!category || category === tag.id)) {
+    category = tag.id;
+    return { category };
+  }
+  if (tag) {
+    throw new ToolInputError(
+      `"${tag.name}" is a study tag, not a subject.`,
+      'Leave `subject_id` out unless the user named one of their subjects.',
+    );
+  }
+  throw new ToolInputError(
+    UUID.test(subjectRaw) ? `No subject with id ${subjectRaw} belongs to this user.` : `The user has no subject called "${subjectRaw}".`,
+    'Leave `subject_id` out unless the user named one of their subjects — a task without a subject is valid.',
+  );
+}
+
+/**
+ * What a task Ada creates is tagged with when the user named no tag.
+ *
+ * tasksService.create defaults a missing category to 'assignment', which is
+ * right for the app's own form and wrong here: Ada's tasks came out tagged
+ * "Assignment" when the user had asked for nothing of the kind. 'general' is
+ * the app's "no tag".
+ */
+const NO_TAG = 'general';
 
 async function tagLabel(id?: string): Promise<string | null> {
   if (!id) return null;
@@ -511,11 +579,11 @@ const writeTools: AgentTool[] = [
       properties: {
         title: { type: 'string', description: 'What the user will do. Specific and short.' },
         date: { type: 'string', description: 'The day it is scheduled for, YYYY-MM-DD. Must not be in the past.' },
-        subject_id: { type: 'string', description: 'Optional subject id from list_subjects. Omit it when the task belongs to no subject, or when the user has none — a task without a subject is valid.' },
+        subject_id: { type: 'string', description: 'Subject (course) id or name, only if the user named one. Never a tag.' },
         duration_minutes: { type: 'integer', description: 'Estimated minutes, 5–1440.' },
         scheduled_at: { type: 'string', description: 'Optional clock start time, 24-hour "HH:MM".' },
         part_of_day: { type: 'string', description: 'anytime | morning | afternoon | evening. Use when there is no exact time.' },
-        category: { type: 'string', description: 'Study-tag id from list_study_tags.' },
+        category: { type: 'string', description: 'Study tag name or id, only if the user gave one.' },
         note: { type: 'string', description: 'Optional longer detail.' },
         repeat: {
           type: 'object',
@@ -532,8 +600,10 @@ const writeTools: AgentTool[] = [
     async parse(i) {
       const title = reqStr(i, 'title', 300);
       const date = reqYmd(i, 'date');
-      const subjectId = optStr(i, 'subject_id', 60);
-      if (subjectId) await ownedSubject(subjectId);
+      const { subjectId, category } = await resolveSubjectAndTag(
+        optStr(i, 'subject_id', 120),
+        optStr(i, 'category', 120),
+      );
 
       const repeatRaw = i.repeat as Raw | undefined;
       let repeat: { kind: string; interval?: number } | undefined;
@@ -554,7 +624,7 @@ const writeTools: AgentTool[] = [
         duration_minutes: optInt(i, 'duration_minutes', 5, MAX_DURATION_MINUTES),
         scheduled_at: optHhmm(i, 'scheduled_at'),
         part_of_day: optEnum(i, 'part_of_day', PART_OF_DAY),
-        category: await resolveCategory(optStr(i, 'category', 60)),
+        category,
         note: optStr(i, 'note', 2000),
         repeat,
         until_date: optYmd(i, 'until_date'),
@@ -594,7 +664,7 @@ const writeTools: AgentTool[] = [
         // identically to ones created in the UI.
         scheduled_at: a.scheduled_at ? `${a.date}T${a.scheduled_at}:00.000Z` : undefined,
         part_of_day: a.part_of_day,
-        category: a.category,
+        category: a.category ?? NO_TAG,
         note: a.note,
         repeat: a.repeat,
         until_date: a.until_date,
@@ -615,7 +685,7 @@ const writeTools: AgentTool[] = [
         duration_minutes: { type: 'integer', description: '5–1440.' },
         scheduled_at: { type: 'string', description: 'Clock start time "HH:MM", or "" to clear it.' },
         part_of_day: { type: 'string', description: 'anytime | morning | afternoon | evening.' },
-        category: { type: 'string', description: 'Study-tag id.' },
+        category: { type: 'string', description: 'Study tag name or id.' },
         note: { type: 'string' },
       },
       required: ['task_id'],
@@ -630,7 +700,7 @@ const writeTools: AgentTool[] = [
         // '' is meaningful here (clear the time), so it is read before optHhmm.
         scheduled_at: i.scheduled_at === '' ? '' : optHhmm(i, 'scheduled_at'),
         part_of_day: optEnum(i, 'part_of_day', PART_OF_DAY),
-        category: await resolveCategory(optStr(i, 'category', 60)),
+        category: await resolveCategory(optStr(i, 'category', 120)),
         note: optStr(i, 'note', 2000),
       };
       const touched = Object.entries(args).filter(([k, v]) => k !== 'task_id' && v !== undefined);

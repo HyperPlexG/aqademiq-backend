@@ -53,7 +53,7 @@ readable NestJS reference, still built and tested in CI. Port behaviour *from*
   models in `GEMINI_MODELS` draws on two independent quotas. See
   [docs/AI_QUOTA_REPORT.md](docs/AI_QUOTA_REPORT.md). Edge knobs:
   `ADA_MAX_TURNS`/`ADA_MAX_LLM_CALLS` (4), `ADA_MAX_RESUME_TURNS` (2),
-  `ADA_HISTORY_LIMIT` (8), `ADA_DAILY_CALL_CAP` (200/user/UTC-day, 0 = off),
+  `ADA_HISTORY_LIMIT` (16), `ADA_DAILY_CALL_CAP` (200/user/UTC-day, 0 = off),
   `GEMINI_MODELS`, `ADA_THINKING_BUDGET` (unset = provider default; 0 = no thinking).
 - Storage moved GCS → **Supabase Storage** (private `materials` bucket,
   `_shared/storage.ts`); the `GCS_*` names in older docs are stale.
@@ -175,7 +175,7 @@ The most load-bearing subsystem here and the one with no NestJS equivalent —
 | `runtime.ts` | The act/observe loop. `runAgent` (MAX_TURNS 8) and `resumeRun` (MAX_RESUME_TURNS 5). Owns the system prompt and the `record_plan`/`finish` meta-tools. |
 | `tools.ts` | The capability surface: 9 read tools (execute immediately) + 15 write tools (propose only). Each is a validated adapter over an existing feature service. |
 | `pending.ts` | The confirmation gate — `ada_pending_actions` CRUD, `approveAction` (re-parses args against current state, then executes), `rejectAction`, `decideAll`. |
-| `context.ts` | The grounded world-state block: today/local time/timezone/weekday, subject and study-tag ids to use verbatim, open-task count. |
+| `context.ts` | The grounded world-state block: today/local time/timezone/weekday, subject ids and study-tag names, open-task count, this chat's waiting proposals and the fate of earlier ones. |
 
 Invariants to preserve when extending it:
 - Write tools never execute inside the loop — they return
@@ -185,8 +185,40 @@ Invariants to preserve when extending it:
 - `pending.ts` must not import `runtime.ts` (the service layer calls both, keeping
   the dependency one-way).
 - Conversation memory is `HISTORY_LIMIT` (16) raw `ada_messages` rows for the
-  current session, replayed as plain text — there is no summarisation or
-  cross-session recall today.
+  current session, replayed as plain text, plus the context block's digest of
+  every earlier run's proposals and their fate, and the list of proposals still
+  waiting in this chat.
+- **The reply must match the proposals.** A turn that had a write rejected may
+  not `finish` (the model sees the errors and retries), and `truthfulReply()`
+  rewrites any reply that claims proposals the run did not make. Do not loosen
+  either: on 26 Oct 2026 a run with zero proposals told a user "I have proposed
+  5 tasks" four turns running.
+- **Duplicates are merged in `createPendingAction`**: the same change already
+  waiting is reused; the same title and day with new details replaces the old
+  card (status `superseded`).
+- **"Decline all"/"Approve all" gets one reply**, from the newest run, carrying
+  the older runs' outcomes; everything declined gets a canned reply with no model
+  call.
+
+### Model tiers (`agent/tiers.ts`, `_shared/ai.ts`)
+
+Each message gets a tier once, and one model for the whole run (`pin`):
+`easy` (questions, small talk) → free keys first; `middle` (changes) → Gemini
+Flash on Vertex, the old order; `hard` (planning, files, ≥6 items, the user
+saying it didn't work, or the previous run failing) → a stronger model, then
+middle as fallback. A run whose proposals were ALL rejected retries once on the
+next tier up before answering. Every run logs one `[ada-run] {...}` line with
+tier, model, calls, ms, proposed, rejected and escalated.
+
+| Secret | Default | Meaning |
+|---|---|---|
+| `ADA_HARD_MODEL` | `gemini` | `gemini`, `claude`, or `split` (half the users each, stable per user — for comparing the two) |
+| `VERTEX_GEMINI_PRO_MODEL` | `gemini-2.5-pro` | hard-tier Gemini on Vertex |
+| `VERTEX_CLAUDE_MODEL` | `claude-sonnet-5-5` | hard-tier Claude on Vertex (Marketplace-billed; credits may not cover it). Use the id Model Garden lists. |
+| `ADA_HARD_DAILY_CAP` | `40` | hard-tier runs per user per UTC day before falling back to middle (Redis; fails open) |
+
+`chooseTier()` is plain rules on purpose: it is the seam a decision model (Jev
+or another System One API) replaces later, same inputs and output.
 
 ### Credentials (optional in dev)
 

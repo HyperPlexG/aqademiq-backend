@@ -6,7 +6,7 @@
 // All return the Anthropic Messages shape so Ada's tool loop is provider-agnostic.
 import { env } from './env.ts';
 import { isVertexConfigured, vertexMessages, vertexMessagesStream } from './vertex.ts';
-import { type AiFile, type AiUsage, rotatingChat, rotationConfigured } from './ai.ts';
+import { type AiFile, type AiParams, type AiUsage, rotatingChat, rotationConfigured } from './ai.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
 export interface CreateMessageParams {
@@ -21,6 +21,10 @@ export interface CreateMessageParams {
   files?: AiFile[];
   /** Time this call may take, from the caller's remaining budget. */
   timeoutMs?: number;
+  /** Model tier and per-run pin — see AiParams in ai.ts. Rotating provider only. */
+  tier?: AiParams['tier'];
+  hardVariant?: AiParams['hardVariant'];
+  pin?: AiParams['pin'];
 }
 export interface BreakdownStep { title: string; detail?: string; duration_seconds: number; }
 
@@ -169,6 +173,9 @@ export const claude = {
         maxTokens: params.maxTokens ?? 2048,
         timeoutMs: params.timeoutMs,
         files: params.files,
+        tier: params.tier,
+        hardVariant: params.hardVariant,
+        pin: params.pin,
       });
     }
     // Anthropic and Vertex both take documents/images as content blocks rather

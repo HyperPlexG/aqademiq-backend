@@ -363,16 +363,30 @@ export const adaService = {
   },
 
   /** POST /ada/conversations/:id/actions/decide — approve or reject the lot. */
-  async decideAllActions(conversationId: string, approve: boolean) {
+  async decideAllActions(conversationId: string, approve: boolean, actionIds?: string[]) {
     await ownedConversation(conversationId);
-    const results = await decideAll(conversationId, approve);
-    if (results.length === 0) return { actions: [], decided: 0 };
+    const results = await decideAll(conversationId, approve, actionIds);
+    if (results.length === 0) return { actions: [], decided: 0, messages: [] };
 
-    // Every decided action belongs to at most one run; resume each of them once.
+    // One reply for the whole batch. Resuming each run separately gave one Ada
+    // message per run — three in a row for a single "Decline all". The newest
+    // run answers, carrying the older runs' outcomes; the older ones are done.
+    // Only runs with nothing left to decide are settled: when the app sent a
+    // subset of ids, an older run may still have cards waiting.
     const runIds = [...new Set(results.map((r) => r.action?.run_id).filter(Boolean))] as string[];
+    const settled: string[] = [];
+    for (const id of runIds) if (await runIsUnblocked(id)) settled.push(id);
+    const newest = settled[settled.length - 1];
+    const older = settled.slice(0, -1);
     const messages = [];
-    for (const runId of runIds) {
-      const followUp = await continueRunById(runId, conversationId);
+    if (older.length) {
+      await prismaBase().adaAgentRun.updateMany({
+        where: { id: { in: older }, status: 'awaiting_confirmation' },
+        data: { status: 'completed', updated_at: new Date() },
+      });
+    }
+    if (newest) {
+      const followUp = await continueRunById(newest, conversationId, older);
       if (followUp) messages.push(followUp);
     }
 
@@ -710,10 +724,10 @@ async function continueRun(action: any) {
   return await continueRunById(action.run_id, action.ada_session_id);
 }
 
-async function continueRunById(runId: string, conversationId: string) {
+async function continueRunById(runId: string, conversationId: string, alsoRunIds: string[] = []) {
   if (!(await runIsUnblocked(runId))) return null;
 
-  const outcome = await resumeRun(runId);
+  const outcome = await resumeRun(runId, { alsoRunIds });
   if (!outcome) return null;
 
   const assistantMsg = await prismaBase().adaMessage.create({

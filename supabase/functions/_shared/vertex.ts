@@ -153,11 +153,16 @@ export interface VertexMessagesParams {
   [extra: string]: unknown;
 }
 
-export async function vertexMessages({ model, ...body }: VertexMessagesParams): Promise<unknown> {
+export async function vertexMessages(
+  { model, signal, ...body }: VertexMessagesParams & { signal?: AbortSignal },
+): Promise<unknown> {
   const res = await fetch(modelUrl(model, false), {
     method: 'POST',
     headers: { authorization: `Bearer ${await accessToken()}`, 'content-type': 'application/json' },
     body: JSON.stringify({ anthropic_version: 'vertex-2023-10-16', ...body }),
+    // Ada's hard tier passes its remaining run time, so a slow call is cut off
+    // by the run deadline instead of outliving it (see callSignal in ai.ts).
+    signal,
   });
   if (!res.ok) throw new Error(`Vertex rawPredict failed (${res.status}): ${await res.text()}`);
   return res.json();

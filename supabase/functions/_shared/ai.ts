@@ -13,7 +13,7 @@
 //   CEREBRAS_MODEL       = gpt-oss-120b            (default)
 import { env } from './env.ts';
 import { cacheGet, cacheSet } from './redis.ts';
-import { gcpAccessToken, gcpProject, isVertexConfigured, vertexHost } from './vertex.ts';
+import { gcpAccessToken, gcpProject, isVertexConfigured, vertexHost, vertexMessages } from './vertex.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
 
@@ -47,6 +47,22 @@ export interface AiParams {
    * Clamped by AI_CALL_TIMEOUT_MS; see callSignal.
    */
   timeoutMs?: number;
+
+  /**
+   * Which tier serves this call (agent/tiers.ts). Unset keeps the original
+   * priority order — Vertex Gemini first, free keys behind it.
+   */
+  tier?: 'easy' | 'middle' | 'hard';
+  /** The hard tier's model, when `tier` is 'hard'. */
+  hardVariant?: 'gemini' | 'claude';
+  /**
+   * One model per run. The candidate that answers is written here, and the
+   * next call in the same run tries it first — so a run is no longer stitched
+   * together from Gemini, gpt-oss and Cerebras turns that each read the
+   * transcript differently. Another candidate is used only when the pinned
+   * one fails, and then that one becomes the pin.
+   */
+  pin?: { id?: string };
 }
 
 /**
@@ -103,7 +119,7 @@ export interface AiResult {
   usage?: AiUsage;
 }
 
-type Provider = 'vertex-gemini' | 'gemini' | 'cerebras' | 'groq';
+type Provider = 'vertex-gemini' | 'vertex-claude' | 'gemini' | 'cerebras' | 'groq';
 export interface KeyEntry { provider: Provider; key: string; model: string; id: string }
 
 function splitKeys(v?: string): string[] {
@@ -184,6 +200,15 @@ const vertexGeminiRegion = () => env('VERTEX_GEMINI_REGION') ?? 'global';
  */
 const vertexGeminiModel = () => env('VERTEX_GEMINI_MODEL') ?? 'gemini-2.5-flash';
 const vertexGeminiModels = () => modelsFor('VERTEX_GEMINI_MODELS', vertexGeminiModel);
+
+/**
+ * The hard tier's models (agent/tiers.ts). Both run on the same Vertex project
+ * as the default model; set the id to whatever Model Garden lists for the
+ * project. Claude on Vertex is a Marketplace product: GCP promotional credits
+ * commonly do not cover it (see _shared/claude.ts).
+ */
+const vertexGeminiProModel = () => env('VERTEX_GEMINI_PRO_MODEL') ?? 'gemini-2.5-pro';
+const vertexClaudeModel = () => env('VERTEX_CLAUDE_MODEL') ?? 'claude-sonnet-5-5';
 const cerebrasModel = () => env('CEREBRAS_MODEL') ?? 'gpt-oss-120b';
 /**
  * Chosen against the live account's real limits, not the docs.
@@ -331,6 +356,37 @@ export function orderedCandidates(): KeyEntry[] {
 }
 
 /**
+ * The candidates for one tier, best first.
+ *
+ *  - easy:   the free keys, with Vertex behind them so an empty free tier
+ *            never takes Ada down.
+ *  - middle: the original order — Vertex Gemini (Flash) first.
+ *  - hard:   the stronger model first, then the middle order as fallback.
+ *
+ * Exported for tests, like `orderedCandidates`: which entry leads decides who
+ * pays for the message.
+ */
+export function tierCandidates(tier?: AiParams['tier'], hardVariant: AiParams['hardVariant'] = 'gemini'): KeyEntry[] {
+  const all = orderedCandidates();
+  if (!tier || tier === 'middle') return all;
+  if (tier === 'easy') {
+    return [...all.filter((k) => k.provider !== 'vertex-gemini'), ...all.filter((k) => k.provider === 'vertex-gemini')];
+  }
+  if (!isVertexConfigured()) return all;
+  const hard: KeyEntry = hardVariant === 'claude'
+    ? { provider: 'vertex-claude', key: '', model: vertexClaudeModel(), id: `vertex-claude:${vertexClaudeModel()}` }
+    : { provider: 'vertex-gemini', key: '', model: vertexGeminiProModel(), id: `vertex-gemini:${vertexGeminiProModel()}` };
+  return [hard, ...all.filter((k) => k.id !== hard.id)];
+}
+
+/** Put the run's pinned candidate first, when it is in this list. */
+export function withPinFirst(candidates: KeyEntry[], pinId?: string): KeyEntry[] {
+  if (!pinId) return candidates;
+  const pinned = candidates.find((c) => c.id === pinId);
+  return pinned ? [pinned, ...candidates.filter((c) => c.id !== pinId)] : candidates;
+}
+
+/**
  * A key is temporarily unusable. `cooldownSeconds` says for how long, taken from
  * what the provider reported rather than assumed — see the cooldown block above.
  */
@@ -399,9 +455,12 @@ function geminiFunctionDeclaration(t: ToolDef) {
 export async function rotatingChat(params: AiParams): Promise<AiResult> {
   // A call carrying files can only be served by Gemini, so narrow the pool
   // rather than letting a Cerebras failover answer without seeing the file.
-  const candidates = params.files?.length
-    ? orderedCandidates().filter((k) => k.provider === 'gemini')
-    : orderedCandidates();
+  const candidates = withPinFirst(
+    params.files?.length
+      ? orderedCandidates().filter((k) => k.provider === 'gemini')
+      : tierCandidates(params.tier, params.hardVariant),
+    params.pin?.id,
+  );
   if (candidates.length === 0) {
     throw new Error(
       params.files?.length
@@ -433,6 +492,8 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
     try {
       const res = c.provider === 'vertex-gemini'
         ? await vertexGeminiChat(c.model, params)
+        : c.provider === 'vertex-claude'
+        ? await vertexClaudeChat(c.model, params)
         : c.provider === 'gemini'
         ? await geminiChat(c.key, c.model, params)
         : c.provider === 'groq'
@@ -444,6 +505,7 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
         res.usage.key_id = c.id;
         res.usage.model = c.model;
       }
+      if (params.pin) params.pin.id = c.id;
       return res;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -537,7 +599,12 @@ async function openAiCompatChat(
   if (msg.content) content.push({ type: 'text', text: msg.content });
   for (const tc of msg.tool_calls ?? []) {
     let input: unknown = {};
-    try { input = JSON.parse(tc.function?.arguments ?? '{}'); } catch { input = {}; }
+    // Unparsable arguments used to become {}, which then failed the tool's own
+    // validation with a confusing error — or, for a tool with no required
+    // fields, ran with nothing. Fail the call so the next candidate answers.
+    try { input = JSON.parse(tc.function?.arguments ?? '{}'); } catch {
+      throw new Error(`unparsable tool arguments for ${tc.function?.name}`);
+    }
     content.push({ type: 'tool_use', id: tc.id, name: tc.function?.name, input });
   }
   const stop_reason = (json.choices?.[0]?.finish_reason === 'tool_calls' || content.some((b) => b.type === 'tool_use')) ? 'tool_use' : 'end_turn';
@@ -693,6 +760,72 @@ async function vertexGeminiChat(model: string, p: AiParams): Promise<AiResult> {
   return parseGeminiResponse(await readGeminiResponse(res, 'vertex-gemini'), model);
 }
 
+const GEMINI_FAILED_FINISH = new Set([
+  'MALFORMED_FUNCTION_CALL',
+  'UNEXPECTED_TOOL_CALL',
+  'SAFETY',
+  'RECITATION',
+  'BLOCKLIST',
+  'PROHIBITED_CONTENT',
+  'SPII',
+  'OTHER',
+]);
+
+/**
+ * Claude on Vertex, for the hard tier.
+ *
+ * Already Anthropic-shaped, so no translation beyond dropping what another
+ * provider left in the transcript: Gemini's `gemini_thought` blocks and the
+ * `thoughtSignature` it hangs on tool calls are rejected by the Messages API.
+ */
+async function vertexClaudeChat(model: string, p: AiParams): Promise<AiResult> {
+  // deno-lint-ignore no-explicit-any
+  let json: any;
+  try {
+    json = await vertexMessages({
+      model,
+      max_tokens: p.maxTokens ?? 2048,
+      system: p.system,
+      messages: anthropicMessages(p.messages),
+      ...(p.tools?.length ? { tools: p.tools } : {}),
+      ...(p.toolChoice ? { tool_choice: p.toolChoice } : {}),
+      signal: callSignal(p),
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/\((429|529)\)/.test(message)) throw new QuotaError(`vertex-claude ${message.slice(0, 300)}`, DEFAULT_RATE_LIMIT_COOLDOWN_S);
+    throw e;
+  }
+  // deno-lint-ignore no-explicit-any
+  const content = ((json.content as any[]) ?? []).filter((b) => b.type === 'text' || b.type === 'tool_use');
+  return {
+    content,
+    stop_reason: content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn',
+    usage: {
+      prompt_tokens: json.usage?.input_tokens ?? 0,
+      completion_tokens: json.usage?.output_tokens ?? 0,
+      key_id: '',
+      model,
+    },
+  };
+}
+
+/** The transcript as the Messages API accepts it. Exported for tests. */
+// deno-lint-ignore no-explicit-any
+export function anthropicMessages(messages: any[]): any[] {
+  return messages.map((m) => {
+    if (typeof m.content === 'string') return { role: m.role, content: m.content };
+    // deno-lint-ignore no-explicit-any
+    const blocks = ((m.content as any[]) ?? []).flatMap((b): any[] => {
+      if (b.type === 'text') return b.text ? [{ type: 'text', text: b.text }] : [];
+      if (b.type === 'tool_use') return [{ type: 'tool_use', id: b.id, name: b.name, input: b.input ?? {} }];
+      if (b.type === 'tool_result') return [{ type: 'tool_result', tool_use_id: b.tool_use_id, content: b.content }];
+      return [];
+    });
+    return { role: m.role, content: blocks.length ? blocks : [{ type: 'text', text: '…' }] };
+  });
+}
+
 /**
  * Turn a non-2xx Gemini response into the right kind of error, or return the
  * parsed JSON.
@@ -723,7 +856,18 @@ async function readGeminiResponse(res: Response, label: string): Promise<any> {
 /** Gemini `generateContent` response -> the Anthropic-shaped result Ada expects. */
 // deno-lint-ignore no-explicit-any
 function parseGeminiResponse(json: any, model: string): AiResult {
+  // A turn that ended for any reason but STOP is not an answer, and was being
+  // treated as one: MALFORMED_FUNCTION_CALL came back with no parts, which
+  // read as "the model chose to say nothing" and ended the run. Fail it so the
+  // next candidate answers instead.
+  const finish = json.candidates?.[0]?.finishReason as string | undefined;
   const parts = json.candidates?.[0]?.content?.parts ?? [];
+  if (finish && GEMINI_FAILED_FINISH.has(finish)) {
+    throw new Error(`gemini ${model} finishReason ${finish}`);
+  }
+  if (finish === 'MAX_TOKENS' && parts.length === 0) {
+    throw new Error(`gemini ${model} hit MAX_TOKENS with no output`);
+  }
   // deno-lint-ignore no-explicit-any
   const content: any[] = [];
   for (const part of parts) {

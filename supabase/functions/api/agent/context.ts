@@ -27,7 +27,14 @@ export interface AgentContext {
   subjects: Array<{ id: string; name: string }>;
   study_tags: Array<{ id: string; label: string }>;
   open_task_count: number;
+  /** Undecided proposals across ALL of the user's chats. */
   awaiting_confirmation_count: number;
+  /**
+   * Undecided proposals in THIS chat, with their details. Ada was only ever
+   * given a count, so it could not tell that the five tasks it had just been
+   * asked for were already waiting — and proposed them again.
+   */
+  waiting: Array<{ title: string; fields: string }>;
   /** Durable cross-conversation memory (agent/memory.ts). */
   memories: MemoryRow[];
   /** Behaviour derived from their own history (agent/insights.ts). */
@@ -104,25 +111,34 @@ async function buildDigest(sessionId: string, excludeRunId?: string): Promise<st
     });
     if (runs.length === 0) return [];
 
-    const applied = await tenantDb().adaPendingAction.findMany({
+    // Every proposal's fate, not just the applied ones: a run whose cards were
+    // still waiting used to read "→ nothing applied", which told the model the
+    // request had gone nowhere and invited it to propose everything again.
+    const proposals = await tenantDb().adaPendingAction.findMany({
       // deno-lint-ignore no-explicit-any
-      where: { run_id: { in: (runs as any[]).map((r) => r.id) }, status: 'executed' },
-      select: { run_id: true, title: true },
+      where: { run_id: { in: (runs as any[]).map((r) => r.id) }, status: { not: 'superseded' } },
+      select: { run_id: true, title: true, status: true },
     });
 
-    const byRun = new Map<string, string[]>();
+    const LABEL: Record<string, string> = {
+      executed: 'applied', rejected: 'declined', pending: 'waiting', failed: 'failed', approved: 'applying',
+    };
+    const byRun = new Map<string, Map<string, string[]>>();
     // deno-lint-ignore no-explicit-any
-    for (const a of applied as any[]) {
-      const list = byRun.get(a.run_id) ?? [];
-      list.push(a.title);
-      byRun.set(a.run_id, list);
+    for (const a of proposals as any[]) {
+      const groups = byRun.get(a.run_id) ?? new Map<string, string[]>();
+      const label = LABEL[a.status] ?? a.status;
+      groups.set(label, [...(groups.get(label) ?? []), a.title]);
+      byRun.set(a.run_id, groups);
     }
 
     // deno-lint-ignore no-explicit-any
     return (runs as any[]).reverse().map((r) => {
-      const did = byRun.get(r.id) ?? [];
-      const ask = String(r.goal).replace(/\s+/g, ' ').slice(0, 140);
-      return did.length ? `asked "${ask}" → applied: ${did.join('; ')}` : `asked "${ask}" → nothing applied`;
+      // 300, not 140: a list of five tasks was cut off mid-item.
+      const ask = String(r.goal).replace(/\s+/g, ' ').slice(0, 300);
+      const groups = byRun.get(r.id);
+      if (!groups) return `asked "${ask}" → nothing proposed`;
+      return `asked "${ask}" → ${[...groups].map(([label, titles]) => `${label}: ${titles.join('; ')}`).join(' | ')}`;
     });
   } catch {
     // Continuity is a nicety; never fail a run over it.
@@ -139,7 +155,7 @@ export interface BuildContextOptions {
 export async function buildContext(opts: BuildContextOptions = {}): Promise<AgentContext> {
   const now = new Date();
 
-  const [profile, subjectsRes, tagsRes, openTasks, awaiting, memories, digest, materialCount, insights] = await Promise.all([
+  const [profile, subjectsRes, tagsRes, openTasks, awaiting, memories, digest, materialCount, insights, waitingRows] = await Promise.all([
     prismaBase().profile.findUnique({
       where: { id: RequestContext.userId },
       select: { full_name: true, display_name: true, timezone: true, is_guest: true },
@@ -152,6 +168,14 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Agen
     opts.sessionId ? buildDigest(opts.sessionId, opts.excludeRunId) : Promise.resolve([]),
     tenantDb().subjectMaterial.count().catch(() => 0),
     buildInsights(),
+    opts.sessionId
+      ? tenantDb().adaPendingAction.findMany({
+        where: { ada_session_id: opts.sessionId, status: 'pending' },
+        orderBy: { created_at: 'asc' },
+        take: 30,
+        select: { title: true, detail: true },
+      }).catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   // Fire-and-forget: bumps retrieval counters so a later pass can retire
@@ -184,6 +208,14 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Agen
     study_tags: (tagsRes.tags as any[]).map((t) => ({ id: t.id, label: t.label })),
     open_task_count: openTasks,
     awaiting_confirmation_count: awaiting,
+    // deno-lint-ignore no-explicit-any
+    waiting: (waitingRows as any[]).map((w) => ({
+      title: w.title,
+      // deno-lint-ignore no-explicit-any
+      fields: (Array.isArray(w.detail?.fields) ? w.detail.fields : []).filter((f: any) => f?.to)
+        // deno-lint-ignore no-explicit-any
+        .map((f: any) => `${f.label}: ${f.to}`).join(', '),
+    })),
     memories,
     insights,
     digest,
@@ -237,16 +269,20 @@ export function renderContext(ctx: AgentContext): string {
       : 'No active semester.',
   ];
 
+  // Subjects and tags used to be listed in the same "name → id" shape, and a
+  // model put the "R13 Labs" tag's id in `subject_id` five times running. Tags
+  // are now given by name only — `category` takes the name — so no tag id is
+  // anywhere to be copied into the wrong field.
   if (ctx.subjects.length) {
-    lines.push('', 'Subjects (use these ids verbatim — never invent one):');
+    lines.push('', "Subjects — courses, for a task's optional `subject_id`, only when the user names one:");
     for (const s of ctx.subjects) lines.push(`- ${s.name} → ${s.id}`);
   } else {
-    lines.push('', 'The user has no subjects yet. Most task work needs one first.');
+    lines.push('', 'The user has no subjects yet. A task does not need one.');
   }
 
   if (ctx.study_tags.length) {
-    lines.push('', 'Study tags (use the id as a task `category`):');
-    for (const t of ctx.study_tags) lines.push(`- ${t.label} → ${t.id}`);
+    lines.push('', "Study tags — labels, for a task's `category` by name (a tag is not a subject):");
+    lines.push(`- ${ctx.study_tags.map((t) => t.label).join(', ')}`);
   }
 
   // Memories carry their own ids inline (see renderMemories) so `forget` can name
@@ -265,11 +301,17 @@ export function renderContext(ctx: AgentContext): string {
   // Kept last so nothing above it is invalidated when one of these ticks.
   lines.push('', `Open (pending) tasks: ${ctx.open_task_count}.`);
 
-  if (ctx.awaiting_confirmation_count > 0) {
+  if (ctx.waiting.length) {
     lines.push(
-      `NOTE: ${ctx.awaiting_confirmation_count} earlier proposal(s) are still awaiting the user's ` +
-        'confirmation. Do not re-propose the same change.',
+      '',
+      `Already proposed in this chat and waiting for the user's decision (${ctx.waiting.length}). ` +
+        'Do not propose these again. To change one, propose it again with the new details — it replaces the waiting card:',
     );
+    for (const w of ctx.waiting) lines.push(`- ${w.title}${w.fields ? ` (${w.fields})` : ''}`);
+  }
+  const elsewhere = ctx.awaiting_confirmation_count - ctx.waiting.length;
+  if (elsewhere > 0) {
+    lines.push(`NOTE: ${elsewhere} more proposal(s) are waiting in the user's other chats.`);
   }
 
   if (ctx.readable_file_count > 0) {
@@ -280,7 +322,7 @@ export function renderContext(ctx: AgentContext): string {
   }
 
   // Outcomes of earlier turns, which survive after the raw messages that
-  // produced them have scrolled out of the 16-message replay window.
+  // produced them have scrolled out of the replay window (ADA_HISTORY_LIMIT).
   if (ctx.digest.length) {
     lines.push('', 'Earlier in this conversation:');
     for (const d of ctx.digest) lines.push(`- ${d}`);
