@@ -26,8 +26,72 @@ export interface CreatePendingInput {
   preview: ActionPreview;
 }
 
+/**
+ * What makes two proposals "the same change": the same tool, the same card
+ * title once case, quotes and spacing are ignored, and — for anything with a
+ * day — the same day. Exported for tests.
+ */
+// deno-lint-ignore no-explicit-any
+export function proposalKey(toolName: string, title: string, args: any): string {
+  const norm = title.toLowerCase().replace(/[“”"'‘’`]/g, '').replace(/\s+/g, ' ').trim();
+  const day = typeof args?.date === 'string' ? args.date : typeof args?.to_date === 'string' ? args.to_date : '';
+  return `${toolName}|${norm}|${day}`;
+}
+
+/**
+ * Whether two arg objects describe the same change. Keys are sorted first:
+ * Postgres stores jsonb with its own key order, so a plain JSON.stringify of
+ * the saved row and of fresh args differs even when nothing else does.
+ */
+// deno-lint-ignore no-explicit-any
+function sameArgs(a: any, b: any): boolean {
+  return stableJson(a ?? {}) === stableJson(b ?? {});
+}
+
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v).sort().filter((k) => (v as Record<string, unknown>)[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v);
+}
+
+/**
+ * Queue a proposal — unless the same change is already waiting in this chat.
+ *
+ * Ada could not see its own undecided proposals, so every "yes" or "where is
+ * it?" proposed the same tasks again: nine cards for five tasks by the end of
+ * one conversation (26 Oct 2026). Now an identical proposal reuses the waiting
+ * one (`reused`), and one with the same title and day but different details —
+ * the user correcting a tag, say — replaces it (`superseded` on the old row).
+ */
 export async function createPendingAction(input: CreatePendingInput) {
-  return await prismaBase().adaPendingAction.create({
+  const key = proposalKey(input.tool.name, input.preview.title, input.args);
+  const waiting = await tenantDb().adaPendingAction.findMany({
+    where: { ada_session_id: input.sessionId, tool_name: input.tool.name, status: 'pending' },
+    orderBy: { created_at: 'desc' },
+  });
+  // deno-lint-ignore no-explicit-any
+  const same = (waiting as any[]).find((w) => proposalKey(w.tool_name, w.title, w.args) === key);
+  if (same && sameArgs(same.args, input.args)) {
+    return { ...same, reused: true as const };
+  }
+  if (same) {
+    await prismaBase().adaPendingAction.update({
+      where: { id: same.id },
+      data: { status: 'superseded', decided_at: new Date() },
+    });
+    // The old run may now have nothing left to decide; it is finished, not
+    // stuck waiting for a decision that can no longer come.
+    if (same.run_id && (await runIsUnblocked(same.run_id))) {
+      await prismaBase().adaAgentRun.updateMany({
+        where: { id: same.run_id, status: 'awaiting_confirmation' },
+        data: { status: 'completed', updated_at: new Date() },
+      });
+    }
+  }
+  const created = await prismaBase().adaPendingAction.create({
     data: {
       user_id: RequestContext.userId,
       ada_session_id: input.sessionId,
@@ -49,6 +113,7 @@ export async function createPendingAction(input: CreatePendingInput) {
       status: 'pending',
     },
   });
+  return { ...created, reused: false as const, replaced: same?.id ?? null };
 }
 
 /** Wire shape for the confirmation card. */
@@ -182,9 +247,15 @@ export async function rejectAction(id: string): Promise<DecisionResult> {
  * Order matters and sequencing is deliberate: a plan often creates a subject and
  * then tasks against it, so running these concurrently would race.
  */
-export async function decideAll(conversationId: string, approve: boolean) {
+export async function decideAll(conversationId: string, approve: boolean, actionIds?: string[]) {
+  // `actionIds`: the cards the app is actually showing. Without it this decided
+  // every pending row in the chat — including ones the user never saw.
   const rows = await tenantDb().adaPendingAction.findMany({
-    where: { status: 'pending', ada_session_id: conversationId },
+    where: {
+      status: 'pending',
+      ada_session_id: conversationId,
+      ...(actionIds ? { id: { in: actionIds } } : {}),
+    },
     orderBy: { created_at: 'asc' },
   });
 

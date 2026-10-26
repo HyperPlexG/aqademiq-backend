@@ -78,12 +78,22 @@ adaRouter.post('/actions/:id/approve', async (c) =>
 adaRouter.post('/actions/:id/reject', async (c) =>
   c.json(await adaService.reject(c.req.param('id'))));
 
-// POST /ada/conversations/:id/actions/decide  { approve: boolean }
+// POST /ada/conversations/:id/actions/decide  { approve: boolean, action_ids?: string[] }
+// `action_ids` limits the decision to the cards the app is showing; without it
+// (older app versions) every pending proposal in the chat is decided.
 adaRouter.post('/conversations/:id/actions/decide', async (c) => {
   const b = await jsonBody(c.req);
   const approve = b.approve;
   if (typeof approve !== 'boolean') throw new HttpError(422, 'approve must be a boolean');
-  return c.json(await adaService.decideAllActions(c.req.param('id'), approve));
+  const raw = (b as Record<string, unknown>).action_ids;
+  let actionIds: string[] | undefined;
+  if (raw !== undefined && raw !== null) {
+    if (!Array.isArray(raw) || raw.length > 200 || !raw.every((x) => typeof x === 'string' && /^[0-9a-f-]{36}$/i.test(x))) {
+      throw new HttpError(422, 'action_ids must be an array of action ids');
+    }
+    actionIds = raw as string[];
+  }
+  return c.json(await adaService.decideAllActions(c.req.param('id'), approve, actionIds));
 });
 
 // POST /ada/conversations/:id/archive
