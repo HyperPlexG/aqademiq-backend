@@ -189,26 +189,33 @@ const geminiModel = () => env('GEMINI_MODEL') ?? 'gemini-flash-latest';
 const vertexGeminiRegion = () => env('VERTEX_GEMINI_REGION') ?? 'global';
 
 /**
- * Model for Gemini on Vertex.
+ * Model for Gemini on Vertex — the middle tier, which answers most messages.
  *
- * 2.5 Flash by default. It is the cheapest model that is still reliable at
- * multi-step tool calling, which is all Ada does: at $0.30/$2.50 per 1M it costs
- * ~$0.008 per Ada message against ~$0.017 for 3.x Flash, for a task that is
- * structured tool selection rather than hard reasoning. Flash-Lite is a quarter
- * of the price again but gets shaky across a 3-call tool loop, and a wrong tool
- * call costs an extra turn — which is not a saving.
+ * 3.8 Flash by default. Ada ran on 2.5 Flash until Google retired it on Vertex
+ * (20 Oct 2026); 3.8 Flash is the newest stable Flash, supported until at least
+ * Sep 2027. Flash-Lite is cheaper but gets shaky across a 3-call tool loop, and
+ * a wrong tool call costs an extra turn, which is not a saving. Gemini 3 hangs a
+ * `thoughtSignature` on its tool calls, which buildGeminiBody sends back.
  */
-const vertexGeminiModel = () => env('VERTEX_GEMINI_MODEL') ?? 'gemini-2.5-flash';
+const vertexGeminiModel = () => env('VERTEX_GEMINI_MODEL') ?? 'gemini-3.8-flash';
 const vertexGeminiModels = () => modelsFor('VERTEX_GEMINI_MODELS', vertexGeminiModel);
 
 /**
  * The hard tier's models (agent/tiers.ts). Both run on the same Vertex project
- * as the default model; set the id to whatever Model Garden lists for the
- * project. Claude on Vertex is a Marketplace product: GCP promotional credits
- * commonly do not cover it (see _shared/claude.ts).
+ * as the default model.
+ *
+ * - Gemini: 3.1 Pro, the only Pro newer than the retired 2.5 Pro. It is a
+ *   preview (it can change at short notice) and served from `global` only,
+ *   which is VERTEX_GEMINI_REGION's default.
+ * - Claude: Haiku 5.5, at $0.10/$0.50 per 1M tokens the cheapest model in the
+ *   pool, against Gemini 3.1 Pro's $2/$12. Set VERTEX_CLAUDE_MODEL to
+ *   `claude-sonnet-5-5` ($2/$10) or `claude-opus-5-5` ($4/$20) for a stronger
+ *   one. Vertex takes the plain id, no date suffix. Each Claude model needs its
+ *   own Vertex quota (base model `anthropic-claude-haiku` etc.), which starts
+ *   at zero; GCP promotional credits commonly do not cover Claude.
  */
-const vertexGeminiProModel = () => env('VERTEX_GEMINI_PRO_MODEL') ?? 'gemini-2.5-pro';
-const vertexClaudeModel = () => env('VERTEX_CLAUDE_MODEL') ?? 'claude-sonnet-5-5';
+const vertexGeminiProModel = () => env('VERTEX_GEMINI_PRO_MODEL') ?? 'gemini-3.1-pro-preview';
+const vertexClaudeModel = () => env('VERTEX_CLAUDE_MODEL') ?? 'claude-haiku-5-5';
 const cerebrasModel = () => env('CEREBRAS_MODEL') ?? 'gpt-oss-120b';
 /**
  * Chosen against the live account's real limits, not the docs.
@@ -255,15 +262,58 @@ const groqModels = () => modelsFor('GROQ_MODELS', groqModel);
  * can take long enough to trip the agent's wall-clock deadline, which throws
  * away every call the run has already paid for. Setting this to 0 turns it off.
  *
- * Unset sends no thinkingConfig at all, which is the provider default and the
- * previous behaviour — deliberate, because not every Gemini model accepts a
- * budget of 0 and a rejected generationConfig fails the whole request.
+ * Unset, Gemini 3 models get a thinking level instead (geminiThinkingLevel) and
+ * older ones the provider default. Set, it overrides the level for every Gemini
+ * model — not every model accepts a budget of 0, and a rejected
+ * generationConfig fails the whole request.
  */
 function thinkingBudget(): number | undefined {
   const raw = env('ADA_THINKING_BUDGET');
   if (raw === undefined || raw.trim() === '') return undefined;
   const n = Number(raw);
   return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
+/**
+ * Room for Gemini's thinking plus its reply. Thinking counts toward
+ * maxOutputTokens, and Ada asks for ~2,400: measured on 27 Oct 2026, Gemini 3
+ * at its default (high) thinking spent 2,303 of them thinking on a weekly plan
+ * and stopped after proposing 1 of 10 tasks. A ceiling, not a target.
+ */
+export const GEMINI_MIN_OUTPUT_TOKENS = 8192;
+
+const GEMINI_THINKING_LEVELS = ['low', 'medium', 'high'];
+
+/**
+ * How hard Gemini 3 thinks, from GEMINI_THINKING_LEVEL. `low` by default. On
+ * the same weekly plan (27 Oct 2026), `low` proposed every task in ~11-17s on
+ * 3.1 Pro and usually ~10-13s on 3.8 Flash; `medium` took 27-59s, past the
+ * 28s per-call ceiling. 3.8 Flash rejects `minimal`.
+ */
+function geminiThinkingLevel(): string {
+  const v = (env('GEMINI_THINKING_LEVEL') ?? '').trim().toLowerCase();
+  return GEMINI_THINKING_LEVELS.includes(v) ? v : 'low';
+}
+
+/**
+ * generationConfig for one Gemini call. Exported for tests.
+ *
+ * ADA_THINKING_BUDGET, when set, wins: it is an explicit operator choice, and
+ * sending a budget and a level together is a 400. Otherwise Gemini 3 models get
+ * a thinking level. Older models and `-latest` aliases get neither, because a
+ * model that predates levels rejects the field.
+ */
+export function geminiGenerationConfig(model: string, maxTokens?: number): Record<string, unknown> {
+  const budget = thinkingBudget();
+  const thinkingConfig = budget !== undefined
+    ? { thinkingBudget: budget }
+    : /^gemini-3/.test(model)
+    ? { thinkingLevel: geminiThinkingLevel() }
+    : undefined;
+  return {
+    maxOutputTokens: Math.max(maxTokens ?? 0, GEMINI_MIN_OUTPUT_TOKENS),
+    ...(thinkingConfig ? { thinkingConfig } : {}),
+  };
 }
 
 // ---- cooldown tracking (per key) ----
@@ -638,7 +688,7 @@ const groqChat = (key: string, model: string, p: AiParams) =>
  * miserable class of bug to chase: it would only show up once quota ran out.
  */
 // deno-lint-ignore no-explicit-any
-function buildGeminiBody(p: AiParams): any {
+function buildGeminiBody(p: AiParams, model: string): any {
   // Map Anthropic tool_use ids → names so tool_results become functionResponses.
   const idToName = new Map<string, string>();
   for (const m of p.messages) {
@@ -707,15 +757,11 @@ function buildGeminiBody(p: AiParams): any {
     }
   }
 
-  const budget = thinkingBudget();
   // deno-lint-ignore no-explicit-any
   const body: any = {
     systemInstruction: { parts: [{ text: p.system }] },
     contents,
-    generationConfig: {
-      maxOutputTokens: p.maxTokens ?? 2048,
-      ...(budget === undefined ? {} : { thinkingConfig: { thinkingBudget: budget } }),
-    },
+    generationConfig: geminiGenerationConfig(model, p.maxTokens),
   };
   if (p.tools?.length) {
     body.tools = [{ functionDeclarations: p.tools.map(geminiFunctionDeclaration) }];
@@ -732,7 +778,7 @@ async function geminiChat(key: string, model: string, p: AiParams): Promise<AiRe
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-    body: JSON.stringify(buildGeminiBody(p)),
+    body: JSON.stringify(buildGeminiBody(p, model)),
     signal: callSignal(p),
   });
   return parseGeminiResponse(await readGeminiResponse(res, 'gemini'), model);
@@ -754,7 +800,7 @@ async function vertexGeminiChat(model: string, p: AiParams): Promise<AiResult> {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${await gcpAccessToken()}` },
-    body: JSON.stringify(buildGeminiBody(p)),
+    body: JSON.stringify(buildGeminiBody(p, model)),
     signal: callSignal(p),
   });
   return parseGeminiResponse(await readGeminiResponse(res, 'vertex-gemini'), model);
@@ -774,30 +820,93 @@ const GEMINI_FAILED_FINISH = new Set([
 /**
  * Claude on Vertex, for the hard tier.
  *
- * Already Anthropic-shaped, so no translation beyond dropping what another
- * provider left in the transcript: Gemini's `gemini_thought` blocks and the
- * `thoughtSignature` it hangs on tool calls are rejected by the Messages API.
+ * Written for Claude Haiku 5.5 / Sonnet 5.5 / Opus 5.5, which differ from older
+ * Claude in ways that fail quietly rather than with an error:
+ *
+ * - Thinking is always on, and it counts toward `max_tokens`. Ada asks for
+ *   ~2,400 tokens, which a long think can use up entirely, leaving a reply with
+ *   nothing in it. The request reserves room for both; `effort` is what decides
+ *   how much it thinks (VERTEX_CLAUDE_EFFORT).
+ * - Forcing a tool (`tool_choice` `tool`/`any`) is a 400 on Sonnet/Opus 5.5,
+ *   and on Haiku 5.5 it skips thinking. A caller that forces one gets `auto`
+ *   plus an instruction, and a reply that skips the tool counts as a failure.
+ * - A refusal is an HTTP 200 with nothing usable in it.
+ *
+ * Every reply Ada could not use throws, so the pool moves to the next model
+ * instead of the run ending in silence.
+ *
+ * Thinking blocks are dropped, not replayed. The API accepts a transcript
+ * without them, and replaying them is a liability here: the runtime adds notes
+ * to earlier turns (the finish gate, the escalation retry), and on newer
+ * accounts a replayed block after any edit to an earlier message is a 400.
+ * Gemini's `gemini_thought` blocks and `thoughtSignature`s are dropped too
+ * (anthropicMessages); the Messages API rejects them.
  */
 async function vertexClaudeChat(model: string, p: AiParams): Promise<AiResult> {
   // deno-lint-ignore no-explicit-any
   let json: any;
   try {
-    json = await vertexMessages({
-      model,
-      max_tokens: p.maxTokens ?? 2048,
-      system: p.system,
-      messages: anthropicMessages(p.messages),
-      ...(p.tools?.length ? { tools: p.tools } : {}),
-      ...(p.toolChoice ? { tool_choice: p.toolChoice } : {}),
-      signal: callSignal(p),
-    });
+    json = await vertexMessages({ model, ...claudeRequest(p), signal: callSignal(p) });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (/\((429|529)\)/.test(message)) throw new QuotaError(`vertex-claude ${message.slice(0, 300)}`, DEFAULT_RATE_LIMIT_COOLDOWN_S);
     throw e;
   }
+  return claudeResult(json, model, p.toolChoice?.name);
+}
+
+/**
+ * Room for thinking plus the reply. A ceiling, not a target: the model stops
+ * when it is done, and effort, not this number, sets how long it thinks.
+ */
+export const CLAUDE_MIN_MAX_TOKENS = 16000;
+
+const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/**
+ * How hard Claude thinks, from VERTEX_CLAUDE_EFFORT. `medium` by default: the
+ * recommended starting point for multi-step tool use, and the level that keeps
+ * a hard-tier turn inside Ada's run deadline.
+ */
+function claudeEffort(): string {
+  const v = (env('VERTEX_CLAUDE_EFFORT') ?? '').trim().toLowerCase();
+  return CLAUDE_EFFORTS.includes(v) ? v : 'medium';
+}
+
+/** The Messages request body for Claude on Vertex (model goes in the URL). Exported for tests. */
+export function claudeRequest(p: AiParams) {
+  const forced = p.toolChoice?.name;
+  return {
+    max_tokens: Math.max(p.maxTokens ?? 0, CLAUDE_MIN_MAX_TOKENS),
+    system: forced ? `${p.system}\n\nAnswer by calling the \`${forced}\` tool.` : p.system,
+    messages: anthropicMessages(p.messages),
+    output_config: { effort: claudeEffort() },
+    ...(p.tools?.length ? { tools: p.tools, tool_choice: { type: 'auto' } } : {}),
+  };
+}
+
+/**
+ * A Claude response as Ada reads it, or an error so the pool tries the next
+ * model. `forcedTool` is the tool the caller wanted forced. Exported for tests.
+ */
+// deno-lint-ignore no-explicit-any
+export function claudeResult(json: any, model: string, forcedTool?: string): AiResult {
+  const stop = json?.stop_reason;
+  if (stop === 'refusal') {
+    throw new Error(`vertex-claude ${model} refused (${json?.stop_details?.category ?? 'no category'})`);
+  }
+  if (stop === 'max_tokens') {
+    // A cut-off reply, or a tool call with half its input, is worse than none.
+    throw new Error(`vertex-claude ${model} hit max_tokens`);
+  }
   // deno-lint-ignore no-explicit-any
-  const content = ((json.content as any[]) ?? []).filter((b) => b.type === 'text' || b.type === 'tool_use');
+  const content = ((json?.content as any[]) ?? []).filter((b) =>
+    (b.type === 'text' && typeof b.text === 'string' && b.text.trim() !== '') || b.type === 'tool_use'
+  );
+  if (!content.length) throw new Error(`vertex-claude ${model} returned nothing usable (stop_reason ${stop})`);
+  if (forcedTool && !content.some((b) => b.type === 'tool_use' && b.name === forcedTool)) {
+    throw new Error(`vertex-claude ${model} did not call ${forcedTool}`);
+  }
   return {
     content,
     stop_reason: content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn',

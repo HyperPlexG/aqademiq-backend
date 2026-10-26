@@ -123,13 +123,14 @@ Deno.test('Vertex contributes one entry per model, not per key', () => {
   }
 });
 
-Deno.test('the default Vertex model is the cheap tool-capable one', () => {
+// 2.5 Flash, the old default, was retired on Vertex on 20 Oct 2026.
+Deno.test('the default Vertex model is a current stable Flash', () => {
   reset();
   setVertexEnv();
   try {
     const vertex = orderedCandidates().filter((c) => c.provider === 'vertex-gemini');
     assertEquals(vertex.length, 1);
-    assertEquals(vertex[0].model, 'gemini-2.5-flash');
+    assertEquals(vertex[0].model, 'gemini-3.8-flash');
   } finally {
     reset();
   }

@@ -9,7 +9,8 @@
 //   GCP_SA_EMAIL         — service account email (roles/aiplatform.user)
 //   GCP_SA_PRIVATE_KEY   — the SA's private_key field (PKCS8 PEM); literal
 //                          "\n" escapes are normalized
-//   VERTEX_REGION        — e.g. us-east5 (default) or "global"
+//   VERTEX_REGION        — "global" (default; Google routes to wherever the
+//                          model is served) or a region such as us-east5
 //   CLAUDE_OPUS_MODEL / CLAUDE_HAIKU_MODEL — Vertex model ids incl. @version
 
 import { SignJWT, importPKCS8 } from 'npm:jose@5';
@@ -136,7 +137,9 @@ async function accessToken(): Promise<string> {
 function modelUrl(model: string, stream: boolean): string {
   const project = Deno.env.get('GCP_PROJECT_ID');
   if (!project) throw new Error('Vertex is not configured (GCP_PROJECT_ID)');
-  const region = Deno.env.get('VERTEX_REGION') ?? 'us-east5';
+  // `global` by default: current Claude models are served there, while a
+  // specific region invites "model not found in this region".
+  const region = Deno.env.get('VERTEX_REGION') ?? 'global';
   const host = region === 'global' ? 'aiplatform.googleapis.com' : `${region}-aiplatform.googleapis.com`;
   const verb = stream ? 'streamRawPredict' : 'rawPredict';
   return `https://${host}/v1/projects/${project}/locations/${region}/publishers/anthropic/models/${model}:${verb}`;

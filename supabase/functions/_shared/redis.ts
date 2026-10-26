@@ -11,27 +11,64 @@ const REST_URL = env('UPSTASH_REDIS_REST_URL');
 const REST_TOKEN = env('UPSTASH_REDIS_REST_TOKEN');
 export const redisEnabled = Boolean(REST_URL && REST_TOKEN);
 
-const OP_TIMEOUT_MS = 200;
+/**
+ * Per-call ceiling, from REDIS_TIMEOUT_MS; 1s by default.
+ *
+ * It was 200ms. That leaves no room for a fresh isolate's DNS + TCP + TLS
+ * before the command, let alone an Upstash database in another region than
+ * the API (Mumbai). On 26 Oct 2026 every Redis call in the day's logs failed
+ * and nothing said why — see lastRedisFailure.
+ */
+const OP_TIMEOUT_MS = (() => {
+  const n = Number(env('REDIS_TIMEOUT_MS'));
+  return Number.isFinite(n) && n > 0 ? n : 1000;
+})();
+
+let lastFailure = '';
+
+/**
+ * Why the most recent Redis call failed: a timeout, an HTTP status from
+ * Upstash (401 = wrong token, 404 = no such database), or a network error.
+ * Empty once a call succeeds. Callers put it in their "unreachable" log line.
+ */
+export function lastRedisFailure(): string {
+  return lastFailure;
+}
+
+/** POST to Upstash and return the parsed body, or null (with lastFailure set). */
+async function send(url: string, body: unknown): Promise<unknown | null> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), OP_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${REST_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 120);
+      lastFailure = `HTTP ${res.status}${detail ? `: ${detail}` : ''}`;
+      return null;
+    }
+    const json = await res.json();
+    lastFailure = '';
+    return json;
+  } catch (e) {
+    lastFailure = ctrl.signal.aborted
+      ? `timed out after ${OP_TIMEOUT_MS}ms`
+      : `network error: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`;
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
 
 /** Run one Redis command via the Upstash REST API. Returns null on any failure. */
 async function cmd(args: (string | number)[]): Promise<unknown | null> {
   if (!redisEnabled) return null;
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), OP_TIMEOUT_MS);
-    const res = await fetch(REST_URL!, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${REST_TOKEN}`, 'content-type': 'application/json' },
-      body: JSON.stringify(args),
-      signal: ctrl.signal,
-    });
-    clearTimeout(t);
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json.result ?? null;
-  } catch {
-    return null;
-  }
+  const json = await send(REST_URL!, args);
+  return json && typeof json === 'object' && 'result' in json ? (json as { result: unknown }).result ?? null : null;
 }
 
 /**
@@ -45,25 +82,11 @@ async function cmd(args: (string | number)[]): Promise<unknown | null> {
  */
 async function pipeline(cmds: (string | number)[][]): Promise<(unknown | null)[] | null> {
   if (!redisEnabled || cmds.length === 0) return null;
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), OP_TIMEOUT_MS);
-    const res = await fetch(`${REST_URL!.replace(/\/+$/, '')}/pipeline`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${REST_TOKEN}`, 'content-type': 'application/json' },
-      body: JSON.stringify(cmds),
-      signal: ctrl.signal,
-    });
-    clearTimeout(t);
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (!Array.isArray(json)) return null;
-    return json.map((r) =>
-      r && typeof r === 'object' && 'result' in r ? (r as { result: unknown }).result : null
-    );
-  } catch {
-    return null;
-  }
+  const json = await send(`${REST_URL!.replace(/\/+$/, '')}/pipeline`, cmds);
+  if (!Array.isArray(json)) return null;
+  return json.map((r) =>
+    r && typeof r === 'object' && 'result' in r ? (r as { result: unknown }).result : null
+  );
 }
 
 /** Generic cache read. Returns null if disabled/missing/error. */
@@ -210,7 +233,7 @@ export function rateLimit() {
     if (counts === null) {
       // Configured but not answering — distinct from "never configured", and the
       // one that tends to happen under exactly the load limits exist for.
-      console.warn(`[ratelimit] Redis unreachable — allowing ${c.req.method} ${path} unlimited`);
+      console.warn(`[ratelimit] Redis unreachable (${lastRedisFailure()}) — allowing ${c.req.method} ${path} unlimited`);
       return next();
     }
 
