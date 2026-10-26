@@ -56,6 +56,11 @@ readable NestJS reference, still built and tested in CI. Port behaviour *from*
   `ADA_MAX_TURNS`/`ADA_MAX_LLM_CALLS` (4), `ADA_MAX_RESUME_TURNS` (2),
   `ADA_HISTORY_LIMIT` (16), `ADA_DAILY_CALL_CAP` (200/user/UTC-day, 0 = off),
   `GEMINI_MODELS`, `ADA_THINKING_BUDGET` (unset = provider default; 0 = no thinking).
+- **Upstash Redis fails open** (`_shared/redis.ts`): rate limits, idempotency and
+  the hard-tier spend cap all switch off when it cannot be reached. Each call
+  gets `REDIS_TIMEOUT_MS` (1,000; it was 200, too little for a fresh isolate's
+  TLS handshake), and every "unreachable" log line carries the reason
+  (`lastRedisFailure()`: timeout, `HTTP 401` wrong token, `HTTP 404`, network).
 - Storage moved GCS → **Supabase Storage** (private `materials` bucket,
   `_shared/storage.ts`); the `GCS_*` names in older docs are stale.
 
@@ -215,13 +220,22 @@ tier, model, calls, ms, proposed, rejected and escalated.
 |---|---|---|
 | `ADA_HARD_MODEL` | `gemini` | `gemini`, `claude`, or `split` (half the users each, stable per user — for comparing the two) |
 | `VERTEX_GEMINI_PRO_MODEL` | `gemini-3.1-pro-preview` | hard-tier Gemini on Vertex (a preview; `global` only) |
-| `VERTEX_CLAUDE_MODEL` | `claude-opus-5-5` | hard-tier Claude on Vertex; `claude-sonnet-5-5` is about half the price. Plain id, no date suffix. Enable it in Model Garden first (Marketplace-billed; credits may not cover it). |
+| `VERTEX_CLAUDE_MODEL` | `claude-haiku-5-5` | hard-tier Claude on Vertex ($0.10/$0.50 per 1M; `claude-sonnet-5-5` $2/$10, `claude-opus-5-5` $4/$20). Plain id, no date suffix. Each base model needs its own Vertex quota (`anthropic-claude-haiku` …), which starts at zero; a 429 benches it and the run falls back. |
 | `VERTEX_CLAUDE_EFFORT` | `medium` | how hard Claude thinks: `low`, `medium`, `high`, `xhigh`, `max` |
 | `VERTEX_REGION` | `global` | region for Claude on Vertex (Gemini uses `VERTEX_GEMINI_REGION`) |
+| `GEMINI_THINKING_LEVEL` | `low` | Gemini 3 thinking level (`low`, `medium`, `high`); `ADA_THINKING_BUDGET`, if set, overrides it |
 | `ADA_HARD_DAILY_CAP` | `40` | hard-tier runs per user per UTC day before falling back to middle (Redis; fails open) |
 
-Claude Opus 5.5 / Sonnet 5.5 always think, thinking counts toward
-`max_tokens`, and forcing a tool is a 400 — so `vertexClaudeChat` reserves
+**Thinking counts toward the output limit on every current model.** Ada asks
+for ~2,400 tokens; on 27 Oct 2026 Gemini 3 at its default (high) thinking spent
+2,303 of them thinking on a weekly plan and proposed 1 task of 10. So Gemini
+calls get at least `GEMINI_MIN_OUTPUT_TOKENS` (8,192) and, on Gemini 3 models,
+`thinkingLevel: low` — measured complete in ~11–17s on 3.1 Pro and usually
+~10–13s on 3.8 Flash, where `medium` took 27–59s against the 28s per-call
+ceiling. `-latest` aliases and older models get no level (they reject it).
+
+Claude Haiku / Sonnet / Opus 5.5 always think, thinking counts toward
+`max_tokens`, and forcing a tool is a 400 on Sonnet/Opus — so `vertexClaudeChat` reserves
 `CLAUDE_MIN_MAX_TOKENS` (16,000), turns a forced tool into `auto` plus an
 instruction, and throws on a refusal, a cut-off reply, an empty reply or a
 skipped forced tool, which moves the pool to the next model. It drops thinking

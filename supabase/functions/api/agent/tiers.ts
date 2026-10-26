@@ -18,7 +18,7 @@
 // retry, never a false "I've proposed…".
 
 import { env } from '../../_shared/env.ts';
-import { cacheIncrBy } from '../../_shared/redis.ts';
+import { cacheIncrBy, lastRedisFailure } from '../../_shared/redis.ts';
 
 export type Tier = 'easy' | 'middle' | 'hard';
 
@@ -131,7 +131,7 @@ export async function claimHardRun(userId: string): Promise<boolean> {
   const day = new Date().toISOString().slice(0, 10);
   const used = await cacheIncrBy(`ada:hard:${userId}:${day}`, 1, 26 * 3600);
   if (used === null) {
-    console.warn('[ada-tier] hard-tier cap not enforced: Redis unreachable');
+    console.warn(`[ada-tier] hard-tier cap not enforced: Redis unreachable (${lastRedisFailure() || 'not configured'})`);
     return true;
   }
   return used <= cap;
