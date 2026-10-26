@@ -14,10 +14,10 @@ export const redisEnabled = Boolean(REST_URL && REST_TOKEN);
 /**
  * Per-call ceiling, from REDIS_TIMEOUT_MS; 1s by default.
  *
- * It was 200ms. That leaves no room for a fresh isolate's DNS + TCP + TLS
- * before the command, let alone an Upstash database in another region than
- * the API (Mumbai). On 26 Oct 2026 every Redis call in the day's logs failed
- * and nothing said why — see lastRedisFailure.
+ * It was 200ms, which leaves little room for a fresh isolate's DNS + TCP + TLS
+ * before the command. Over the day to 26 Oct 2026, 19 of 1,860 requests (~1%)
+ * ran without rate limiting or idempotency because a call missed it, and
+ * nothing said why; lastRedisFailure now does.
  */
 const OP_TIMEOUT_MS = (() => {
   const n = Number(env('REDIS_TIMEOUT_MS'));

@@ -1,8 +1,8 @@
 // Redis failures say why (_shared/redis.ts).
 //
-// On 26 Oct 2026 every Redis call in the day's logs was "unreachable", so rate
-// limits, idempotency and the hard-tier spend cap were all off, and nothing
-// recorded whether the cause was a timeout, a wrong token or a missing database.
+// Over the day to 26 Oct 2026, ~1% of requests logged Redis as "unreachable"
+// (and so ran without rate limiting or idempotency), and nothing recorded
+// whether the cause was a timeout, a wrong token or a missing database.
 
 import { assertEquals } from 'jsr:@std/assert@1';
 
