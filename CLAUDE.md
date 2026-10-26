@@ -55,11 +55,13 @@ readable NestJS reference, still built and tested in CI. Port behaviour *from*
   [docs/AI_QUOTA_REPORT.md](docs/AI_QUOTA_REPORT.md). Edge knobs:
   `ADA_MAX_TURNS`/`ADA_MAX_LLM_CALLS` (4), `ADA_MAX_RESUME_TURNS` (2),
   `ADA_HISTORY_LIMIT` (16), `ADA_DAILY_CALL_CAP` (200/user/UTC-day, 0 = off),
-  `GEMINI_MODELS`, `ADA_THINKING_BUDGET` (unset = provider default; 0 = no thinking).
+  `GEMINI_MODELS`, `ADA_THINKING_BUDGET` (unset = Gemini 3 gets
+  `GEMINI_THINKING_LEVEL`, older models the provider default; set = that budget
+  for every Gemini model, 0 = no thinking where the model allows it).
 - **Upstash Redis fails open** (`_shared/redis.ts`): rate limits, idempotency and
-  the hard-tier spend cap all switch off when it cannot be reached. Each call
-  gets `REDIS_TIMEOUT_MS` (1,000; it was 200, too little for a fresh isolate's
-  TLS handshake), and every "unreachable" log line carries the reason
+  the hard-tier spend cap switch off for any request whose Redis call fails.
+  Each call gets `REDIS_TIMEOUT_MS` (1,000; at 200, ~1% of requests missed it,
+  likely a fresh isolate's TLS handshake), and every "unreachable" log line carries the reason
   (`lastRedisFailure()`: timeout, `HTTP 401` wrong token, `HTTP 404`, network).
 - Storage moved GCS → **Supabase Storage** (private `materials` bucket,
   `_shared/storage.ts`); the `GCS_*` names in older docs are stale.
