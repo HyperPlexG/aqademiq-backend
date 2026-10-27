@@ -1290,6 +1290,9 @@ Full detail in §8.2. Summary:
 
 Mock both on the client until implemented.
 
+> v2: Calendar import / Reminder import in the app use `POST /v1/integrations/import`
+> and `POST /v1/integrations/import/check` instead — see §17.
+
 ---
 
 ### 12.T Feedback / ratings / telemetry (`FeedbackController`, root) — ✅ (fire-and-forget)
@@ -1619,3 +1622,60 @@ Three things a client must not get wrong:
 
 A day with `has_activity: true` and `mood_index: null` is work with no check-in.
 It is neither an empty day nor a low mood, and it must be drawn as a third state.
+
+---
+
+## 17. Calendar import & Reminder import (v2) — ✅
+
+Settings → Preferences → **Calendar import** / **Reminder import**. The phone
+reads the source itself and sends only the items the student ticked; each one
+becomes an ordinary one-off task. Edge-only (`supabase/functions/api/services/import_plan.ts`
+and `calendar-import.service.ts`), documented in `openapi.edge-overlay.json`.
+
+| `source` | Read by | Platforms |
+|---|---|---|
+| `device_calendar` | EventKit (iOS) / CalendarContract `Instances` (Android) — iCloud, Google, Outlook, Samsung… | iOS, Android |
+| `device_reminders` | EventKit reminders (Apple Reminders) | iOS |
+| `ics` | An `.ics` file or calendar link (webcal / iCal URL), parsed on the device with TZID + RRULE | all |
+| `text` | A pasted list, one reminder per line ("Essay draft fri", "Lab report 30/10 5pm") | all |
+
+### 17.A `POST /v1/integrations/import` → `201`
+
+```jsonc
+{
+  "source": "device_calendar",
+  "category": "<study-tag id or label>",   // optional; omitted = untagged (stored as "general")
+  "items": [                                // 1–200 per request; the app sends 100 at a time
+    { "external_id": "EVT-1@1793174400000", // stable per source (event id @ occurrence start)
+      "title": "CS F211 Lecture",           // trimmed, whitespace collapsed, cut to 255
+      "date": "2026-10-28",                 // the student's own calendar day
+      "start_time": "09:00",                // wall clock, HH:mm — omit when untimed
+      "duration_seconds": 3000,             // optional; rounded to minutes, capped at a day
+      "part_of_day": "morning",             // anytime | morning | afternoon | evening
+      "note": "Location: Room 204" }        // optional, cut to 4000
+  ]
+}
+// → { "status": "imported", "source": "device_calendar", "imported": 1, "skipped": 0,
+//     "results": [ { "external_id": "…", "status": "imported" | "already_imported", "task_id": "…" } ] }
+```
+
+### 17.B `POST /v1/integrations/import/check` → `200`
+
+`{ "source", "external_ids": [≤ 1000] }` → `{ "source", "existing": [...], "removed": [...] }`.
+`existing` = imported and still in the plan (a ticked-off task counts); `removed` =
+imported and since deleted. The review screen locks `existing` and leaves
+`removed` unticked. Ids never imported appear in neither list.
+
+Rules a client must not get wrong:
+
+- **Times are wall-clock, like `/tasks`.** `start_time: "09:00"` is 09:00 on the
+  student's clock. Never convert it to UTC.
+- **Re-importing is safe and never overwrites.** An item whose key
+  (`source:external_id`) already has a live task is skipped and left exactly as
+  it is, so a task the student moved or renamed keeps their edits. A deleted one
+  is created again only if it is sent again.
+- **Nothing is written to `calendar_events`.** Ada's `busyBlocks()` reads that
+  table as busy time on top of tasks, so an import stored in both would be
+  counted twice. An import is a task with `source = 'calendar_import'` and
+  `metadata.import_key = "<source>:<external_id>"`.
+- **The §12.S endpoints are unchanged**, and the app does not call them.

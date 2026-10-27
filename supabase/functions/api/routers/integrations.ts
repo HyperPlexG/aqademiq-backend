@@ -1,6 +1,8 @@
 // §2.12 — /v1/integrations. Port of integrations.controller.ts.
 import { Hono } from 'hono';
 import { integrationsService, type GoogleOauthCallbackDto, type ImportIcsDto } from '../services/integrations.service.ts';
+import { calendarImportService } from '../services/calendar-import.service.ts';
+import { parseCheckRequest, parseImportRequest } from '../services/import_plan.ts';
 import { jsonBody, str } from '../../_shared/validate.ts';
 
 export const integrationsRouter = new Hono();
@@ -28,4 +30,21 @@ integrationsRouter.post('/google/oauth/callback', async (c) => {
     redirect_uri: str(b, 'redirect_uri', false, { max: 2048 }),
   };
   return c.json(await integrationsService.googleOauth(dto), 201);
+});
+
+// v2 — Calendar import / Reminder import (Settings → Preferences).
+// The app reads the student's calendars and reminders on the device, shows
+// them for review, and sends the picked items here; each becomes a task.
+// Re-sending an item that is already in the plan is a no-op, so importing the
+// same calendar again only adds what is new. See services/import_plan.ts.
+integrationsRouter.post('/import', async (c) => {
+  const b = await jsonBody(c.req);
+  return c.json(await calendarImportService.importItems(parseImportRequest(b)), 201);
+});
+
+// Which of these items are already in the plan, and which did the student
+// import and then delete. A read, but POST because the ids travel in the body.
+integrationsRouter.post('/import/check', async (c) => {
+  const b = await jsonBody(c.req);
+  return c.json(await calendarImportService.check(parseCheckRequest(b)));
 });

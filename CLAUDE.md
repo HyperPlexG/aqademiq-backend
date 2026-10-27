@@ -269,3 +269,23 @@ workspace root, run with the new team's Sign in with Apple key).
 - A `conflict` row means the new id already had its own account (someone signed
   in fresh before being moved). Merge those by hand; do not automate it.
 - Tests run the real SQL in PGlite: `api/apple_team_transfer_sql_test.ts`.
+
+## Calendar import & Reminder import (v2)
+
+`POST /v1/integrations/import` and `POST /v1/integrations/import/check`
+(`routers/integrations.ts` → `services/calendar-import.service.ts`, decisions in the pure
+`services/import_plan.ts`, tested by `import_plan_test.ts`). Edge-only, so the spec lives in
+`openapi.edge-overlay.json` (run `npm run openapi:sync` after changing it). Contract §17.
+
+- An import is a plain one-off task with `source = 'calendar_import'` and
+  `metadata.import_key = "<source>:<external_id>"`. It is deliberately NOT written to
+  `calendar_events`: `agent/schedule.ts` `busyBlocks()` reads that table as busy time on top
+  of tasks, so an import stored in both would be counted twice.
+- Re-importing never duplicates and never overwrites: a key with a live task is skipped
+  untouched; a key whose task was deleted (status `cancelled`) is created again only if sent.
+- No migration: the lookup is a raw query on `tasks.metadata->>'import_key'`, scoped to the
+  user and `source = 'calendar_import'`.
+- **The live DB has a CHECK on `tasks.source`** (`tasks_source_check`: manual | ada |
+  calendar_import | material_import) that is in neither `supabase/migrations/` nor
+  `prisma/schema.prisma`. Any other value fails the insert; widen the check in a migration first.
+- The older `/calendar/ics` and `/google/oauth/callback` endpoints are unchanged and unused by the app.
