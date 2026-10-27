@@ -1284,7 +1284,7 @@
       "post": {
         "operationId": "IntegrationsController_importItems",
         "summary": "Turn calendar events or reminders picked on the device into tasks",
-        "description": "v2 Calendar import / Reminder import. The app reads the calendars and reminders on the device, shows them for review, and sends the picked items here; each becomes an ordinary one-off task (source = import). An item already imported as a live task is skipped and left untouched, so importing the same calendar again only adds what is new. An item whose earlier task was deleted is created again. At most 200 items per request; the app sends larger imports in chunks. Nothing is written to calendar_events, which Ada's scheduler would otherwise count as busy time on top of the task.",
+        "description": "v2 Calendar import / Reminder import. The app reads the calendars and reminders on the device, shows them for review, and sends the picked items here; each becomes an ordinary one-off task (source = calendar_import). An item already imported as a live task is skipped and left untouched, so importing the same calendar again only adds what is new. An item whose earlier task was deleted is created again. At most 200 items per request; the app sends larger imports in chunks. Nothing is written to calendar_events, which Ada's scheduler would otherwise count as busy time on top of the task.",
         "requestBody": {
           "required": true,
           "content": {

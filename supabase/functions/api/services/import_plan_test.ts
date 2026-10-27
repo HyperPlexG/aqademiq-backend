@@ -200,7 +200,13 @@ Deno.test('an untimed item has no time, no reminder and the default duration', (
 
 Deno.test('the row records where it came from, so the next import can find it', () => {
   const r = taskRowFor(item(), ctx);
-  assertEquals(r.source, 'import');
+  // One of the values the live tasks_source_check constraint allows; anything
+  // else fails the insert (see IMPORTED_TASK_SOURCE).
+  assertEquals(r.source, 'calendar_import');
+  assertEquals(
+    ['manual', 'ada', 'calendar_import', 'material_import'].includes(r.source),
+    true,
+  );
   assertEquals(r.status, 'pending');
   assertEquals(r.user_id, 'user-1');
   assertEquals(r.task_type, 'tag-1');

@@ -12,7 +12,7 @@
 // agent/schedule.ts `busyBlocks()` treats every calendar_events row as a busy
 // slot, and it already reads tasks. An imported lecture stored in both places
 // would be counted twice, and Ada would see half the free time the student
-// actually has. So an import is just a task with `source = 'import'` and
+// actually has. So an import is just a task with `source = 'calendar_import'` and
 // `metadata.import_key = "<source>:<external_id>"`, which is also what makes a
 // second import of the same calendar skip what is already there.
 
@@ -43,6 +43,18 @@ export const MAX_DURATION_MINS = 24 * 60;
  * appointment as an assignment.
  */
 export const UNTAGGED_CATEGORY = 'general';
+
+/**
+ * `tasks.source` for every imported task — calendar events, reminders and
+ * pasted lines alike (`metadata.import_source` says which).
+ *
+ * The live database constrains this column: `tasks_source_check` allows only
+ * manual | ada | calendar_import | material_import. That constraint is not in
+ * supabase/migrations/ or prisma/schema.prisma, so nothing in the repo shows
+ * it — but any other value fails the whole insert. Do not invent a new one
+ * without a migration that widens the check.
+ */
+export const IMPORTED_TASK_SOURCE = 'calendar_import';
 
 const PARTS_OF_DAY = ['anytime', 'morning', 'afternoon', 'evening'] as const;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -311,7 +323,7 @@ export function taskRowFor(item: ImportItem, ctx: TaskRowContext) {
     planner_section: item.part_of_day,
     status: 'pending',
     priority: 'medium',
-    source: 'import',
+    source: IMPORTED_TASK_SOURCE,
     metadata: {
       import_key: importKey(ctx.source, item.external_id),
       import_source: ctx.source,

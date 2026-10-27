@@ -16,6 +16,7 @@ import {
   classifyExisting,
   type ExistingImportRow,
   importKey,
+  IMPORTED_TASK_SOURCE,
   type ImportRequest,
   planImport,
   taskRowFor,
@@ -55,10 +56,11 @@ async function findImported(keys: string[]): Promise<ExistingImportRow[]> {
     `select id::text as id, status, metadata->>'import_key' as import_key
        from tasks
       where user_id = $1::uuid
-        and source = 'import'
+        and source = $3
         and metadata->>'import_key' in (select jsonb_array_elements_text($2::jsonb))`,
     RequestContext.userId,
     JSON.stringify(keys),
+    IMPORTED_TASK_SOURCE,
   );
 }
 

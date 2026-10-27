@@ -1676,6 +1676,6 @@ Rules a client must not get wrong:
   is created again only if it is sent again.
 - **Nothing is written to `calendar_events`.** Ada's `busyBlocks()` reads that
   table as busy time on top of tasks, so an import stored in both would be
-  counted twice. An import is a task with `source = 'import'` and
+  counted twice. An import is a task with `source = 'calendar_import'` and
   `metadata.import_key = "<source>:<external_id>"`.
 - **The §12.S endpoints are unchanged**, and the app does not call them.
