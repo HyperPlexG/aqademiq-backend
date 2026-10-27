@@ -591,6 +591,67 @@
           }
         }
       }
+    },
+    "/v1/integrations/import": {
+      "post": {
+        "operationId": "IntegrationsController_importItems",
+        "summary": "Turn calendar events or reminders picked on the device into tasks",
+        "description": "v2 Calendar import / Reminder import. The app reads the calendars and reminders on the device, shows them for review, and sends the picked items here; each becomes an ordinary one-off task (source = import). An item already imported as a live task is skipped and left untouched, so importing the same calendar again only adds what is new. An item whose earlier task was deleted is created again. At most 200 items per request; the app sends larger imports in chunks. Nothing is written to calendar_events, which Ada's scheduler would otherwise count as busy time on top of the task.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportItemsRequestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "What was imported and what was already in the plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportItemsResultDto"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field failed validation; the message names it (e.g. items[3].date must be YYYY-MM-DD)."
+          }
+        }
+      }
+    },
+    "/v1/integrations/import/check": {
+      "post": {
+        "operationId": "IntegrationsController_checkImported",
+        "summary": "Which of these items are already in the plan, and which were deleted",
+        "description": "Read-only; POST because the ids travel in the body. The review screen uses it to mark items already in the plan (locked) and items the student imported before and deleted (shown unticked).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckImportRequestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The ids split by state; ids never imported appear in neither list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckImportResultDto"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1084,6 +1145,196 @@
           "elapsed_days": {
             "type": "integer",
             "description": "Days the week has had so far - 4 on a Thursday, 7 once it is over. `shape` is classified against these, not against seven."
+          }
+        }
+      },
+      "ImportItemDto": {
+        "type": "object",
+        "required": [
+          "external_id",
+          "title",
+          "date"
+        ],
+        "properties": {
+          "external_id": {
+            "type": "string",
+            "maxLength": 400,
+            "description": "Stable id from the source, e.g. \"<event id>@<occurrence start ms>\" for a calendar event occurrence."
+          },
+          "title": {
+            "type": "string",
+            "description": "Cut to 255 characters; whitespace collapsed; must not be blank."
+          },
+          "date": {
+            "type": "string",
+            "example": "2026-10-28",
+            "description": "The day the task lands on (YYYY-MM-DD, the student's own calendar day)."
+          },
+          "start_time": {
+            "type": "string",
+            "nullable": true,
+            "example": "09:00",
+            "description": "Wall-clock start (HH:mm). Omit for all-day events and undated reminders."
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0,
+            "description": "Rounded to minutes and capped at one day. Omitted = 5 minutes, like POST /tasks."
+          },
+          "part_of_day": {
+            "type": "string",
+            "enum": [
+              "anytime",
+              "morning",
+              "afternoon",
+              "evening"
+            ],
+            "default": "anytime"
+          },
+          "note": {
+            "type": "string",
+            "nullable": true,
+            "description": "Event notes / location; cut to 4000 characters."
+          }
+        }
+      },
+      "ImportItemsRequestDto": {
+        "type": "object",
+        "required": [
+          "source",
+          "items"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "device_calendar",
+              "device_reminders",
+              "ics",
+              "text"
+            ],
+            "description": "Where the items were read. device_calendar = the phone's calendars (EventKit / CalendarContract); device_reminders = Apple Reminders; ics = an .ics file or calendar link parsed on the device; text = a pasted list. Dedupe is per source."
+          },
+          "category": {
+            "type": "string",
+            "nullable": true,
+            "description": "Study-tag id or label for every item; omitted = untagged (stored as \"general\")."
+          },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": {
+              "$ref": "#/components/schemas/ImportItemDto"
+            }
+          }
+        }
+      },
+      "ImportItemResultDto": {
+        "type": "object",
+        "properties": {
+          "external_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "imported",
+              "already_imported"
+            ]
+          },
+          "task_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "ImportItemsResultDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "imported"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "device_calendar",
+              "device_reminders",
+              "ics",
+              "text"
+            ],
+            "description": "Where the items were read. device_calendar = the phone's calendars (EventKit / CalendarContract); device_reminders = Apple Reminders; ics = an .ics file or calendar link parsed on the device; text = a pasted list. Dedupe is per source."
+          },
+          "imported": {
+            "type": "integer",
+            "description": "New tasks created."
+          },
+          "skipped": {
+            "type": "integer",
+            "description": "Items already in the plan, plus repeats within the request."
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportItemResultDto"
+            }
+          }
+        }
+      },
+      "CheckImportRequestDto": {
+        "type": "object",
+        "required": [
+          "source",
+          "external_ids"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "device_calendar",
+              "device_reminders",
+              "ics",
+              "text"
+            ],
+            "description": "Where the items were read. device_calendar = the phone's calendars (EventKit / CalendarContract); device_reminders = Apple Reminders; ics = an .ics file or calendar link parsed on the device; text = a pasted list. Dedupe is per source."
+          },
+          "external_ids": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CheckImportResultDto": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "device_calendar",
+              "device_reminders",
+              "ics",
+              "text"
+            ],
+            "description": "Where the items were read. device_calendar = the phone's calendars (EventKit / CalendarContract); device_reminders = Apple Reminders; ics = an .ics file or calendar link parsed on the device; text = a pasted list. Dedupe is per source."
+          },
+          "existing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Imported and still in the plan (done counts as in the plan)."
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Imported before and since deleted by the student."
           }
         }
       }
