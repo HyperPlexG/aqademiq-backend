@@ -765,6 +765,11 @@
             "type": "string",
             "format": "date-time",
             "nullable": true
+          },
+          "result": {
+            "type": "object",
+            "nullable": true,
+            "description": "What the action returned once executed (status executed) — for a created task, the task occurrence, whose id the app uses for Undo. Null before execution."
           }
         },
         "required": [
