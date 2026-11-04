@@ -7,6 +7,7 @@ import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { revision } from '../../_shared/revision.ts';
 import { lookupUsableCode } from './referrals.service.ts';
+import { onboardingV2Update, type OnboardingV2Dto } from './onboarding_v2.ts';
 
 const DEFAULT_PALETTE = ['#4F8DFD', '#7C5CFC', '#FF5C7C', '#FFA53C', '#34C759', '#00B8D9', '#8E8E93', '#FF6633'];
 
@@ -28,7 +29,7 @@ export interface OnboardingSemesterDto {
   end: string;
 }
 
-export interface CompleteOnboardingDto {
+export interface CompleteOnboardingDto extends OnboardingV2Dto {
   consent_given: boolean;
   consent_version?: string;
   age: number;
@@ -230,6 +231,18 @@ export const onboardingService = {
         }
       } catch (_) {
         // Non-fatal: onboarding is complete regardless of referral bookkeeping.
+      }
+    }
+
+    // Onboarding v2: how they heard about us, and their study hours. After the
+    // transaction and best-effort, so a database the v2 migration has not
+    // reached yet still completes onboarding (onboarding_v2.ts).
+    const v2 = onboardingV2Update(userId, dto);
+    if (v2) {
+      try {
+        await prismaBase().$executeRawUnsafe(v2.sql, ...v2.params);
+      } catch (e) {
+        console.warn('[onboarding] v2 fields not saved:', (e as Error).message);
       }
     }
 

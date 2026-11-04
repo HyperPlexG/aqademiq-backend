@@ -3535,6 +3535,59 @@
           },
           "work_best_times": {
             "type": "object"
+          },
+          "heard_from": {
+            "type": "string",
+            "enum": [
+              "friend",
+              "tiktok",
+              "instagram",
+              "youtube",
+              "reddit",
+              "ai_assistant",
+              "app_store",
+              "google",
+              "school",
+              "discord",
+              "other"
+            ],
+            "description": "Onboarding v2 (ob-source): how the student heard about Aqademiq. Omit when skipped."
+          },
+          "heard_from_other": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Optional free text, only with heard_from = other. Trimmed; empty is dropped."
+          },
+          "study_hours": {
+            "type": "object",
+            "description": "Onboarding v2 (ob-hours): set study hours. until_min <= from_min runs overnight. Omit for \"I don't have set hours\".",
+            "required": [
+              "days",
+              "from_min",
+              "until_min"
+            ],
+            "properties": {
+              "days": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 7
+                },
+                "description": "ISO weekdays, 1 = Monday"
+              },
+              "from_min": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1439
+              },
+              "until_min": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1440
+              }
+            }
           }
         }
       },

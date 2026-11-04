@@ -688,6 +688,11 @@ For the shared token-pair-plus-user response, see §3.1 (`TokenPair`).
 | `subjects` | array | each: see below |
 | `daily_focus_goal_min` | int | 0–1440 → settings |
 | `work_best_times` | any (JSON) | opaque; stored on settings |
+| `heard_from` | string | v2 (ob-source). One of `friend`, `tiktok`, `instagram`, `youtube`, `reddit`, `ai_assistant`, `app_store`, `google`, `school`, `discord`, `other`; anything else → 422. Omit when skipped |
+| `heard_from_other` | string | v2. Only with `heard_from: "other"`; trimmed, 0–60, empty dropped |
+| `study_hours` | object | v2 (ob-hours). `{ days:[1–7…] (ISO, 1 = Mon, ≥1), from_min:0–1439, until_min:0–1440 }`, minutes after local midnight; `until_min <= from_min` runs overnight, equal → 422. Omit for "I don't have set hours" |
+
+  The v2 fields land in `user_profiles` (`heard_from`, `heard_from_other`, `study_days`, `study_from_min`, `study_until_min`, migration `20261104120000_onboarding_v2_source_and_study_hours.sql`). They are written best-effort after the main transaction: until that migration is applied they are dropped with a log line and onboarding still completes. App freeze's own frosts are device-local and never sent.
 
   **`subjects[]` entry:**
 

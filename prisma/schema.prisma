@@ -70,6 +70,11 @@ model UserProfile {
   haptics_enabled         Boolean   @default(true)
   onboarding_completed_at DateTime? @db.Timestamptz
   referral_code_used      String?   @db.VarChar(50)
+  // heard_from, heard_from_other, study_days, study_from_min, study_until_min
+  // (20261104120000_onboarding_v2_source_and_study_hours.sql) are deliberately
+  // NOT mapped: Prisma selects every mapped column, so mapping them would break
+  // every profile read on a database the migration has not reached yet.
+  // onboarding.service.ts writes them with a guarded raw query instead.
   created_at              DateTime  @default(now()) @db.Timestamptz
   updated_at              DateTime  @default(now()) @db.Timestamptz
 
