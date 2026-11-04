@@ -289,3 +289,17 @@ workspace root, run with the new team's Sign in with Apple key).
   calendar_import | material_import) that is in neither `supabase/migrations/` nor
   `prisma/schema.prisma`. Any other value fails the insert; widen the check in a migration first.
 - The older `/calendar/ics` and `/google/oauth/callback` endpoints are unchanged and unused by the app.
+
+## Onboarding v2 (design v11)
+
+`POST /v1/onboarding/complete` also takes `heard_from`, `heard_from_other` and
+`study_hours` (`services/onboarding_v2.ts`, tested by `onboarding_v2_test.ts`;
+contract §2.1). They land in five new `user_profiles` columns from
+`20261104120000_onboarding_v2_source_and_study_hours.sql`.
+- Written with a raw query **after** onboarding's transaction, best-effort: until
+  the migration is applied the answers are dropped with a log line and onboarding
+  still completes. Apply the migration before relying on the data.
+- The columns are deliberately **not** in `prisma/schema.prisma`: Prisma selects
+  every mapped column, so mapping them before the migration would break every
+  profile read.
+- App freeze itself is device-local; nothing about frozen apps reaches the backend.
