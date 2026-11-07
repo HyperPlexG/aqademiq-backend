@@ -1,5 +1,6 @@
 {
   "imports": {
+    "@anthropic-ai/sdk": "npm:@anthropic-ai/sdk@1.1.0",
     "@prisma/client": "npm:@prisma/client@6.19.3",
     "@prisma/client/": "npm:/@prisma/client@6.19.3/",
     "@prisma/adapter-pg": "npm:@prisma/adapter-pg@6.19.3",
