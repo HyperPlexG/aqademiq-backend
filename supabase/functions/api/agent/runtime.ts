@@ -27,6 +27,7 @@ import { buildContext, clockLine, renderContext } from './context.ts';
 import { isCallableName, kindOfCall, resolveCall, toolDefs } from './tools.ts';
 import { createPendingAction, listForRun } from './pending.ts';
 import { chooseTier, claimHardRun, type HardVariant, nextTier, pickHardVariant, type Tier } from './tiers.ts';
+import { afterResponse, runJevShadow, shadowConfig } from './jev_shadow.ts';
 import { type AgentOutcome, type AgentUsage, type PlanStep, type ToolContext, ToolInputError } from './types.ts';
 
 // Turn ceilings. These are the single biggest lever on free-tier quota: a 429 is
@@ -883,14 +884,32 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
     await persistRun(state, status);
     logRun(state, escalated);
 
+    const text = truthfulReply(
+      state.finalText || fallbackText(state),
+      state.pendingIds.length,
+      state.pendingIds.length > 0 ? state.lastWriteRejections : state.rejections,
+    );
+
+    // Jev in shadow (jev_shadow.ts): after the reply is sent, never in its way,
+    // and only for a student's own message — not a proactive check-in.
+    const jev = input.tier ? null : shadowConfig();
+    if (jev) {
+      afterResponse(runJevShadow({
+        runId: run.id,
+        userId: RequestContext.userId,
+        goal: input.goal,
+        ruleTier: choice.tier,
+        subjects: ctx.subjects,
+        tags: ctx.study_tags,
+        pendingIds: [...state.pendingIds],
+        reply: text,
+      }, jev));
+    }
+
     return {
       run_id: run.id,
       status: status === 'awaiting_confirmation' ? 'awaiting_confirmation' : 'completed',
-      text: truthfulReply(
-        state.finalText || fallbackText(state),
-        state.pendingIds.length,
-        state.pendingIds.length > 0 ? state.lastWriteRejections : state.rejections,
-      ),
+      text,
       plan: state.plan,
       pending_action_ids: state.pendingIds,
       usage: state.budget.phaseUsage,

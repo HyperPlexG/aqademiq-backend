@@ -247,6 +247,18 @@ replayed block after an edit is a 400 on newer accounts.
 `chooseTier()` is plain rules on purpose: it is the seam a decision model (Jev
 or another System One API) replaces later, same inputs and output.
 
+### Jev in shadow (`agent/jev_shadow.ts`, `_shared/decide.ts`, docs/JEV.md)
+
+With `OPENROUTER_API_KEY` set (and `ADA_JEV_SHADOW` not `off`), every chat run
+asks Jev, in one call after the reply is sent (`EdgeRuntime.waitUntil`), for
+the tier, the intent, and per card "did the student ask for this?", the tag and
+the subject — and stores its answers beside what Ada did in `ada_jev_shadow`.
+It changes nothing a student sees. Keep it that way until docs/JEV.md's
+phase 2b is decided on the data: `runJevShadow` never throws, and its only
+write is its own table. `scripts/jev/` holds the live report and an offline
+replay of past runs; their exports hold students' messages and stay out of
+the repo.
+
 ### Credentials (optional in dev)
 
 | Feature | Env var |
