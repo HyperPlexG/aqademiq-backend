@@ -14,7 +14,7 @@
 import { env } from './env.ts';
 import { cacheGet, cacheSet } from './redis.ts';
 import { gcpAccessToken, gcpProject, isVertexConfigured, vertexHost, vertexMessages } from './vertex.ts';
-import { anthropicConfigured, anthropicEffort, anthropicModel, AnthropicUnavailable, sendAnthropic } from './anthropic.ts';
+import { anthropicConfigured, anthropicEffort, anthropicFast, anthropicModel, AnthropicUnavailable, sendAnthropic } from './anthropic.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
 
@@ -884,7 +884,11 @@ async function vertexClaudeChat(model: string, p: AiParams): Promise<AiResult> {
  */
 async function anthropicDirectChat(model: string, p: AiParams): Promise<AiResult> {
   const tier = p.tier ?? 'middle';
-  const json = await sendAnthropic(model, claudeRequest(p, anthropicEffort(tier)), { signal: callSignal(p), tier });
+  const json = await sendAnthropic(model, claudeRequest(p, anthropicEffort(tier)), {
+    signal: callSignal(p),
+    tier,
+    fast: anthropicFast(tier, model),
+  });
   return claudeResult(json, model, p.toolChoice?.name, 'anthropic');
 }
 

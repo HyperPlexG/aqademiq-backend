@@ -212,7 +212,12 @@ Invariants to preserve when extending it:
 
 With `ANTHROPIC_API_KEY` set, Claude leads every tier and the GCP order below
 becomes its fallback: **easy → Claude Haiku 5.5, middle → Claude Sonnet 5.5,
-hard → Claude Opus 5**. The account's monthly API credit is spent up to
+hard → Claude Opus 5.5**. Tuned for speed, not to a time budget: every tier
+thinks at `low` effort, and Opus runs in **fast mode** (`speed: "fast"`, beta
+`fast-mode-2026-02-01`, up to ~2.5× faster output at twice the price — $8/$40,
+priced by the budget). A fast call that is rate-limited, rejected, or only
+affordable at standard price is retried once at standard speed, never benched.
+`AI_CALL_TIMEOUT_MS` (28 s) stays only as the cut-off for a hung call. The account's monthly API credit is spent up to
 `ANTHROPIC_MONTHLY_BUDGET_USD` (99); past it, Claude is benched and Gemini on
 Vertex answers until the period resets.
 
@@ -246,8 +251,9 @@ Vertex answers until the period resets.
 | `ANTHROPIC_MONTHLY_BUDGET_USD` | 99 | The cap per period |
 | `ANTHROPIC_BUDGET_RESET_DAY` | 1 | Day of the month (UTC) the credit resets |
 | `ANTHROPIC_USER_DAILY_USD` | 5 | Per student per UTC day; 0 = no per-student cap |
-| `ANTHROPIC_{EASY,MIDDLE,HARD}_MODEL` | haiku-5-5 / sonnet-5-5 / opus-5 | |
-| `ANTHROPIC_{EASY,MIDDLE,HARD}_EFFORT` | low / medium / medium | `medium` keeps an Opus turn under `AI_CALL_TIMEOUT_MS` |
+| `ANTHROPIC_{EASY,MIDDLE,HARD}_MODEL` | haiku-5-5 / sonnet-5-5 / opus-5-5 | |
+| `ANTHROPIC_{EASY,MIDDLE,HARD}_EFFORT` | low / low / low | Speed first; raise HARD to `medium` if hard answers fall short |
+| `ANTHROPIC_{EASY,MIDDLE,HARD}_FAST` | off / off / on | Fast mode; only Opus 5.5 / 5 / 4.8 have it |
 
 ### Jev picks the tier (`agent/jev_tier.ts`)
 

@@ -24,6 +24,8 @@ Deno.test('prices: the three tiers, Haiku past 100K, and an unknown model at the
   assertEquals(priceOf('claude-haiku-5-5'), { input: 0.10, output: 0.50, cacheRead: 0.01 });
   assertEquals(priceOf('claude-sonnet-5-5').output, 10);
   assertEquals(priceOf('claude-opus-5').output, 25);
+  assertEquals(priceOf('claude-opus-5-5'), { input: 4, output: 20, cacheRead: 0.20 });
+  assertEquals(priceOf('claude-opus-5-5', 0, true), { input: 8, output: 40, cacheRead: 0.40 });
   assertEquals(priceOf('claude-haiku-5-5', 150_000).input, 0.50);
   assertEquals(priceOf('claude-something-new').output, 50);
 });
@@ -166,4 +168,50 @@ Deno.test('a dropped connection keeps the reservation: it may have been billed',
   const { ledger, state } = fakeLedger();
   await assertRejects(() => sendAnthropic('claude-opus-5', BODY, opts(ledger, () => Promise.reject(new TypeError('network error')))));
   assert(state.total > 0.39, `reservation kept, got ${state.total}`);
+});
+
+Deno.test('fast mode is priced fast, unless the response says it ran at standard speed', () => {
+  const u = { input_tokens: 1000, output_tokens: 1000 };
+  assertAlmostEquals(costUsd(['claude-opus-5-5'], u, true), (8000 + 40000) / 1e6, 1e-12);
+  assertAlmostEquals(costUsd(['claude-opus-5-5'], { ...u, speed: 'standard' }, true), (4000 + 20000) / 1e6, 1e-12);
+  assertAlmostEquals(costUsd(['claude-opus-5-5'], { ...u, speed: 'fast' }), (8000 + 40000) / 1e6, 1e-12);
+});
+
+Deno.test('a fast request carries speed and both betas', () => {
+  const b = anthropicBody('claude-opus-5-5', { system: 's', messages: [] }, true);
+  assertEquals(b.speed, 'fast');
+  assertEquals(b.betas, ['server-side-fallback-2026-07-01', 'fast-mode-2026-02-01']);
+  assertEquals('speed' in anthropicBody('claude-opus-5-5', { system: 's', messages: [] }), false);
+});
+
+Deno.test('fast mode busy: the same call is retried at standard speed, and only that is charged', async () => {
+  const { ledger, state } = fakeLedger();
+  const seen: unknown[] = [];
+  const res = await sendAnthropic('claude-opus-5-5', BODY, {
+    ...opts(ledger, (b) => {
+      seen.push(b.speed);
+      if (b.speed === 'fast') {
+        return Promise.reject(Anthropic.APIError.generate(429, { type: 'error', error: { type: 'rate_limit_error', message: 'fast pool busy' } }, 'fast pool busy', new Headers()));
+      }
+      return Promise.resolve({ model: 'claude-opus-5-5', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1000, output_tokens: 1000, speed: 'standard' } });
+    }),
+    fast: true,
+  });
+  assertEquals(res.content[0].text, 'ok');
+  assertEquals(seen, ['fast', undefined]);
+  assertAlmostEquals(state.total, (4000 + 20000) / 1e6, 1e-12);
+});
+
+Deno.test('a fast call that fits only at standard price still runs, at standard speed', async () => {
+  // Fast worst case for this body is ~$0.64; standard ~$0.32. $0.50 left.
+  const { ledger } = fakeLedger({ cap: 99, spent: 98.5 });
+  const seen: unknown[] = [];
+  await sendAnthropic('claude-opus-5-5', BODY, {
+    ...opts(ledger, (b) => {
+      seen.push(b.speed);
+      return Promise.resolve({ model: 'claude-opus-5-5', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 10 } });
+    }),
+    fast: true,
+  });
+  assertEquals(seen, [undefined]);
 });

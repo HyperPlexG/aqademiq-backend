@@ -1,10 +1,11 @@
 // Claude leads every tier when Anthropic's API is configured, and Jev picks the
 // tier (_shared/ai.ts tierCandidates, agent/jev_tier.ts).
 //
-//   easy → Haiku 5.5, middle → Sonnet 5.5, hard → Opus 5, then GCP behind each.
+//   easy → Haiku 5.5, middle → Sonnet 5.5, hard → Opus 5.5, then GCP behind each.
 
 import { assertEquals } from 'jsr:@std/assert@1';
 import { tierCandidates } from '../../_shared/ai.ts';
+import { anthropicEffort, anthropicFast } from '../../_shared/anthropic.ts';
 import type { DecideConfig, DecideResult } from '../../_shared/decide.ts';
 import { askJevTier, pickTier, tierState } from './jev_tier.ts';
 
@@ -30,14 +31,32 @@ Deno.test('each tier leads with its Claude model, with the GCP order behind it',
   assertEquals(middle[0].id, 'anthropic:claude-sonnet-5-5');
   assertEquals(middle[1].provider, 'vertex-gemini');
   const hard = tierCandidates('hard');
-  assertEquals(hard[0].id, 'anthropic:claude-opus-5');
+  assertEquals(hard[0].id, 'anthropic:claude-opus-5-5');
   assertEquals(hard[1].id, 'vertex-gemini:gemini-pro-test');
   // No tier (task breakdown, proactive notes) is the middle tier.
   assertEquals(tierCandidates(undefined)[0].id, 'anthropic:claude-sonnet-5-5');
 }));
 
-Deno.test('a tier model can be changed by secret', () => withEnv({ ANTHROPIC_HARD_MODEL: 'claude-opus-5-5' }, () => {
-  assertEquals(tierCandidates('hard')[0].id, 'anthropic:claude-opus-5-5');
+Deno.test('a tier model can be changed by secret', () => withEnv({ ANTHROPIC_HARD_MODEL: 'claude-opus-5' }, () => {
+  assertEquals(tierCandidates('hard')[0].id, 'anthropic:claude-opus-5');
+}));
+
+Deno.test('fast mode: on for the hard tier, off elsewhere, never for a model without it', () => withEnv({}, () => {
+  assertEquals(anthropicFast('hard'), true);
+  assertEquals(anthropicFast('middle'), false);
+  assertEquals(anthropicFast('easy'), false);
+  assertEquals(anthropicFast('middle', 'claude-sonnet-5-5'), false);
+  Deno.env.set('ANTHROPIC_HARD_FAST', 'off');
+  assertEquals(anthropicFast('hard'), false);
+  Deno.env.delete('ANTHROPIC_HARD_FAST');
+  Deno.env.set('ANTHROPIC_MIDDLE_FAST', 'on');
+  assertEquals(anthropicFast('middle', 'claude-sonnet-5-5'), false);
+  assertEquals(anthropicFast('middle', 'claude-opus-5-5'), true);
+  Deno.env.delete('ANTHROPIC_MIDDLE_FAST');
+}));
+
+Deno.test('every tier thinks at low effort by default', () => withEnv({}, () => {
+  assertEquals([anthropicEffort('easy'), anthropicEffort('middle'), anthropicEffort('hard')], ['low', 'low', 'low']);
 }));
 
 Deno.test('without a key, or with ANTHROPIC_DIRECT=off, the GCP order is unchanged', () => {
