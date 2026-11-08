@@ -208,6 +208,63 @@ Invariants to preserve when extending it:
   the older runs' outcomes; everything declined gets a canned reply with no model
   call.
 
+### Claude through Anthropic's API, inside $99 a month (`_shared/anthropic.ts`)
+
+With `ANTHROPIC_API_KEY` set, Claude leads every tier and the GCP order below
+becomes its fallback: **easy → Claude Haiku 5.5, middle → Claude Sonnet 5.5,
+hard → Claude Opus 5.5**. Tuned for speed, not to a time budget: every tier
+thinks at `low` effort, and Opus runs in **fast mode** (`speed: "fast"`, beta
+`fast-mode-2026-02-01`, up to ~2.5× faster output at twice the price — $8/$40,
+priced by the budget). A fast call that is rate-limited, rejected, or only
+affordable at standard price is retried once at standard speed, never benched.
+`AI_CALL_TIMEOUT_MS` (28 s) stays only as the cut-off for a hung call. The account's monthly API credit is spent up to
+`ANTHROPIC_MONTHLY_BUDGET_USD` (99); past it, Claude is benched and Gemini on
+Vertex answers until the period resets.
+
+- **The cap lives in Postgres** (`ai_spend`, `ai_spend_reserve` /
+  `ai_spend_settle`, migration `20261107130000_ai_spend.sql`), never Redis —
+  Redis fails open. Each call reserves its worst case (every `max_tokens` at the
+  output price, the prompt at the cache-write price) and settles to the real
+  cost from `usage`. An API error releases the reservation (not billed); a
+  timeout or dropped connection keeps it (it may have been). No ledger → no
+  Claude (fail closed). Do not loosen any of these.
+- A **402** (credit used up) benches Claude until the next period; **429/529**
+  for `retry-after`; **401/403** for an hour, logged as an error. One bench
+  (`ai:cool:anthropic`) covers every Claude model: the budget is per account.
+- **Per-student share**: `ANTHROPIC_USER_DAILY_USD` (5) per UTC day, so one
+  heavy user cannot spend everyone's month; past it that student gets Gemini
+  for the day, nobody else is affected.
+- Requests reuse `claudeRequest` / `claudeResult` (Claude on Vertex's), plus a
+  cache breakpoint on the system prompt (tools + system) and top-level
+  automatic caching for the conversation, and on Sonnet/Opus the server-side
+  refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`);
+  Haiku 5.5 has none. Prices in `PRICES`; an unknown model is priced at the top
+  rate so the cap still holds. Update `PRICES` when a tier's model changes.
+- Spend so far: `select * from ai_spend order by period_start desc;`
+- Every call logs `[anthropic] {model,tier,ms,usd,in,cache_read,out}`; the cap
+  logs `ANTHROPIC_BUDGET_REACHED` once per bench.
+
+| Secret | Default | |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Turns it on |
+| `ANTHROPIC_DIRECT` | on | `off` sends everything to GCP without removing the key |
+| `ANTHROPIC_MONTHLY_BUDGET_USD` | 99 | The cap per period |
+| `ANTHROPIC_BUDGET_RESET_DAY` | 1 | Day of the month (UTC) the credit resets |
+| `ANTHROPIC_USER_DAILY_USD` | 5 | Per student per UTC day; 0 = no per-student cap |
+| `ANTHROPIC_{EASY,MIDDLE,HARD}_MODEL` | haiku-5-5 / sonnet-5-5 / opus-5-5 | |
+| `ANTHROPIC_{EASY,MIDDLE,HARD}_EFFORT` | low / low / low | Speed first; raise HARD to `medium` if hard answers fall short |
+| `ANTHROPIC_{EASY,MIDDLE,HARD}_FAST` | off / off / on | Fast mode; only Opus 5.5 / 5 / 4.8 have it |
+
+### Jev picks the tier (`agent/jev_tier.ts`)
+
+With a Jev key set (`OPENROUTER_API_KEY`), each chat message's tier — and so
+its Claude model — is Jev's answer to one `choice` question (~0.2 s, 1.5 s
+timeout), reading the message and Ada's previous reply. `chooseTier()`'s rules
+decide when Jev is off (`ADA_JEV_TIER=off`), fails, or is below
+`JEV_TIER_MIN_CONFIDENCE` (0.6), and always for a file attached or a failed
+previous run. The run's scratchpad says which decided (`Tier: hard (jev 0.83;
+rules said middle …)`). The shadow (below) keeps comparing Jev with the rules.
+
 ### Model tiers (`agent/tiers.ts`, `_shared/ai.ts`)
 
 Each message gets a tier once, and one model for the whole run (`pin`):
@@ -247,6 +304,18 @@ replayed block after an edit is a 400 on newer accounts.
 `chooseTier()` is plain rules on purpose: it is the seam a decision model (Jev
 or another System One API) replaces later, same inputs and output.
 
+### Jev in shadow (`agent/jev_shadow.ts`, `_shared/decide.ts`, docs/JEV.md)
+
+With `OPENROUTER_API_KEY` set (and `ADA_JEV_SHADOW` not `off`), every chat run
+asks Jev, in one call after the reply is sent (`EdgeRuntime.waitUntil`), for
+the tier, the intent, and per card "did the student ask for this?", the tag and
+the subject — and stores its answers beside what Ada did in `ada_jev_shadow`.
+It changes nothing a student sees. Keep it that way until docs/JEV.md's
+phase 2b is decided on the data: `runJevShadow` never throws, and its only
+write is its own table. `scripts/jev/` holds the live report and an offline
+replay of past runs; their exports hold students' messages and stay out of
+the repo.
+
 ### Credentials (optional in dev)
 
 | Feature | Env var |
@@ -269,3 +338,37 @@ workspace root, run with the new team's Sign in with Apple key).
 - A `conflict` row means the new id already had its own account (someone signed
   in fresh before being moved). Merge those by hand; do not automate it.
 - Tests run the real SQL in PGlite: `api/apple_team_transfer_sql_test.ts`.
+
+## Calendar import & Reminder import (v2)
+
+`POST /v1/integrations/import` and `POST /v1/integrations/import/check`
+(`routers/integrations.ts` → `services/calendar-import.service.ts`, decisions in the pure
+`services/import_plan.ts`, tested by `import_plan_test.ts`). Edge-only, so the spec lives in
+`openapi.edge-overlay.json` (run `npm run openapi:sync` after changing it). Contract §17.
+
+- An import is a plain one-off task with `source = 'calendar_import'` and
+  `metadata.import_key = "<source>:<external_id>"`. It is deliberately NOT written to
+  `calendar_events`: `agent/schedule.ts` `busyBlocks()` reads that table as busy time on top
+  of tasks, so an import stored in both would be counted twice.
+- Re-importing never duplicates and never overwrites: a key with a live task is skipped
+  untouched; a key whose task was deleted (status `cancelled`) is created again only if sent.
+- No migration: the lookup is a raw query on `tasks.metadata->>'import_key'`, scoped to the
+  user and `source = 'calendar_import'`.
+- **The live DB has a CHECK on `tasks.source`** (`tasks_source_check`: manual | ada |
+  calendar_import | material_import) that is in neither `supabase/migrations/` nor
+  `prisma/schema.prisma`. Any other value fails the insert; widen the check in a migration first.
+- The older `/calendar/ics` and `/google/oauth/callback` endpoints are unchanged and unused by the app.
+
+## Onboarding v2 (design v11)
+
+`POST /v1/onboarding/complete` also takes `heard_from`, `heard_from_other` and
+`study_hours` (`services/onboarding_v2.ts`, tested by `onboarding_v2_test.ts`;
+contract §2.1). They land in five new `user_profiles` columns from
+`20261104120000_onboarding_v2_source_and_study_hours.sql`.
+- Written with a raw query **after** onboarding's transaction, best-effort: until
+  the migration is applied the answers are dropped with a log line and onboarding
+  still completes. Apply the migration before relying on the data.
+- The columns are deliberately **not** in `prisma/schema.prisma`: Prisma selects
+  every mapped column, so mapping them before the migration would break every
+  profile read.
+- App freeze itself is device-local; nothing about frozen apps reaches the backend.

@@ -2,6 +2,7 @@
 import { Hono } from 'hono';
 import { onboardingService, type CompleteOnboardingDto, type OnboardingSemesterDto, type OnboardingSubjectDto } from '../services/onboarding.service.ts';
 import { jsonBody, str, num, bool } from '../../_shared/validate.ts';
+import { parseOnboardingV2 } from '../services/onboarding_v2.ts';
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const HEX = /^#[0-9a-fA-F]{6}$/;
@@ -48,6 +49,8 @@ onboardingRouter.post('/complete', async (c) => {
     subjects: parseSubjects(b['subjects']),
     daily_focus_goal_min: num(b, 'daily_focus_goal_min', false, { int: true, min: 0, max: 1440 }),
     work_best_times: b['work_best_times'],
+    // v2: heard_from, heard_from_other, study_hours.
+    ...parseOnboardingV2(b),
   };
   return c.json(await onboardingService.complete(dto), 201);
 });

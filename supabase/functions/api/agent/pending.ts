@@ -134,6 +134,10 @@ export function pendingDto(row: any) {
     warning: detail.warning ?? null,
     status: row.status,
     error: row.error ?? null,
+    // What an executed action returned — for a created task, the task itself.
+    // The app's Undo (v11 ada-applied) needs its id to delete exactly the task
+    // this card added; null until the action has executed.
+    result: row.status === 'executed' ? (row.result ?? null) : null,
     created_at: row.created_at,
     decided_at: row.decided_at,
   };
