@@ -208,6 +208,63 @@ Invariants to preserve when extending it:
   the older runs' outcomes; everything declined gets a canned reply with no model
   call.
 
+### Claude through Anthropic's API, inside $99 a month (`_shared/anthropic.ts`)
+
+With `ANTHROPIC_API_KEY` set, Claude leads every tier and the GCP order below
+becomes its fallback: **easy → Claude Haiku 5.5, middle → Claude Sonnet 5.5,
+hard → Claude Opus 5.5**. Tuned for speed, not to a time budget: every tier
+thinks at `low` effort, and Opus runs in **fast mode** (`speed: "fast"`, beta
+`fast-mode-2026-02-01`, up to ~2.5× faster output at twice the price — $8/$40,
+priced by the budget). A fast call that is rate-limited, rejected, or only
+affordable at standard price is retried once at standard speed, never benched.
+`AI_CALL_TIMEOUT_MS` (28 s) stays only as the cut-off for a hung call. The account's monthly API credit is spent up to
+`ANTHROPIC_MONTHLY_BUDGET_USD` (99); past it, Claude is benched and Gemini on
+Vertex answers until the period resets.
+
+- **The cap lives in Postgres** (`ai_spend`, `ai_spend_reserve` /
+  `ai_spend_settle`, migration `20261107130000_ai_spend.sql`), never Redis —
+  Redis fails open. Each call reserves its worst case (every `max_tokens` at the
+  output price, the prompt at the cache-write price) and settles to the real
+  cost from `usage`. An API error releases the reservation (not billed); a
+  timeout or dropped connection keeps it (it may have been). No ledger → no
+  Claude (fail closed). Do not loosen any of these.
+- A **402** (credit used up) benches Claude until the next period; **429/529**
+  for `retry-after`; **401/403** for an hour, logged as an error. One bench
+  (`ai:cool:anthropic`) covers every Claude model: the budget is per account.
+- **Per-student share**: `ANTHROPIC_USER_DAILY_USD` (5) per UTC day, so one
+  heavy user cannot spend everyone's month; past it that student gets Gemini
+  for the day, nobody else is affected.
+- Requests reuse `claudeRequest` / `claudeResult` (Claude on Vertex's), plus a
+  cache breakpoint on the system prompt (tools + system) and top-level
+  automatic caching for the conversation, and on Sonnet/Opus the server-side
+  refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`);
+  Haiku 5.5 has none. Prices in `PRICES`; an unknown model is priced at the top
+  rate so the cap still holds. Update `PRICES` when a tier's model changes.
+- Spend so far: `select * from ai_spend order by period_start desc;`
+- Every call logs `[anthropic] {model,tier,ms,usd,in,cache_read,out}`; the cap
+  logs `ANTHROPIC_BUDGET_REACHED` once per bench.
+
+| Secret | Default | |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Turns it on |
+| `ANTHROPIC_DIRECT` | on | `off` sends everything to GCP without removing the key |
+| `ANTHROPIC_MONTHLY_BUDGET_USD` | 99 | The cap per period |
+| `ANTHROPIC_BUDGET_RESET_DAY` | 1 | Day of the month (UTC) the credit resets |
+| `ANTHROPIC_USER_DAILY_USD` | 5 | Per student per UTC day; 0 = no per-student cap |
+| `ANTHROPIC_{EASY,MIDDLE,HARD}_MODEL` | haiku-5-5 / sonnet-5-5 / opus-5-5 | |
+| `ANTHROPIC_{EASY,MIDDLE,HARD}_EFFORT` | low / low / low | Speed first; raise HARD to `medium` if hard answers fall short |
+| `ANTHROPIC_{EASY,MIDDLE,HARD}_FAST` | off / off / on | Fast mode; only Opus 5.5 / 5 / 4.8 have it |
+
+### Jev picks the tier (`agent/jev_tier.ts`)
+
+With a Jev key set (`OPENROUTER_API_KEY`), each chat message's tier — and so
+its Claude model — is Jev's answer to one `choice` question (~0.2 s, 1.5 s
+timeout), reading the message and Ada's previous reply. `chooseTier()`'s rules
+decide when Jev is off (`ADA_JEV_TIER=off`), fails, or is below
+`JEV_TIER_MIN_CONFIDENCE` (0.6), and always for a file attached or a failed
+previous run. The run's scratchpad says which decided (`Tier: hard (jev 0.83;
+rules said middle …)`). The shadow (below) keeps comparing Jev with the rules.
+
 ### Model tiers (`agent/tiers.ts`, `_shared/ai.ts`)
 
 Each message gets a tier once, and one model for the whole run (`pin`):

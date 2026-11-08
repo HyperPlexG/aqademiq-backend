@@ -24,6 +24,7 @@ import { prismaBase } from '../../_shared/prisma.ts';
 import { env } from '../../_shared/env.ts';
 import { decide, type DecideConfig, decideConfig, DecideError, type DecideResult, MAX_CHOICES, type Question } from '../../_shared/decide.ts';
 import type { Tier } from './tiers.ts';
+import { TIER_QUESTION } from './jev_tier.ts';
 
 /** At most this many cards get per-card questions, so one call stays small. */
 export const MAX_SHADOW_PROPOSALS = 15;
@@ -120,15 +121,7 @@ export function shadowQuestions(input: ShadowInput): ShadowQuestions {
   ];
 
   const questions: Record<string, Question> = {
-    tier: {
-      type: 'choice',
-      instructions: "How hard is the student's message for a planning assistant?",
-      criteria: {
-        easy: 'A question about their plan, advice, or small talk. Nothing to change.',
-        middle: 'One to five clear changes the student spelled out (add, move, edit, complete or delete tasks).',
-        hard: 'Building a plan or schedule, a long list of six or more items, a file, or the student saying the last answer did not work.',
-      },
-    },
+    tier: TIER_QUESTION,
     intent: {
       type: 'choice',
       instructions: "What is the student's message asking Ada to do?",

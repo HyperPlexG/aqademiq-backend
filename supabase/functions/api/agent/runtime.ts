@@ -28,6 +28,7 @@ import { isCallableName, kindOfCall, resolveCall, toolDefs } from './tools.ts';
 import { createPendingAction, listForRun } from './pending.ts';
 import { chooseTier, claimHardRun, type HardVariant, nextTier, pickHardVariant, type Tier } from './tiers.ts';
 import { afterResponse, runJevShadow, shadowConfig } from './jev_shadow.ts';
+import { askJevTier, jevTierConfig, pickTier } from './jev_tier.ts';
 import { type AgentOutcome, type AgentUsage, type PlanStep, type ToolContext, ToolInputError } from './types.ts';
 
 // Turn ceilings. These are the single biggest lever on free-tier quota: a 429 is
@@ -793,12 +794,8 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
   });
 
   const choice = input.tier
-    ? { tier: input.tier, reason: 'set by caller' }
-    : chooseTier({
-      goal: input.goal,
-      hasAttachments: input.goal.includes('[Attached file(s)'),
-      previousRunFailed: await previousRunFailed(input.sessionId, run.id),
-    });
+    ? { tier: input.tier, reason: 'set by caller', ruleTier: input.tier }
+    : await chooseRunTier(input, run.id);
   let tier = choice.tier;
   let reason = choice.reason;
   if (tier === 'hard' && !(await claimHardRun(RequestContext.userId))) {
@@ -898,7 +895,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
         runId: run.id,
         userId: RequestContext.userId,
         goal: input.goal,
-        ruleTier: choice.tier,
+        ruleTier: choice.ruleTier,
         subjects: ctx.subjects,
         tags: ctx.study_tags,
         pendingIds: [...state.pendingIds],
@@ -926,6 +923,38 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
       pending_action_ids: state.pendingIds,
       usage: state.budget.phaseUsage,
     };
+  }
+}
+
+/**
+ * The run's tier, and so its model: Jev's pick when it is confident, the rules'
+ * otherwise (jev_tier.ts). A file, or a previous run that failed, is hard
+ * whatever Jev says — it sees neither.
+ */
+async function chooseRunTier(input: RunAgentInput, runId: string) {
+  const hasAttachments = input.goal.includes('[Attached file(s)');
+  const jevCfg = jevTierConfig();
+  const [failed, lastReply] = await Promise.all([
+    previousRunFailed(input.sessionId, runId),
+    jevCfg ? lastAssistantReply(input.sessionId) : Promise.resolve(null),
+  ]);
+  const rules = chooseTier({ goal: input.goal, hasAttachments, previousRunFailed: failed });
+  const forced = hasAttachments || failed;
+  const jev = jevCfg && !forced ? await askJevTier(input.goal, lastReply, jevCfg) : null;
+  return pickTier(rules, forced, jev);
+}
+
+/** Ada's last reply in this chat, so Jev can read a bare "yes" in context. */
+async function lastAssistantReply(sessionId: string): Promise<string | null> {
+  try {
+    const m = await prismaBase().adaMessage.findFirst({
+      where: { ada_session_id: sessionId, role: 'assistant' },
+      orderBy: { sent_at: 'desc' },
+      select: { content: true },
+    });
+    return m?.content ?? null;
+  } catch {
+    return null;
   }
 }
 
