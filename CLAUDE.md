@@ -54,7 +54,7 @@ readable NestJS reference, still built and tested in CI. Port behaviour *from*
   models in `GEMINI_MODELS` draws on two independent quotas. See
   [docs/AI_QUOTA_REPORT.md](docs/AI_QUOTA_REPORT.md). Edge knobs:
   `ADA_MAX_TURNS`/`ADA_MAX_LLM_CALLS` (4), `ADA_MAX_RESUME_TURNS` (2),
-  `ADA_HISTORY_LIMIT` (16), `ADA_DAILY_CALL_CAP` (200/user/UTC-day, 0 = off),
+  `ADA_HISTORY_LIMIT` (16), `ADA_DAILY_CALL_CAP` (calls/user/UTC-day: 20 on the free pool, 200 with Claude direct, where the money cap binds; 0 = off),
   `GEMINI_MODELS`, `ADA_THINKING_BUDGET` (unset = Gemini 3 gets
   `GEMINI_THINKING_LEVEL`, older models the provider default; set = that budget
   for every Gemini model, 0 = no thinking where the model allows it).

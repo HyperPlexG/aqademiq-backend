@@ -14,6 +14,7 @@ import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { env } from '../../_shared/env.ts';
+import { anthropicConfigured } from '../../_shared/anthropic.ts';
 import { cacheGet, cacheIncrBy, cacheSet } from '../../_shared/redis.ts';
 import { claude, type ToolDef } from '../../_shared/claude.ts';
 import { storage } from '../../_shared/storage.ts';
@@ -42,24 +43,31 @@ const MAX_DURATION_SECONDS = 24 * 60 * 60;
  * The key pool is shared and free-tier, so without this one heavy user spends
  * the day's quota for everybody and every other user sees Ada fail. 0 disables it.
  *
- * 20, not the 200 this used to default to. 200 was never a ceiling in practice:
- * at ~4 calls per message it allowed one user ~50 messages a day, and the whole
- * pool sustains only a few hundred calls a day across ALL users — so a single
- * enthusiastic user could still drain it before the cap ever bit. A cap that
- * only triggers after the resource is gone is decoration. 20 leaves room for
- * roughly 5 messages a day per user, which is what the free tier can actually
- * honour, and is an env var away from being raised the day inference is paid for.
+ * 20, not the 200 this used to default to, on the free-tier pool: at ~4 calls
+ * per message 200 let one user drain the shared keys before the cap ever bit,
+ * and 20 (~5 messages a day) is what the free tier can honour.
+ *
+ * With Claude through Anthropic's API (`ANTHROPIC_API_KEY`), the binding limit
+ * is money, enforced in Postgres: the monthly budget and each student's daily
+ * share (`ANTHROPIC_USER_DAILY_USD`, _shared/anthropic.ts). Twenty calls would
+ * stop a student after five messages with most of their share unspent (it did,
+ * on 8 Nov 2026), so the default there is 200 — a backstop against a runaway
+ * loop, not the budget.
  */
 const DEFAULT_DAILY_CALL_CAP = 20;
+const DEFAULT_DAILY_CALL_CAP_CLAUDE = 200;
 
-const DAILY_CALL_CAP = (() => {
-  const raw = env('ADA_DAILY_CALL_CAP');
+/** Today's per-user call ceiling. An explicit ADA_DAILY_CALL_CAP always wins. */
+export function dailyCallCap(raw: string | undefined, claudeDirect: boolean): number {
+  const fallback = claudeDirect ? DEFAULT_DAILY_CALL_CAP_CLAUDE : DEFAULT_DAILY_CALL_CAP;
   // An empty secret means "not set", not "0" — Number('') is 0, which would
   // silently disable the cap on a deployment that merely declared the variable.
-  if (raw === undefined || raw.trim() === '') return DEFAULT_DAILY_CALL_CAP;
+  if (raw === undefined || raw.trim() === '') return fallback;
   const n = Number(raw);
-  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_DAILY_CALL_CAP;
-})();
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
+const DAILY_CALL_CAP = dailyCallCap(env('ADA_DAILY_CALL_CAP'), anthropicConfigured());
 
 /** Seconds left until the UTC day rolls over — the natural TTL for a daily tally. */
 function secondsUntilUtcMidnight(now = new Date()): number {
