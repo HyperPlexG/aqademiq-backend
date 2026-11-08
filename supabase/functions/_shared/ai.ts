@@ -14,6 +14,7 @@
 import { env } from './env.ts';
 import { cacheGet, cacheSet } from './redis.ts';
 import { gcpAccessToken, gcpProject, isVertexConfigured, vertexHost, vertexMessages } from './vertex.ts';
+import { anthropicConfigured, anthropicEffort, anthropicFast, anthropicModel, AnthropicUnavailable, sendAnthropic } from './anthropic.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
 
@@ -119,7 +120,7 @@ export interface AiResult {
   usage?: AiUsage;
 }
 
-type Provider = 'vertex-gemini' | 'vertex-claude' | 'gemini' | 'cerebras' | 'groq';
+type Provider = 'anthropic' | 'vertex-gemini' | 'vertex-claude' | 'gemini' | 'cerebras' | 'groq';
 export interface KeyEntry { provider: Provider; key: string; model: string; id: string }
 
 function splitKeys(v?: string): string[] {
@@ -408,6 +409,10 @@ export function orderedCandidates(): KeyEntry[] {
 /**
  * The candidates for one tier, best first.
  *
+ * Claude through Anthropic's API leads every tier when ANTHROPIC_API_KEY is set
+ * (_shared/anthropic.ts: Haiku 5.5 / Sonnet 5.5 / Opus 5, inside the monthly
+ * budget). Behind it, the GCP order each tier had before:
+ *
  *  - easy:   the free keys, with Vertex behind them so an empty free tier
  *            never takes Ada down.
  *  - middle: the original order — Vertex Gemini (Flash) first.
@@ -417,6 +422,16 @@ export function orderedCandidates(): KeyEntry[] {
  * pays for the message.
  */
 export function tierCandidates(tier?: AiParams['tier'], hardVariant: AiParams['hardVariant'] = 'gemini'): KeyEntry[] {
+  const gcp = gcpTierCandidates(tier, hardVariant);
+  if (!anthropicConfigured()) return gcp;
+  const model = anthropicModel(tier ?? 'middle');
+  return [{ provider: 'anthropic', key: '', model, id: `anthropic:${model}` }, ...gcp];
+}
+
+/** Every Anthropic model shares one bench: the budget and the credit are per account, not per model. */
+const ANTHROPIC_BENCH = 'anthropic';
+
+function gcpTierCandidates(tier?: AiParams['tier'], hardVariant: AiParams['hardVariant'] = 'gemini'): KeyEntry[] {
   const all = orderedCandidates();
   if (!tier || tier === 'middle') return all;
   if (tier === 'easy') {
@@ -520,7 +535,9 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
   }
 
   const fresh: KeyEntry[] = [];
-  for (const c of candidates) { if (!(await isExhausted(c.id))) fresh.push(c); }
+  for (const c of candidates) {
+    if (!(await isExhausted(c.provider === 'anthropic' ? ANTHROPIC_BENCH : c.id))) fresh.push(c);
+  }
   // If everything is marked exhausted, still try them (limits may have reset).
   const order = fresh.length ? fresh : candidates;
 
@@ -540,7 +557,9 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
   const errors: string[] = [];
   for (const c of order) {
     try {
-      const res = c.provider === 'vertex-gemini'
+      const res = c.provider === 'anthropic'
+        ? await anthropicDirectChat(c.model, params)
+        : c.provider === 'vertex-gemini'
         ? await vertexGeminiChat(c.model, params)
         : c.provider === 'vertex-claude'
         ? await vertexClaudeChat(c.model, params)
@@ -560,7 +579,10 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       errors.push(`${c.id} → ${message}`);
-      if (e instanceof QuotaError) {
+      if (e instanceof AnthropicUnavailable) {
+        await markExhausted(ANTHROPIC_BENCH, e.cooldownSeconds);
+        console.warn(`[ai] Claude benched for ${Math.ceil(e.cooldownSeconds)}s: ${message.slice(0, 200)}`);
+      } else if (e instanceof QuotaError) {
         await markExhausted(c.id, e.cooldownSeconds);
         // Logged so a pool that keeps emptying can be diagnosed from the length
         // of the cooldowns, which distinguishes "bursty traffic" from "the free
@@ -856,6 +878,21 @@ async function vertexClaudeChat(model: string, p: AiParams): Promise<AiResult> {
 }
 
 /**
+ * Claude through Anthropic's API (_shared/anthropic.ts), inside the monthly
+ * budget. Same request and the same reading of the answer as Claude on Vertex;
+ * the tier sets the effort.
+ */
+async function anthropicDirectChat(model: string, p: AiParams): Promise<AiResult> {
+  const tier = p.tier ?? 'middle';
+  const json = await sendAnthropic(model, claudeRequest(p, anthropicEffort(tier)), {
+    signal: callSignal(p),
+    tier,
+    fast: anthropicFast(tier, model),
+  });
+  return claudeResult(json, model, p.toolChoice?.name, 'anthropic');
+}
+
+/**
  * Room for thinking plus the reply. A ceiling, not a target: the model stops
  * when it is done, and effort, not this number, sets how long it thinks.
  */
@@ -874,13 +911,13 @@ function claudeEffort(): string {
 }
 
 /** The Messages request body for Claude on Vertex (model goes in the URL). Exported for tests. */
-export function claudeRequest(p: AiParams) {
+export function claudeRequest(p: AiParams, effort: string = claudeEffort()) {
   const forced = p.toolChoice?.name;
   return {
     max_tokens: Math.max(p.maxTokens ?? 0, CLAUDE_MIN_MAX_TOKENS),
     system: forced ? `${p.system}\n\nAnswer by calling the \`${forced}\` tool.` : p.system,
     messages: anthropicMessages(p.messages),
-    output_config: { effort: claudeEffort() },
+    output_config: { effort },
     ...(p.tools?.length ? { tools: p.tools, tool_choice: { type: 'auto' } } : {}),
   };
 }
@@ -890,22 +927,22 @@ export function claudeRequest(p: AiParams) {
  * model. `forcedTool` is the tool the caller wanted forced. Exported for tests.
  */
 // deno-lint-ignore no-explicit-any
-export function claudeResult(json: any, model: string, forcedTool?: string): AiResult {
+export function claudeResult(json: any, model: string, forcedTool?: string, label = 'vertex-claude'): AiResult {
   const stop = json?.stop_reason;
   if (stop === 'refusal') {
-    throw new Error(`vertex-claude ${model} refused (${json?.stop_details?.category ?? 'no category'})`);
+    throw new Error(`${label} ${model} refused (${json?.stop_details?.category ?? 'no category'})`);
   }
   if (stop === 'max_tokens') {
     // A cut-off reply, or a tool call with half its input, is worse than none.
-    throw new Error(`vertex-claude ${model} hit max_tokens`);
+    throw new Error(`${label} ${model} hit max_tokens`);
   }
   // deno-lint-ignore no-explicit-any
   const content = ((json?.content as any[]) ?? []).filter((b) =>
     (b.type === 'text' && typeof b.text === 'string' && b.text.trim() !== '') || b.type === 'tool_use'
   );
-  if (!content.length) throw new Error(`vertex-claude ${model} returned nothing usable (stop_reason ${stop})`);
+  if (!content.length) throw new Error(`${label} ${model} returned nothing usable (stop_reason ${stop})`);
   if (forcedTool && !content.some((b) => b.type === 'tool_use' && b.name === forcedTool)) {
-    throw new Error(`vertex-claude ${model} did not call ${forcedTool}`);
+    throw new Error(`${label} ${model} did not call ${forcedTool}`);
   }
   return {
     content,
