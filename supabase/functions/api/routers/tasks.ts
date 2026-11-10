@@ -117,6 +117,8 @@ tasksRouter.patch('/:occ', async (c) => {
   // `subject_id: null` (or "") is "no subject", which str() would read as
   // "not sent" — so the clear is picked out before it gets there.
   const rawSubject = (b as Record<string, unknown>).subject_id;
+  // Same for `until_date: null`, which re-opens an ended series.
+  const rawUntil = (b as Record<string, unknown>).until_date;
   const dto: PatchTaskDto = {
     scheduled_at: str(b, 'scheduled_at', false),
     status: str(b, 'status', false, { enum: ['PENDING', 'COMPLETE'] }),
@@ -126,6 +128,7 @@ tasksRouter.patch('/:occ', async (c) => {
     note: str(b, 'note', false),
     duration_seconds: num(b, 'duration_seconds', false, { int: true, min: 0 }),
     part_of_day: str(b, 'part_of_day', false, { enum: PART_OF_DAY }),
+    until_date: rawUntil === null ? null : str(b, 'until_date', false, { pattern: YMD }),
   };
   return c.json(await tasksService.patch(c.req.param('occ'), dto));
 });
