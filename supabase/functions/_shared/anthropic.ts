@@ -32,6 +32,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { env } from './env.ts';
 import { prismaBase } from './prisma.ts';
 import { RequestContext } from './context.ts';
+import { mediaAwarePromptSize } from './media.ts';
 
 export type ClaudeTier = 'easy' | 'middle' | 'hard';
 
@@ -168,6 +169,25 @@ export function worstCaseUsd(model: string, promptChars: number, maxTokens: numb
   const promptTokens = Math.ceil(promptChars / 3);
   const p = priceOf(model, promptTokens, fast);
   return (promptTokens * p.input * 1.25 + maxTokens * p.output) / 1e6;
+}
+
+/**
+ * The worst case reserved for one request body. Text is measured by length
+ * (worstCaseUsd's ~3 characters a token); a PDF or image block is priced by
+ * what Claude bills for it (media.ts mediaAwarePromptSize: up to 3,000 tokens a
+ * page, 5,000 an image), not by the length of its base64, which would both
+ * under-price a long text-only PDF and over-price a scan. Exported for tests.
+ */
+// deno-lint-ignore no-explicit-any
+export function reservationUsd(model: string, body: Record<string, any>, fast = false): number {
+  const { textChars, fileTokens } = mediaAwarePromptSize(body.messages ?? []);
+  return worstCaseUsd(
+    model,
+    JSON.stringify(body.system ?? '').length + textChars + JSON.stringify(body.tools ?? []).length +
+      fileTokens * 3,
+    Number(body.max_tokens ?? 16000),
+    fast,
+  );
 }
 
 // ---- the budget period ---------------------------------------------------
@@ -357,13 +377,7 @@ async function attempt(
   fast: boolean,
   // deno-lint-ignore no-explicit-any
 ): Promise<any> {
-  const reserved = worstCaseUsd(
-    model,
-    JSON.stringify(body.system ?? '').length + JSON.stringify(body.messages ?? []).length +
-      JSON.stringify(body.tools ?? []).length,
-    Number(body.max_tokens ?? 16000),
-    fast,
-  );
+  const reserved = reservationUsd(model, body, fast);
 
   let verdict: ReserveResult;
   try {

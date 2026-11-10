@@ -7,6 +7,7 @@
 import { env } from './env.ts';
 import { isVertexConfigured, vertexMessages, vertexMessagesStream } from './vertex.ts';
 import { type AiFile, type AiParams, type AiUsage, rotatingChat, rotationConfigured } from './ai.ts';
+import { claudeAccepts, withClaudeFiles } from './media.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
 export interface CreateMessageParams {
@@ -17,7 +18,7 @@ export interface CreateMessageParams {
   toolChoice?: { type: 'tool'; name: string };
   model?: string;
   maxTokens?: number;
-  /** Inline files for the final user turn. Requires the `rotating` provider. */
+  /** Inline files for the final user turn (Claude document/image blocks, or Gemini inlineData). */
   files?: AiFile[];
   /** Time this call may take, from the caller's remaining budget. */
   timeoutMs?: number;
@@ -178,16 +179,16 @@ export const claude = {
         pin: params.pin,
       });
     }
-    // Anthropic and Vertex both take documents/images as content blocks rather
-    // than a sibling field, which nothing needs yet — fail loudly instead of
+    // Anthropic and Vertex both take PDFs and images as content blocks on the
+    // last user turn. Anything else (audio, video, HEIC) fails loudly instead of
     // quietly answering a question about a file without having read it.
-    if (params.files?.length) {
-      throw new Error(`Reading files is only implemented for the rotating (Gemini) provider, not "${provider}".`);
+    if (params.files?.length && !params.files.every(claudeAccepts)) {
+      throw new Error(`Claude cannot read ${params.files.map((f) => f.mime_type).join(', ')}.`);
     }
     return call(params.model ?? opus(), {
       max_tokens: params.maxTokens ?? 2048,
       system: params.system,
-      messages: params.messages,
+      messages: withClaudeFiles(params.messages, params.files),
       ...(params.tools ? { tools: params.tools } : {}),
       ...(params.toolChoice ? { tool_choice: params.toolChoice } : {}),
     });

@@ -23,6 +23,8 @@ import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { claude, usageOf } from '../../_shared/claude.ts';
 import { env } from '../../_shared/env.ts';
+import { withoutFileData } from '../../_shared/media.ts';
+import { splitObservation, toolResultContent } from './file_blocks.ts';
 import { buildContext, clockLine, renderContext } from './context.ts';
 import { isCallableName, kindOfCall, resolveCall, toolDefs } from './tools.ts';
 import { createPendingAction, listForRun } from './pending.ts';
@@ -575,7 +577,10 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
       state.lastWriteRejections = rejectedThisTurn > 0 ? state.rejections.slice(-rejectedThisTurn) : [];
     }
 
-    const contents = toolUses.map((_, i) => truncate(observations[i]));
+    // A file read_file attached (file_blocks.ts) travels as document/image
+    // blocks beside the observation's text, never through truncate().
+    const split = toolUses.map((_, i) => splitObservation(observations[i]));
+    const contents = split.map((s) => truncate(s.observation));
 
     // Turn pressure the model can act on. The prompt tells it to work in as few
     // turns as it can but never said how few were left, so a run would spend its
@@ -613,7 +618,7 @@ async function loop(state: LoopState, system: string, messages: any[], maxTurns:
       content: toolUses.map((tu, i) => ({
         type: 'tool_result',
         tool_use_id: tu.id,
-        content: contents[i],
+        content: toolResultContent(contents[i], split[i].blocks),
       })),
     });
     if (finished) return;
@@ -873,8 +878,10 @@ export async function runAgent(input: RunAgentInput): Promise<AgentOutcome> {
     // deno-lint-ignore no-explicit-any
     await prismaBase().adaAgentRun.update({
       where: { id: run.id },
+      // A file's bytes are not kept: a PDF read this run would otherwise
+      // land in the row as megabytes of base64.
       // deno-lint-ignore no-explicit-any
-      data: { transcript: messages as any },
+      data: { transcript: withoutFileData(messages) as any },
     });
 
     const status = state.pendingIds.length > 0 ? 'awaiting_confirmation' : 'completed';
@@ -1003,8 +1010,15 @@ function appendToLastUser(messages: any[], note: string) {
   // deno-lint-ignore no-explicit-any
   const results = (last.content as any[]).filter((b) => b.type === 'tool_result');
   const target = results[results.length - 1];
-  if (target) target.content = `${target.content ?? ''}\n\n${note}`;
-  else last.content.push({ type: 'text', text: note });
+  if (!target) last.content.push({ type: 'text', text: note });
+  // A tool_result carrying a file is an array of blocks: the note joins its
+  // text block rather than being concatenated onto the array.
+  else if (Array.isArray(target.content)) {
+    // deno-lint-ignore no-explicit-any
+    const text = target.content.find((b: any) => b?.type === 'text');
+    if (text) text.text = `${text.text ?? ''}\n\n${note}`;
+    else target.content.unshift({ type: 'text', text: note });
+  } else target.content = `${target.content ?? ''}\n\n${note}`;
 }
 
 /** One greppable line per run: what tier and model served it, and how it went. */

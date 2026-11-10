@@ -22,14 +22,21 @@
 import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { claude, usageOf } from '../../_shared/claude.ts';
-import { toBase64 } from '../../_shared/ai.ts';
+import { anthropicConfigured } from '../../_shared/anthropic.ts';
+import { CLAUDE_MAX_PDF_BYTES, inferMime, isGenericMime, normalizeMime, resolveMime, toBase64 } from '../../_shared/media.ts';
 import { storage } from '../../_shared/storage.ts';
 import { type ToolContext, ToolInputError } from './types.ts';
+import { type InlineFileResult, inlineFileResult } from './file_blocks.ts';
 
 /**
- * Raw-byte ceiling. Gemini's inline request limit is ~20MB and base64 inflates
- * by a third, but the real reason this is low is cost: a 6MB scan is already a
- * very large prompt, and the point of a limit is to refuse before spending.
+ * Raw-byte ceiling for the EXTRACTION path (a separate Gemini call). Gemini's
+ * inline request limit is ~20MB and base64 inflates by a third, but the real
+ * reason this is low is cost: a 6MB scan is already a very large prompt, and
+ * the point of a limit is to refuse before spending.
+ *
+ * When Claude runs Ada the file goes to it directly instead (file_blocks.ts),
+ * under Claude's own limits: PDFs up to CLAUDE_MAX_PDF_BYTES and 100 pages,
+ * images up to 5MB.
  */
 const MAX_FILE_BYTES = 6 * 1024 * 1024;
 const MAX_EXTRACT_TOKENS = 2400;
@@ -62,9 +69,20 @@ const READABLE = [
 ];
 
 export function isReadable(mime: string): boolean {
-  const m = mime.toLowerCase().split(';')[0].trim();
+  const m = normalizeMime(mime) ?? '';
   return READABLE.includes(m) ||
     m.startsWith('image/') || m.startsWith('audio/') || m.startsWith('video/') || m.startsWith('text/');
+}
+
+/**
+ * Whether list_files should offer a file. A known type must be readable; an
+ * unknown one (generic label, no telling extension) is offered, because only
+ * its bytes can say — read_file sniffs them and refuses clearly if need be.
+ * Hiding those is what made Ada say a perfectly good PNG "came through in a
+ * format I can't read".
+ */
+export function mightBeReadable(mime: string | null): boolean {
+  return mime === null || isGenericMime(mime) || isReadable(mime);
 }
 
 export const EXTRACT_DOC_TYPES = [
@@ -139,7 +157,9 @@ export async function listReadableFiles(sessionId: string): Promise<ReadableFile
     out.push({
       ref: m.file_url,
       name: m.file_name ?? 'file',
-      mime_type: m.mime_type,
+      // The stored type is often a generic octet-stream (the iOS picker gives
+      // none); the extension says more. read_file checks the bytes as well.
+      mime_type: inferMime(m.mime_type, m.file_name),
       origin: 'subject_material',
       subject_id: m.course_id,
       subject_name: subjectNames.get(m.course_id) ?? null,
@@ -157,7 +177,7 @@ export async function listReadableFiles(sessionId: string): Promise<ReadableFile
       out.push({
         ref: a.key,
         name: a.name ?? 'file',
-        mime_type: a.mime_type ?? null,
+        mime_type: inferMime(a.mime_type, a.name),
         origin: 'attachment',
         subject_id: null,
         subject_name: null,
@@ -210,6 +230,12 @@ async function cachedMaterialExtraction(ref: string): Promise<Extraction | null>
   // deno-lint-ignore no-explicit-any
   const cached = (row?.metadata as any)?.extraction;
   return cached && typeof cached === 'object' ? cached as Extraction : null;
+}
+
+function cachedExtraction(sessionId: string, file: ReadableFile): Promise<Extraction | null> {
+  return file.origin === 'subject_material'
+    ? cachedMaterialExtraction(file.ref)
+    : cachedAttachmentExtraction(sessionId, file.ref);
 }
 
 /** Attachment extractions live on the message that carried them. */
@@ -402,10 +428,51 @@ function toResult(file: ReadableFile, e: Extraction, cached: boolean): ReadFileR
 }
 
 /**
- * Open a file and return its structured contents, extracting only on a cache miss.
+ * Whether the model running Ada is Claude, which reads a PDF or an image handed
+ * back in the tool_result itself — so read_file needs no call of its own.
+ */
+function claudeReadsFiles(): boolean {
+  return anthropicConfigured() || claude.provider === 'anthropic' || claude.provider === 'vertex';
+}
+
+function unreadable(name: string, mime: string): ToolInputError {
+  const label = isGenericMime(mime) ? 'a file type I could not recognise' : mime;
+  return new ToolInputError(
+    `I can't read ${name} — it is ${label}, which isn't a format I can open.`,
+    'PDFs, images, plain text, audio and video work. Word and PowerPoint files do not; ask the user to export as PDF.',
+  );
+}
+
+/** storage.download with an over-limit refusal the model can relay. */
+async function download(file: ReadableFile, maxBytes: number) {
+  try {
+    return await storage.download(file.ref, maxBytes);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/over the \d+KB limit/.test(message)) {
+      throw new ToolInputError(
+        `${file.name} is too large for me to read (${message.replace(/^file is /, '')}).`,
+        'Tell the user the file is too large to read, and ask for a smaller copy or just the pages that matter.',
+      );
+    }
+    throw e;
+  }
+}
+
+/**
+ * Open a file for the agent.
  *
- * The single provider call this may make is intentionally outside the agent loop:
- * the caller receives the compact result and the file itself is never replayed.
+ * When Claude runs Ada, the file itself goes back to it as a document or image
+ * block in the tool_result (file_blocks.ts): no extra provider call, nothing
+ * lost in a summary. Otherwise — no Claude, or a type Claude cannot read
+ * (HEIC, audio, video) — it is extracted by one separate call, outside the
+ * agent loop, on the models that can read it (paid Gemini on Vertex before the
+ * free keys), and the compact result is cached so the file is never replayed.
+ *
+ * The type is never taken on trust: the stored label is often a generic
+ * octet-stream (the iOS picker gives none), so the bytes and the extension
+ * decide (media.ts resolveMime). That is what makes files uploaded before the
+ * app sent real types readable too.
  */
 export async function readFile(
   sessionId: string,
@@ -413,13 +480,19 @@ export async function readFile(
   today: string,
   timezone: string,
   ctx: Pick<ToolContext, 'reserveSpend' | 'recordSpend'>,
-): Promise<ReadFileResult> {
+): Promise<ReadFileResult | InlineFileResult> {
   const file = await resolve(sessionId, ref);
 
-  const cached = file.origin === 'subject_material'
-    ? await cachedMaterialExtraction(file.ref)
-    : await cachedAttachmentExtraction(sessionId, file.ref);
-  if (cached) return toResult(file, cached, true);
+  // A type known to be unreadable (Word, PowerPoint) is refused before any
+  // download or spend.
+  const known = inferMime(file.mime_type, file.name);
+  if (known && !isReadable(known)) throw unreadable(file.name, known);
+
+  const inline = claudeReadsFiles();
+  if (!inline) {
+    const cached = await cachedExtraction(sessionId, file);
+    if (cached) return toResult(file, cached, true);
+  }
 
   // Ownership floor. Every ref came from listReadableFiles, which is already
   // tenant-scoped, but storage.download uses the service-role key and would
@@ -429,9 +502,29 @@ export async function readFile(
     throw new ToolInputError('That file does not belong to this user.');
   }
 
-  // Extraction is a real provider call against the same free-tier pool as the
-  // agent loop, so a slot is claimed before any bytes are downloaded. Claimed,
-  // not merely checked: several read_file calls in one turn run concurrently.
+  const { bytes, mimeType } = await download(file, inline ? CLAUDE_MAX_PDF_BYTES : MAX_FILE_BYTES);
+  // The bytes win (%PDF, the PNG/JPEG signatures), then a specific label on
+  // the row, then storage's, then the extension.
+  const mime = resolveMime({ bytes, declared: file.mime_type, storage: mimeType, name: file.name });
+  if (!isReadable(mime)) throw unreadable(file.name, mime);
+
+  if (inline) {
+    const result = inlineFileResult(file, mime, bytes);
+    if (result) return result;
+    // Claude cannot read this type: extract it below, on a model that can.
+    const cached = await cachedExtraction(sessionId, file);
+    if (cached) return toResult(file, cached, true);
+    if (bytes.length > MAX_FILE_BYTES) {
+      throw new ToolInputError(
+        `${file.name} is too large for me to read (${Math.round(bytes.length / 1024)}KB, over the ${MAX_FILE_BYTES / 1024}KB limit for this kind of file).`,
+        'Tell the user the file is too large to read, and ask for a smaller copy or a PDF or image instead.',
+      );
+    }
+  }
+
+  // Extraction is a real provider call against the same pool as the agent
+  // loop, so a slot is claimed before it is made. Claimed, not merely checked:
+  // several read_file calls in one turn run concurrently.
   if (!ctx.reserveSpend()) {
     throw new ToolInputError(
       `I don't have enough budget left this turn to read ${file.name}.`,
@@ -439,26 +532,13 @@ export async function readFile(
     );
   }
 
-  const mime = file.mime_type ?? 'application/octet-stream';
-  if (!isReadable(mime)) {
-    throw new ToolInputError(
-      `I can't read ${file.name} — ${mime} isn't a format I can open.`,
-      'PDFs, images, plain text, audio and video work. Word and PowerPoint files do not; ask the user to export as PDF.',
-    );
-  }
-
-  const { bytes, mimeType } = await storage.download(file.ref, MAX_FILE_BYTES);
-  // Trust the stored content-type only when the row had nothing; storage often
-  // reports application/octet-stream for a perfectly good PDF.
-  const effectiveMime = file.mime_type ?? mimeType;
-
   const res = await claude.createMessage({
     system: extractSystemPrompt(today, timezone, file.name),
     messages: [{
       role: 'user',
       content: 'Extract everything academically useful from this file.',
     }],
-    files: [{ mime_type: effectiveMime, data: toBase64(bytes) }],
+    files: [{ mime_type: normalizeMime(mime) ?? mime, data: toBase64(bytes) }],
     tools: [EXTRACT_TOOL],
     toolChoice: { type: 'tool', name: 'emit_extraction' },
     maxTokens: MAX_EXTRACT_TOKENS,

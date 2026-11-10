@@ -17,6 +17,7 @@ import { env } from '../../_shared/env.ts';
 import { cacheGet, cacheIncrBy, cacheSet } from '../../_shared/redis.ts';
 import { claude, type ToolDef } from '../../_shared/claude.ts';
 import { storage } from '../../_shared/storage.ts';
+import { inferMime } from '../../_shared/media.ts';
 import { subjectsService } from './subjects.service.ts';
 import { tasksService } from './tasks.service.ts';
 import { resumeRun, runAgent } from '../agent/runtime.ts';
@@ -162,6 +163,12 @@ export interface AdaAttachmentRefDto {
   mime_type?: string;
 }
 
+/** An attachment ref with its type inferred when the client's was generic or absent. */
+export function withInferredMime(a: AdaAttachmentRefDto): AdaAttachmentRefDto {
+  const mime = inferMime(a.mime_type, a.name);
+  return mime ? { ...a, mime_type: mime } : a;
+}
+
 export interface PostMessageDto {
   text: string;
   attachments?: AdaAttachmentRefDto[];
@@ -219,8 +226,10 @@ export const adaService = {
         ada_session_id: conversationId,
         role: 'user',
         content: dto.text,
+        // The type is recorded as best known: a generic octet-stream from the
+        // app (the iOS picker gives none) gives way to the extension.
         // deno-lint-ignore no-explicit-any
-        attachments: dto.attachments?.length ? (dto.attachments as any) : [],
+        attachments: dto.attachments?.length ? (dto.attachments.map(withInferredMime) as any) : [],
       },
     });
 
@@ -432,7 +441,7 @@ export const adaService = {
     await ownedConversation(dto.conversation_id);
     const fileId = crypto.randomUUID();
     const key = storage.buildAdaAttachmentKey(RequestContext.userId, dto.conversation_id, fileId, dto.name);
-    const uploadUrl = await storage.presignUpload(key, dto.mime_type ?? 'application/octet-stream');
+    const uploadUrl = await storage.presignUpload(key, inferMime(dto.mime_type, dto.name) ?? 'application/octet-stream');
     return { file_id: fileId, upload_url: uploadUrl, key, name: dto.name };
   },
 

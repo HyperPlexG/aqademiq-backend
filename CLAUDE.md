@@ -255,6 +255,31 @@ Vertex answers until the period resets.
 | `ANTHROPIC_{EASY,MIDDLE,HARD}_EFFORT` | low / low / low | Speed first; raise HARD to `medium` if hard answers fall short |
 | `ANTHROPIC_{EASY,MIDDLE,HARD}_FAST` | off / off / on | Fast mode; only Opus 5.5 / 5 / 4.8 have it |
 
+### How Ada reads a file (`agent/files.ts`, `agent/file_blocks.ts`, `_shared/media.ts`)
+
+- **The stored type is a hint, not the truth.** The iOS picker gives no MIME,
+  so uploads arrived as `application/octet-stream` and Ada refused a CV PDF
+  and a PNG. `resolveMime` decides from the bytes (%PDF, PNG/JPEG/GIF/WebP/HEIC
+  signatures), then a specific label, then the extension; `list_files` infers
+  from the name and still lists files whose type is unknown. Files uploaded
+  with the wrong type read fine for that reason — no backfill needed.
+- **With Claude running Ada, `read_file` makes no model call of its own.** It
+  returns the file in the tool_result as a `document` (PDF ≤ 20 MB, ≤ 100
+  pages) or `image` block (png/jpeg/gif/webp ≤ 5 MB), and the running model
+  reads it. Over a limit is a `ToolInputError` with a hint the model relays.
+  Before this, every read was a separate call on the free Gemini keys, and on
+  10 Nov 2026 all five 503'd while Claude was up.
+- Otherwise (no Claude, or HEIC/audio/video) it extracts with one separate
+  call on the models that can read the file — Claude, then Gemini on Vertex,
+  then the free keys (`candidatesFor`), never Groq/Cerebras — and caches it.
+- A file in the transcript reaches every provider: Claude natively, Gemini as
+  `inlineData` beside the function response, Groq/Cerebras as a marker
+  (`withoutFileData`). The stored `ada_agent_runs.transcript` keeps markers,
+  never the bytes.
+- **The budget prices a file by what Claude bills** (`mediaAwarePromptSize`:
+  3,000 tokens a PDF page, 100 pages if uncountable; 5,000 an image), not by
+  its base64 length, which under-priced long text-only PDFs and over-priced scans.
+
 ### Jev picks the tier (`agent/jev_tier.ts`)
 
 With a Jev key set (`OPENROUTER_API_KEY`), each chat message's tier — and so
