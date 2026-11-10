@@ -6,6 +6,7 @@ import { moodIndexToScore } from '../../_shared/mood.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { revision } from '../../_shared/revision.ts';
+import { inferMime } from '../../_shared/media.ts';
 import { lookupUsableCode } from './referrals.service.ts';
 import { onboardingV2Update, type OnboardingV2Dto } from './onboarding_v2.ts';
 
@@ -190,7 +191,7 @@ export const onboardingService = {
               material_type: 'syllabus',
               file_url: s.syllabus_staging_key,
               processing_status: 'ready',
-              mime_type: s.syllabus_mime_type ?? null,
+              mime_type: inferMime(s.syllabus_mime_type, s.syllabus_file_name) ?? s.syllabus_mime_type ?? null,
             },
           });
         }

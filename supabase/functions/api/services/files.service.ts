@@ -5,6 +5,7 @@ import { prismaBase, tenantDb } from '../../_shared/prisma.ts';
 import { RequestContext } from '../../_shared/context.ts';
 import { HttpError } from '../../_shared/http.ts';
 import { storage } from '../../_shared/storage.ts';
+import { inferMime } from '../../_shared/media.ts';
 
 export interface InitUploadDto {
   subject_id: string;
@@ -96,7 +97,9 @@ export const filesService = {
         course_id: course.id,
         material_type: materialType,
         file_name: dtoIn.name,
-        mime_type: dtoIn.mime_type ?? null,
+        // A generic octet-stream (the iOS picker gives no type) gives way to
+        // the extension, so read_file and thumbnails know what this is.
+        mime_type: inferMime(dtoIn.mime_type, dtoIn.name) ?? dtoIn.mime_type ?? null,
         file_size_bytes: dtoIn.size_bytes ? BigInt(dtoIn.size_bytes) : null,
         processing_status: 'uploaded',
         metadata: { important: false },
@@ -173,7 +176,7 @@ export const filesService = {
   async thumbnail(id: string) {
     assertStorage();
     const file = await ownedFile(id);
-    const isImage = (file.mime_type ?? '').startsWith('image/');
+    const isImage = (inferMime(file.mime_type, file.file_name) ?? '').startsWith('image/');
     if (!isImage || !file.file_url) {
       return { url: null, kind: 'none' };
     }
