@@ -15,15 +15,25 @@ import { env } from './env.ts';
 import { cacheGet, cacheSet } from './redis.ts';
 import { gcpAccessToken, gcpProject, isVertexConfigured, vertexHost, vertexMessages } from './vertex.ts';
 import { anthropicConfigured, anthropicEffort, anthropicFast, anthropicModel, AnthropicUnavailable, sendAnthropic } from './anthropic.ts';
+import {
+  claudeAccepts,
+  geminiAccepts,
+  geminiFileParts,
+  hasFileBlocks,
+  type InlineFile,
+  withClaudeFiles,
+  withoutFileData,
+} from './media.ts';
+
+export { toBase64 } from './media.ts';
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown>; }
 
-/** A file sent inline with the final user turn. Gemini-only (see AiParams.files). */
-export interface AiFile {
-  mime_type: string;
-  /** base64, no data: prefix. */
-  data: string;
-}
+/**
+ * A file sent inline with the final user turn (see AiParams.files): a PDF or
+ * image as a Claude document/image block, or Gemini inlineData.
+ */
+export type AiFile = InlineFile;
 
 export interface AiParams {
   system: string;
@@ -35,11 +45,12 @@ export interface AiParams {
   /**
    * Inline files appended to the last user turn.
    *
-   * Gemini accepts PDFs, images, audio and video natively as inlineData parts;
-   * Cerebras' OpenAI-compatible endpoint has no equivalent. Setting this
-   * therefore restricts the rotation to Gemini keys rather than silently
-   * dropping the attachment on a Cerebras failover — a caller that asked about a
-   * file must never get an answer produced without it.
+   * Claude takes PDFs and png/jpeg/gif/webp images as content blocks; Gemini
+   * takes those plus HEIC, audio and video as inlineData parts; Groq and
+   * Cerebras' OpenAI-compatible endpoints take none. Setting this restricts
+   * the rotation to the candidates that can read every file (fileCapable)
+   * rather than silently dropping the attachment on a failover — a caller that
+   * asked about a file must never get an answer produced without it.
    */
   files?: AiFile[];
 
@@ -90,18 +101,6 @@ function callSignal(p: AiParams): AbortSignal {
   return AbortSignal.timeout(ms);
 }
 
-/**
- * base64 for binary data, chunked because `String.fromCharCode(...bytes)` on a
- * multi-megabyte array overflows the argument limit.
- */
-export function toBase64(bytes: Uint8Array): string {
-  const CHUNK = 0x8000;
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
 /** What one call cost. Free-tier quota is spent per call, so this is recorded
  *  even when the run that made the call is later abandoned. */
 export interface AiUsage {
@@ -516,20 +515,48 @@ function geminiFunctionDeclaration(t: ToolDef) {
     : base;
 }
 
+/** Whether a provider can read every one of these files. Exported for tests. */
+export function canReadFiles(provider: Provider, files: AiFile[]): boolean {
+  if (provider === 'anthropic' || provider === 'vertex-claude') return files.every(claudeAccepts);
+  if (provider === 'vertex-gemini' || provider === 'gemini') return files.every(geminiAccepts);
+  return false;
+}
+
+/**
+ * The candidates for one call, best first, given what it carries.
+ *
+ * - `files` (read_file's extraction call): only models that can read every
+ *   file, in the tier's order — so Claude, then paid Gemini on Vertex, then
+ *   the free Gemini keys. This used to be the free keys alone, which is how a
+ *   PDF went unread on 10 Nov 2026 while all five answered 503.
+ * - a transcript carrying a file read_file returned (a document or image block
+ *   in a tool_result): models that read files first; Groq and Cerebras stay at
+ *   the back as a last resort, and see a marker in place of the file.
+ *
+ * With `usePin`, the run's pinned model goes first — unless the transcript
+ * carries a file and the pin cannot read it.
+ *
+ * Exported for tests.
+ */
+export function candidatesFor(params: AiParams, usePin = false): KeyEntry[] {
+  const pin = usePin ? params.pin?.id : undefined;
+  const all = tierCandidates(params.tier, params.hardVariant);
+  if (params.files?.length) return withPinFirst(all.filter((c) => canReadFiles(c.provider, params.files!)), pin);
+  if (hasFileBlocks(params.messages)) {
+    const readsFiles = (c: KeyEntry) => c.provider !== 'groq' && c.provider !== 'cerebras';
+    const readers = withPinFirst(all.filter(readsFiles), pin);
+    return [...readers, ...all.filter((c) => !readsFiles(c))];
+  }
+  return withPinFirst(all, pin);
+}
+
 /** One chat turn across the rotating pool. Throws if no key succeeds. */
 export async function rotatingChat(params: AiParams): Promise<AiResult> {
-  // A call carrying files can only be served by Gemini, so narrow the pool
-  // rather than letting a Cerebras failover answer without seeing the file.
-  const candidates = withPinFirst(
-    params.files?.length
-      ? orderedCandidates().filter((k) => k.provider === 'gemini')
-      : tierCandidates(params.tier, params.hardVariant),
-    params.pin?.id,
-  );
+  const candidates = candidatesFor(params, true);
   if (candidates.length === 0) {
     throw new Error(
       params.files?.length
-        ? 'Reading files needs a Gemini key (GEMINI_API_KEYS); Cerebras cannot accept attachments.'
+        ? 'Reading files needs Claude (ANTHROPIC_API_KEY) or Gemini (GCP_* secrets or GEMINI_API_KEYS); Groq and Cerebras cannot accept attachments.'
         : 'No AI keys configured (GEMINI_API_KEYS / CEREBRAS_API_KEYS)',
     );
   }
@@ -603,6 +630,29 @@ export async function rotatingChat(params: AiParams): Promise<AiResult> {
   throw new Error(`All AI keys failed: ${errors.join(' | ')}`);
 }
 
+/** A tool_result's content as text: a string as is, an array's text blocks joined. */
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.filter((b) => b?.type === 'text').map((b) => String(b.text ?? '')).join('\n\n');
+  }
+  return JSON.stringify(content);
+}
+
+/**
+ * A Claude document/image block as Gemini parts, so a file read_file returned
+ * to Claude still reaches Gemini when the run fails over to it.
+ */
+// deno-lint-ignore no-explicit-any
+function geminiPartsForBlock(b: any): any[] {
+  const src = b?.source ?? {};
+  if ((b?.type === 'document' || b?.type === 'image') && src.type === 'base64' && typeof src.data === 'string') {
+    return geminiFileParts([{ mime_type: String(src.media_type ?? 'application/octet-stream'), data: src.data }]);
+  }
+  if (b?.type === 'document' && src.type === 'text') return [{ text: String(src.data ?? '') }];
+  return [];
+}
+
 // ================= Cerebras (OpenAI-compatible) =================
 /**
  * One adapter for every OpenAI-compatible chat-completions provider.
@@ -620,7 +670,9 @@ async function openAiCompatChat(
 ): Promise<AiResult> {
   // deno-lint-ignore no-explicit-any
   const msgs: any[] = [{ role: 'system', content: p.system }];
-  for (const m of p.messages) {
+  // These endpoints cannot read files: a document or image read_file returned
+  // becomes a marker, never megabytes of base64 sent as text.
+  for (const m of withoutFileData(p.messages)) {
     if (typeof m.content === 'string') { msgs.push({ role: m.role, content: m.content }); continue; }
     // deno-lint-ignore no-explicit-any
     const blocks = m.content as any[];
@@ -632,7 +684,7 @@ async function openAiCompatChat(
       msgs.push({ role: 'assistant', content: text || null, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) });
     } else {
       for (const b of blocks) {
-        if (b.type === 'tool_result') msgs.push({ role: 'tool', tool_call_id: b.tool_use_id, content: typeof b.content === 'string' ? b.content : JSON.stringify(b.content) });
+        if (b.type === 'tool_result') msgs.push({ role: 'tool', tool_call_id: b.tool_use_id, content: toolResultText(b.content) });
       }
     }
   }
@@ -708,9 +760,10 @@ const groqChat = (key: string, model: string, p: AiParams) =>
  * fiddly parts — thought-signature replay, tool declarations, inline files —
  * cannot drift between the paid path and the free fallback, which would be a
  * miserable class of bug to chase: it would only show up once quota ran out.
+ * Exported for tests.
  */
 // deno-lint-ignore no-explicit-any
-function buildGeminiBody(p: AiParams, model: string): any {
+export function buildGeminiBody(p: AiParams, model: string): any {
   // Map Anthropic tool_use ids → names so tool_results become functionResponses.
   const idToName = new Map<string, string>();
   for (const m of p.messages) {
@@ -756,14 +809,20 @@ function buildGeminiBody(p: AiParams, model: string): any {
     } else {
       // deno-lint-ignore no-explicit-any
       const parts: any[] = [];
+      // deno-lint-ignore no-explicit-any
+      const fileParts: any[] = [];
       for (const b of blocks) {
         if (b.type === 'tool_result') {
+          // A file read_file returned rides in the tool_result as Claude
+          // blocks: its text is the response, its bytes follow as inlineData.
+          const text = toolResultText(b.content);
+          if (Array.isArray(b.content)) fileParts.push(...b.content.flatMap(geminiPartsForBlock));
           let parsed: unknown;
-          try { parsed = typeof b.content === 'string' ? JSON.parse(b.content) : b.content; } catch { parsed = { result: b.content }; }
+          try { parsed = JSON.parse(text); } catch { parsed = { result: text }; }
           parts.push({ functionResponse: { name: idToName.get(b.tool_use_id) ?? 'tool', response: { result: parsed } } });
         }
       }
-      contents.push({ role: 'user', parts });
+      contents.push({ role: 'user', parts: [...parts, ...fileParts] });
     }
   }
   // Attachments ride on the final user turn, which is the one the question was
@@ -771,7 +830,7 @@ function buildGeminiBody(p: AiParams, model: string): any {
   // the file, so the model knows what it is being asked to do with it.
   if (p.files?.length) {
     const last = contents[contents.length - 1];
-    const fileParts = p.files.map((f) => ({ inlineData: { mimeType: f.mime_type, data: f.data } }));
+    const fileParts = geminiFileParts(p.files);
     if (last && last.role === 'user') {
       last.parts.push(...fileParts);
     } else {
@@ -916,7 +975,9 @@ export function claudeRequest(p: AiParams, effort: string = claudeEffort()) {
   return {
     max_tokens: Math.max(p.maxTokens ?? 0, CLAUDE_MIN_MAX_TOKENS),
     system: forced ? `${p.system}\n\nAnswer by calling the \`${forced}\` tool.` : p.system,
-    messages: anthropicMessages(p.messages),
+    // Files go in as document/image blocks on the last user turn; a file
+    // read_file returned is already a block inside its tool_result.
+    messages: withClaudeFiles(anthropicMessages(p.messages), p.files),
     output_config: { effort },
     ...(p.tools?.length ? { tools: p.tools, tool_choice: { type: 'auto' } } : {}),
   };
@@ -965,7 +1026,10 @@ export function anthropicMessages(messages: any[]): any[] {
     const blocks = ((m.content as any[]) ?? []).flatMap((b): any[] => {
       if (b.type === 'text') return b.text ? [{ type: 'text', text: b.text }] : [];
       if (b.type === 'tool_use') return [{ type: 'tool_use', id: b.id, name: b.name, input: b.input ?? {} }];
+      // A tool_result's content may be an array of text, image and document
+      // blocks (read_file returns the file that way); it passes through as is.
       if (b.type === 'tool_result') return [{ type: 'tool_result', tool_use_id: b.tool_use_id, content: b.content }];
+      if (b.type === 'image' || b.type === 'document') return [b];
       return [];
     });
     return { role: m.role, content: blocks.length ? blocks : [{ type: 'text', text: '…' }] };

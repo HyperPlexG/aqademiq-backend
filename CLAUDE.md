@@ -54,7 +54,7 @@ readable NestJS reference, still built and tested in CI. Port behaviour *from*
   models in `GEMINI_MODELS` draws on two independent quotas. See
   [docs/AI_QUOTA_REPORT.md](docs/AI_QUOTA_REPORT.md). Edge knobs:
   `ADA_MAX_TURNS`/`ADA_MAX_LLM_CALLS` (4), `ADA_MAX_RESUME_TURNS` (2),
-  `ADA_HISTORY_LIMIT` (16), `ADA_DAILY_CALL_CAP` (200/user/UTC-day, 0 = off),
+  `ADA_HISTORY_LIMIT` (16), `ADA_DAILY_CALL_CAP` (calls/user/UTC-day: 20 on the free pool, 200 with Claude direct, where the money cap binds; 0 = off),
   `GEMINI_MODELS`, `ADA_THINKING_BUDGET` (unset = Gemini 3 gets
   `GEMINI_THINKING_LEVEL`, older models the provider default; set = that budget
   for every Gemini model, 0 = no thinking where the model allows it).
@@ -254,6 +254,31 @@ Vertex answers until the period resets.
 | `ANTHROPIC_{EASY,MIDDLE,HARD}_MODEL` | haiku-5-5 / sonnet-5-5 / opus-5-5 | |
 | `ANTHROPIC_{EASY,MIDDLE,HARD}_EFFORT` | low / low / low | Speed first; raise HARD to `medium` if hard answers fall short |
 | `ANTHROPIC_{EASY,MIDDLE,HARD}_FAST` | off / off / on | Fast mode; only Opus 5.5 / 5 / 4.8 have it |
+
+### How Ada reads a file (`agent/files.ts`, `agent/file_blocks.ts`, `_shared/media.ts`)
+
+- **The stored type is a hint, not the truth.** The iOS picker gives no MIME,
+  so uploads arrived as `application/octet-stream` and Ada refused a CV PDF
+  and a PNG. `resolveMime` decides from the bytes (%PDF, PNG/JPEG/GIF/WebP/HEIC
+  signatures), then a specific label, then the extension; `list_files` infers
+  from the name and still lists files whose type is unknown. Files uploaded
+  with the wrong type read fine for that reason — no backfill needed.
+- **With Claude running Ada, `read_file` makes no model call of its own.** It
+  returns the file in the tool_result as a `document` (PDF ≤ 20 MB, ≤ 100
+  pages) or `image` block (png/jpeg/gif/webp ≤ 5 MB), and the running model
+  reads it. Over a limit is a `ToolInputError` with a hint the model relays.
+  Before this, every read was a separate call on the free Gemini keys, and on
+  10 Nov 2026 all five 503'd while Claude was up.
+- Otherwise (no Claude, or HEIC/audio/video) it extracts with one separate
+  call on the models that can read the file — Claude, then Gemini on Vertex,
+  then the free keys (`candidatesFor`), never Groq/Cerebras — and caches it.
+- A file in the transcript reaches every provider: Claude natively, Gemini as
+  `inlineData` beside the function response, Groq/Cerebras as a marker
+  (`withoutFileData`). The stored `ada_agent_runs.transcript` keeps markers,
+  never the bytes.
+- **The budget prices a file by what Claude bills** (`mediaAwarePromptSize`:
+  3,000 tokens a PDF page, 100 pages if uncountable; 5,000 an image), not by
+  its base64 length, which under-priced long text-only PDFs and over-priced scans.
 
 ### Jev picks the tier (`agent/jev_tier.ts`)
 

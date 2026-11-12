@@ -113,6 +113,8 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
+      # --yes: since late 2026 the CLI asks before deploying, and CI has no
+      # terminal to answer; without it the step fails having changed nothing.
       # --no-verify-jwt: the FUNCTION owns auth (Supabase JWKS guard) and keeps
       # /healthz + /readyz public. Mirrors docs/DEPLOY_EDGE_INDIA.md.
       # --use-api bundles server-side through the Management API instead of the
@@ -129,7 +131,7 @@ jobs:
       # without it every bare specifier ("hono", "@prisma/client") fails to
       # resolve server-side.
       - name: Deploy api
-        run: supabase functions deploy api --project-ref "$PROJECT_REF" --no-verify-jwt --use-api --import-map supabase/functions/deno.json
+        run: supabase functions deploy api --project-ref "$PROJECT_REF" --no-verify-jwt --use-api --import-map supabase/functions/deno.json --yes
 
 # prisma-spike is unchanged and intentionally not deployed here; deploy it with the
 # CLI if it ever needs updating — see docs/DEPLOY_EDGE_INDIA.md.

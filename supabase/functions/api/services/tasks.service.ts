@@ -91,6 +91,13 @@ export interface PatchTaskDto {
   note?: string;
   duration_seconds?: number;
   part_of_day?: string;
+  /**
+   * End a repeating series: the last day it occurs (`yyyy-MM-dd`), or null to
+   * let it run on again. Absent leaves it alone. Always written to the SERIES
+   * row, whichever occurrence id it arrives on, so "done for good" from any day
+   * ends the whole series rather than one occurrence.
+   */
+  until_date?: string | null;
 }
 /**
  * A task has to be called something. `{"title": ""}` (or only spaces) used to
@@ -156,7 +163,7 @@ interface OccurrenceDto {
   status: string;
   category: string;
   note: string | null;
-  repeat: { kind: string; interval: number };
+  repeat: { kind: string; interval: number; until_date: string | null };
   steps: OccurrenceStepDto[];
 }
 
@@ -247,11 +254,41 @@ function getSeriesLike(task: unknown): SeriesLike {
   return taskRowToSeries(task as Parameters<typeof taskRowToSeries>[0]);
 }
 
+/** A row's `repeat_rule` column (a JSON string, an object, or null) as an object. */
 // deno-lint-ignore no-explicit-any
-function occurrenceDto(task: any, dateStr: string): OccurrenceDto {
-  const repeatRule = typeof task.repeat_rule === 'string' ? JSON.parse(task.repeat_rule) : (task.repeat_rule ?? {});
+function parseRepeatRule(raw: unknown): Record<string, any> | null {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw as Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(String(raw));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The series' `repeat_rule` with its last day set to [until] (`yyyy-MM-dd`), or
+ * cleared with null. Stored the way create stores it, so `occursOn` reads both
+ * the same. Pure; the tested surface of PATCH `until_date`.
+ */
+export function withUntilDate(repeatRule: unknown, until: string | null): string {
+  const rule = parseRepeatRule(repeatRule) ?? {};
+  return JSON.stringify({ ...rule, until_date: until ? toUtcDate(until) : null });
+}
+
+/**
+ * Build one occurrence for the wire. [series] is the template a per-day row
+ * belongs to: such a row carries no `repeat_rule` of its own, and without the
+ * series' rule it reported `repeat: none`, so the app took a ticked or broken-
+ * down day of a daily task for a one-off.
+ */
+// deno-lint-ignore no-explicit-any
+export function occurrenceDto(task: any, dateStr: string, series?: any): OccurrenceDto {
+  const repeatRule = parseRepeatRule(task.repeat_rule) ?? parseRepeatRule(series?.repeat_rule) ?? {};
   const repeatKind = repeatRule?.repeat_kind ?? 'none';
   const repeatInterval = repeatRule?.repeat_interval ?? 1;
+  const repeatUntil = repeatRule?.until_date ? ymd(repeatRule.until_date) : null;
 
   const hhmm = task.scheduled_start_at ? formatTime(task.scheduled_start_at) : null;
   const scheduled_at = hhmm ? `${dateStr}T${hhmm}:00` : null;
@@ -281,7 +318,7 @@ function occurrenceDto(task: any, dateStr: string): OccurrenceDto {
     status,
     category: task.task_type ?? 'general',
     note: task.description ?? null,
-    repeat: { kind: repeatKind, interval: repeatInterval },
+    repeat: { kind: repeatKind, interval: repeatInterval, until_date: repeatUntil },
     steps,
   };
 }
@@ -304,9 +341,21 @@ async function materializeRange(start: string, end: string): Promise<OccurrenceD
     },
     include: { steps: true },
   });
+  return buildOccurrences(allTasks, start, end);
+}
 
+/**
+ * Expand task rows into the occurrences between [start] and [end] inclusive.
+ * Pure (no DB), so the recurrence rules can be tested on plain rows.
+ */
+// deno-lint-ignore no-explicit-any
+export function buildOccurrences(allTasks: any[], start: string, end: string): OccurrenceDto[] {
+  const startD = toUtcDate(start);
   const concreteTasks = allTasks.filter((t) => !t.repeat_rule && t.parent_task_id === null);
-  const templateTasks = allTasks.filter((t) => !!t.repeat_rule && t.parent_task_id === null);
+  // A cancelled series is a deleted one (DELETE on the series id). One-offs
+  // already skipped `cancelled` below; series did not, so deleting a whole
+  // repeating task left every occurrence on the plan.
+  const templateTasks = allTasks.filter((t) => !!t.repeat_rule && t.parent_task_id === null && t.status !== 'cancelled');
   const overrideTasks = allTasks.filter((t) => t.parent_task_id !== null);
 
   const out = new Map<string, OccurrenceDto>();
@@ -332,7 +381,7 @@ async function materializeRange(start: string, end: string): Promise<OccurrenceD
         const override = overrideTasks.find((o) => o.parent_task_id === t.id && o.due_at && ymd(o.due_at) === dStr);
         if (override) {
           if (override.status !== 'cancelled') {
-            const dto = occurrenceDto(override, dStr);
+            const dto = occurrenceDto(override, dStr, t);
             out.set(dto.id, dto);
           }
         } else {
@@ -349,7 +398,7 @@ async function materializeRange(start: string, end: string): Promise<OccurrenceD
         // If this override task matches today's date, render it
         const parent = templateTasks.find((p) => p.id === o.parent_task_id);
         if (parent) {
-          const dto = occurrenceDto(o, dStr);
+          const dto = occurrenceDto(o, dStr, parent);
           out.set(dto.id, dto);
         }
       }
@@ -416,7 +465,10 @@ async function buildOne(taskId: string, dateStr: string): Promise<OccurrenceDto>
     include: { steps: true },
   });
   if (!task) throw new HttpError(404, 'Task not found');
-  return occurrenceDto(task, dateStr);
+  const series = task.parent_task_id
+    ? await tenantDb().task.findUnique({ where: { id: task.parent_task_id } })
+    : null;
+  return occurrenceDto(task, dateStr, series);
 }
 
 async function adjustActivitySnapshot(date: Date, diff: number): Promise<void> {
@@ -524,6 +576,24 @@ export const tasksService = {
       }
     }
 
+    // Ending (or re-opening) the series goes on the series row, before the
+    // occurrence's own fields: `{status: COMPLETE, until_date: D}` completes D
+    // and ends the series at D in one request. History is untouched — past
+    // per-day rows keep rendering on their own dates.
+    if (dto.until_date !== undefined) {
+      const seriesId: string | null = isVirtual
+        ? task.id
+        : (task.parent_task_id ?? (task.repeat_rule ? task.id : null));
+      if (!seriesId) throw new HttpError(422, 'until_date applies only to a repeating task');
+      const series = seriesId === task.id
+        ? task
+        : await tenantDb().task.findUnique({ where: { id: seriesId } });
+      if (!series?.repeat_rule) throw new HttpError(422, 'until_date applies only to a repeating task');
+      const repeatRule = withUntilDate(series.repeat_rule, dto.until_date);
+      await prismaBase().task.update({ where: { id: seriesId }, data: { repeat_rule: repeatRule } });
+      if (seriesId === task.id) task.repeat_rule = repeatRule;
+    }
+
     // deno-lint-ignore no-explicit-any
     const dbData: Record<string, any> = {};
     if (dto.scheduled_at !== undefined) {
@@ -566,6 +636,12 @@ export const tasksService = {
       dbData.estimated_duration_mins = Math.max(1, Math.round(dto.duration_seconds / 60));
     }
 
+    if (isVirtual && Object.keys(dbData).length === 0) {
+      // Only the series changed (until_date): no per-day row to make.
+      await invalidateCompletions();
+      return occurrenceDto(task, dateStr);
+    }
+
     if (isVirtual) {
       // Materialize virtual task as a concrete instance override, carrying any
       // edited fields (title / subject / tag / note / duration) from dbData.
@@ -599,7 +675,7 @@ export const tasksService = {
       await invalidateCompletions();
       return buildOne(materialized.id, dateStr);
     } else {
-      const updated = await prismaBase().task.update({
+      const updated = Object.keys(dbData).length === 0 ? task : await prismaBase().task.update({
         where: { id: task.id },
         data: dbData,
       });
