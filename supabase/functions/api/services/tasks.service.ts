@@ -391,6 +391,25 @@ async function resolveOccurrence(occId: string): Promise<ResolvedOccurrence> {
   }
 }
 
+/**
+ * The override row a series already has on `dateStr`, if any — a live one
+ * first, else a cancelled tombstone.
+ *
+ * A client can still hold the virtual id (`<series>@<date>`) after that day was
+ * materialised: breakdown creates the child but returns only its steps, and a
+ * list fetched before an edit elsewhere still shows the virtual id. Without this
+ * lookup every later edit / tick / move / delete created ANOTHER child for the
+ * same day, so the day rendered twice (materializeRange renders every live
+ * override) and edits landed on a copy without the steps.
+ */
+async function findOverride(seriesId: string, dateStr: string) {
+  const rows = await prismaBase().task.findMany({
+    where: { user_id: RequestContext.userId, parent_task_id: seriesId, due_at: toUtcDate(dateStr) },
+    select: { id: true, status: true },
+  });
+  return rows.find((r) => r.status !== 'cancelled') ?? rows[0] ?? null;
+}
+
 async function buildOne(taskId: string, dateStr: string): Promise<OccurrenceDto> {
   const task = await tenantDb().task.findUnique({
     where: { id: taskId },
@@ -496,6 +515,14 @@ export const tasksService = {
   /** PATCH /tasks/:occ — edit one occurrence */
   async patch(occId: string, dto: PatchTaskDto) {
     const { task, dateStr, isVirtual } = await resolveOccurrence(occId);
+    if (isVirtual) {
+      // That day already has its own row: edit it rather than adding another.
+      const existing = await findOverride(task.id, dateStr);
+      if (existing) {
+        if (existing.status === 'cancelled') throw new HttpError(404, 'Task not found');
+        return this.patch(existing.id, dto);
+      }
+    }
 
     // deno-lint-ignore no-explicit-any
     const dbData: Record<string, any> = {};
@@ -591,6 +618,13 @@ export const tasksService = {
   /** Set one occurrence's done state idempotently */
   async setDone(occId: string, done: boolean) {
     const { task, dateStr, isVirtual } = await resolveOccurrence(occId);
+    if (isVirtual) {
+      const existing = await findOverride(task.id, dateStr);
+      if (existing) {
+        if (existing.status === 'cancelled') throw new HttpError(404, 'Task not found');
+        return this.setDone(existing.id, done);
+      }
+    }
     const status = done ? 'completed' : 'pending';
     const completedAt = done ? new Date() : null;
 
@@ -642,8 +676,20 @@ export const tasksService = {
     const movedTo = toUtcDate(dto.to);
     let moved = 0;
     for (const occId of occIds) {
-      const { task, dateStr, isVirtual } = await resolveOccurrence(occId).catch(() => ({ task: null, dateStr: '', isVirtual: false }));
+      // deno-lint-ignore no-explicit-any
+      let { task, dateStr, isVirtual }: { task: any; dateStr: string; isVirtual: boolean } =
+        await resolveOccurrence(occId).catch(() => ({ task: null, dateStr: '', isVirtual: false }));
       if (!task || task.status === 'cancelled') continue;
+      if (isVirtual) {
+        // The day already has its own row (an edit, a tick, a breakdown): move that
+        // row instead, or the old day would keep rendering it next to a new copy.
+        const existing = await findOverride(task.id, dateStr);
+        if (existing) {
+          if (existing.status === 'cancelled') continue;
+          const resolved = await resolveOccurrence(existing.id);
+          task = resolved.task; dateStr = resolved.dateStr; isVirtual = false;
+        }
+      }
 
       if (isVirtual) {
         const mins = task.estimated_duration_mins ?? 5;
@@ -681,18 +727,50 @@ export const tasksService = {
           },
         });
       } else {
-        await prismaBase().task.update({
-          where: { id: task.id },
-          data: { due_at: movedTo },
-        });
+        // A timed task keeps its time on the new day. Moving only due_at left
+        // scheduled_start_at on the old day, and materializeRange matches either,
+        // so the task showed on both days.
+        // deno-lint-ignore no-explicit-any
+        const data: Record<string, any> = { due_at: movedTo };
+        if (task.scheduled_start_at) {
+          const mins = task.estimated_duration_mins ?? 5;
+          const start = parseTimeStr(dto.to, formatTime(task.scheduled_start_at));
+          data.scheduled_start_at = start;
+          data.scheduled_end_at = new Date(start.getTime() + mins * 60 * 1000);
+          data.reminder_at = new Date(start.getTime() - REMINDER_LEAD_MS);
+        }
+        await prismaBase().task.update({ where: { id: task.id }, data });
+        // An edited day of a series (a child row) leaving its day: tombstone the
+        // series there, or its virtual occurrence comes back on the old day.
+        if (task.parent_task_id && dateStr !== dto.to) {
+          const there = await prismaBase().task.findFirst({
+            where: { user_id: RequestContext.userId, parent_task_id: task.parent_task_id, due_at: toUtcDate(dateStr), NOT: { id: task.id } },
+            select: { id: true },
+          });
+          if (!there) {
+            await prismaBase().task.create({
+              data: {
+                user_id: RequestContext.userId,
+                course_id: task.course_id,
+                title: task.title,
+                parent_task_id: task.parent_task_id,
+                estimated_duration_mins: task.estimated_duration_mins ?? 5,
+                due_at: toUtcDate(dateStr),
+                status: 'cancelled',
+                priority: task.priority ?? 'medium',
+                task_type: task.task_type ?? 'general',
+              },
+            });
+          }
+        }
         // Log in rescheduled history
         await prismaBase().taskRescheduleHistory.create({
           data: {
             task_id: task.id,
             old_scheduled_start_at: task.scheduled_start_at,
             old_scheduled_end_at: task.scheduled_end_at,
-            new_scheduled_start_at: movedTo,
-            new_scheduled_end_at: null,
+            new_scheduled_start_at: data.scheduled_start_at ?? movedTo,
+            new_scheduled_end_at: data.scheduled_end_at ?? null,
             reason: 'User moved task',
             changed_by: 'user',
           },
@@ -707,6 +785,17 @@ export const tasksService = {
   /** DELETE /tasks/:occ */
   async remove(occId: string) {
     const { task, dateStr, isVirtual } = await resolveOccurrence(occId);
+    if (isVirtual) {
+      // A live row for that day would keep rendering past a new tombstone: cancel it instead.
+      const existing = await findOverride(task.id, dateStr);
+      if (existing) {
+        if (existing.status !== 'cancelled') {
+          await prismaBase().task.update({ where: { id: existing.id }, data: { status: 'cancelled' } });
+          await invalidateCompletions();
+        }
+        return { status: 'deleted', id: occId };
+      }
+    }
     if (isVirtual) {
       // Materialize as cancelled/tombstone
       const mins = task.estimated_duration_mins ?? 5;

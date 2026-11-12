@@ -51,6 +51,13 @@ export function seriesIdOf(taskId?: string | null): string | null {
   return UUID_RE.test(id) ? id : null;
 }
 
+/** The day a session's task occurrence is on: `<id>@<date>`'s date, else `task_date`. */
+export function linkedDay(taskId?: string | null, taskDate?: string | null): string | null {
+  const at = taskId ? taskId.split('@')[1] : undefined;
+  const d = at ?? taskDate ?? null;
+  return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null;
+}
+
 /** When a pause is open, `metadata.paused_at` holds the instant it began. */
 function pausedAtOf(metadata: unknown): Date | null {
   const raw = (metadata as { paused_at?: unknown } | null)?.paused_at;
@@ -135,7 +142,7 @@ function dto(s: any) {
     status: (s.status ?? '').toUpperCase(),
     prism_mode: s.prism_preset_id ? 'Preset' : null,
     task_id: s.task_id,
-    task_date: null,
+    task_date: (s.metadata as { task_date?: string } | null)?.task_date ?? null,
     mood_index: moodScoreToIndex(s.mood_after),
     // Surfaced so the client (and anyone debugging the analytics) can see that
     // these are now actually being recorded.
@@ -213,6 +220,9 @@ export const focusService = {
     // Accepts either a mode key ('rain') or a preset id; 'none'/unknown → null.
     const presetId = await prismService.resolvePresetId(input.prism_mode);
     const taskId = seriesIdOf(input.task_id);
+    // Which day of the task this session is for: the occurrence id's date, else
+    // task_date. Kept so completion ticks that day, not the whole series.
+    const occDate = linkedDay(input.task_id, input.task_date);
 
     // course_id was set on zero rows because nothing ever derived it. It lives
     // on the task the session was started from, and is copied at start rather
@@ -241,6 +251,7 @@ export const focusService = {
         // retroactively relabel sessions that already happened.
         control_arm: await isPrismHeldOut(RequestContext.userId),
         engine_version: input.engine_version ?? null,
+        ...(occDate ? { metadata: { task_date: occDate } } : {}),
         ...(input.mood_index !== undefined ? { mood_before: moodIndexToScore(input.mood_index) } : {}),
       },
     });
@@ -357,7 +368,18 @@ export const focusService = {
     let linkedTask = null;
     if (existing.task_id) {
       try {
-        linkedTask = await tasksService.setDone(existing.task_id, true);
+        // A series (every task the app creates is one, with repeat "none") is
+        // ticked on the session's day. Ticking the series row itself marked
+        // every one of its days done.
+        const t = await prismaBase().task.findFirst({
+          where: { id: existing.task_id, user_id: RequestContext.userId },
+          select: { repeat_rule: true, parent_task_id: true },
+        });
+        const isSeries = !!t && !t.parent_task_id && !!t.repeat_rule;
+        // Only a day the client named: a guessed one (UTC) could tick a day the
+        // series doesn't fall on, which would add a stray done copy there.
+        const day = (existing.metadata as { task_date?: string } | null)?.task_date;
+        linkedTask = await tasksService.setDone(isSeries && day ? `${existing.task_id}@${day}` : existing.task_id, true);
       } catch {
         // ignore errors
       }
