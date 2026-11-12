@@ -570,10 +570,10 @@ export const tasksService = {
     if (isVirtual) {
       // That day already has its own row: edit it rather than adding another.
       const existing = await findOverride(task.id, dateStr);
-      if (existing) {
-        if (existing.status === 'cancelled') throw new HttpError(404, 'Task not found');
-        return this.patch(existing.id, dto);
-      }
+      if (existing && existing.status !== 'cancelled') return this.patch(existing.id, dto);
+      // A deleted day can still end the series (until_date alone), but nothing else.
+      const onlyUntil = Object.keys(dto).every((k) => k === 'until_date' || (dto as Record<string, unknown>)[k] === undefined);
+      if (existing && !onlyUntil) throw new HttpError(404, 'Task not found');
     }
 
     // Ending (or re-opening) the series goes on the series row, before the
