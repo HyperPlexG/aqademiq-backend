@@ -7,7 +7,7 @@
 // sessions recording 0 minutes without anyone noticing.
 
 import { assertEquals } from 'jsr:@std/assert@1';
-import { closePause, seriesIdOf, studiedMinutes } from './focus.service.ts';
+import { closePause, linkedDay, seriesIdOf, studiedMinutes } from './focus.service.ts';
 
 const T = (iso: string) => new Date(iso);
 
@@ -105,4 +105,20 @@ Deno.test('elapsed_sec of 0 falls through to the wall clock', () => {
     studiedMinutes(0, T('2026-08-14T10:00:00Z'), T('2026-08-14T10:30:00Z'), 0),
     30,
   );
+});
+
+// ---- linkedDay -----------------------------------------------------------
+
+Deno.test('the session day comes from the occurrence id, else task_date', () => {
+  // Completing a session ticks this day only, not every day of the series.
+  assertEquals(linkedDay('9c1e4a70-2f83-4b16-8d55-6a7c0e3b9f21@2026-08-14'), '2026-08-14');
+  assertEquals(linkedDay('9c1e4a70-2f83-4b16-8d55-6a7c0e3b9f21', '2026-08-15'), '2026-08-15');
+  assertEquals(linkedDay('9c1e4a70-2f83-4b16-8d55-6a7c0e3b9f21@2026-08-14', '2026-08-15'), '2026-08-14');
+});
+
+Deno.test('no day is guessed', () => {
+  // Without a day the series row itself is ticked, as before.
+  assertEquals(linkedDay('9c1e4a70-2f83-4b16-8d55-6a7c0e3b9f21'), null);
+  assertEquals(linkedDay(undefined, 'tomorrow'), null);
+  assertEquals(linkedDay(null, null), null);
 });

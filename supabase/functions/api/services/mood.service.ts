@@ -33,8 +33,12 @@ export interface ReflectionDto {
  * ways in — Ada has mood tools, and a client can always be older than the
  * server.
  */
-function assertNotFuture(date: Date): void {
-  if (ymd(date) > ymd(new Date())) {
+export function assertNotFuture(date: Date, now: Date = new Date()): void {
+  // The date is the student's local day, and "today" there can be up to 14
+  // hours ahead of UTC (UTC+14). Comparing with the UTC date rejected a
+  // morning check-in in Dubai or Sydney before UTC midnight.
+  const latest = new Date(now.getTime() + 14 * 3600 * 1000);
+  if (ymd(date) > ymd(latest)) {
     throw new HttpError(422, 'That day has not happened yet');
   }
 }
