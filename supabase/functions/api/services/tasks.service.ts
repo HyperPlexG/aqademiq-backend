@@ -565,7 +565,7 @@ export const tasksService = {
   },
 
   /** PATCH /tasks/:occ — edit one occurrence */
-  async patch(occId: string, dto: PatchTaskDto) {
+  async patch(occId: string, dto: PatchTaskDto): Promise<OccurrenceDto> {
     const { task, dateStr, isVirtual } = await resolveOccurrence(occId);
     if (isVirtual) {
       // That day already has its own row: edit it rather than adding another.
@@ -692,7 +692,7 @@ export const tasksService = {
   },
 
   /** Set one occurrence's done state idempotently */
-  async setDone(occId: string, done: boolean) {
+  async setDone(occId: string, done: boolean): Promise<OccurrenceDto> {
     const { task, dateStr, isVirtual } = await resolveOccurrence(occId);
     if (isVirtual) {
       const existing = await findOverride(task.id, dateStr);
